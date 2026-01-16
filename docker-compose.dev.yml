@@ -1,0 +1,39 @@
+services:
+  # Disable nginx in development - frontend is accessed directly
+  nginx:
+    profiles:
+      - production
+
+  backend:
+    build:
+      target: development
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+    command: npm run dev
+
+  frontend:
+    build:
+      target: development
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - ./mcp-server:/app/mcp-server
+    environment:
+      - NODE_ENV=development
+      - PORT=7000
+    # Expose port to host for direct access in development
+    ports:
+      - "${DOCKER_BIND_HOST:-0.0.0.0}:7000:7000"
+    command: npm run dev -- -p 7000 -H 0.0.0.0
+    # Override healthcheck for development
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7000/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      - backend

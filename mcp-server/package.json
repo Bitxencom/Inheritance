@@ -1,0 +1,22 @@
+{
+  "name": "inheritance-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP Server untuk Inheritance Chat UI",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.2"
+  },
+  "keywords": [
+    "mcp",
+    "ai",
+    "digital-inheritance",
+    "chat"
+  ],
+  "author": "Inheritance Team",
+  "license": "MIT"
+}

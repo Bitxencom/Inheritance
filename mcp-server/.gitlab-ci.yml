@@ -1,0 +1,47 @@
+stages:
+  - build
+  - deploy
+
+build:
+  image: docker:20.10
+  stage: build
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+  services:
+    - name: docker:20.10-dind
+      alias: docker
+      command: ["--tls=false"]
+  script:
+    - docker login registry.gitlab.com -u $CI_TOKEN_NAME -p $CI_TOKEN_PASSWORD
+    - docker buildx build -t $CI_REGISTRY_IMAGE:latest -f Dockerfile .
+    - docker push $CI_REGISTRY_IMAGE:latest
+  when: always
+  only:
+    - main
+
+deploy:
+  image: docker:20.10
+  stage: deploy
+  services:
+    - docker:20.10-dind
+  script:
+    - mkdir -p ~/.ssh
+    - which ssh-agent || ( apk update -y && apk install openssh-client -y )
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIV_KEY_B64" | base64 -d > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-add ~/.ssh/id_rsa
+    - ssh -T -p $SERVER_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$SERVER_USER@$SERVER_IP" "docker login registry.gitlab.com -u $CI_TOKEN_NAME -p $CI_TOKEN_PASSWORD"
+    - ssh -T -p $SERVER_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$SERVER_USER@$SERVER_IP" "docker pull $CI_REGISTRY_IMAGE:latest || exit 1"
+    - ssh -T -p $SERVER_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$SERVER_USER@$SERVER_IP" "docker logout"
+    - ssh -T -p $SERVER_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$SERVER_USER@$SERVER_IP" "docker stop inheritance-mcp-server || true"
+    - ssh -T -p $SERVER_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$SERVER_USER@$SERVER_IP" "docker rm inheritance-mcp-server || true"
+    - ssh -T -p $SERVER_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$SERVER_USER@$SERVER_IP" "docker run -d -it --name=inheritance-mcp-server --restart=always --env-file $PATH_ENV_FILE $CI_REGISTRY_IMAGE:latest"
+  when: on_success
+  only:
+    - main
+  needs:
+    - build
+

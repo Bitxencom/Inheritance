@@ -1,0 +1,36 @@
+{
+  "version": "0.2",
+  "language": "en,id",
+  "words": [
+    "Arweave",
+    "arweave",
+    "Shamir",
+    "ewallet",
+    "topbar",
+    "Topbar",
+    "indep",
+    "nums",
+    "saat",
+    "ARWEAVE",
+    "bunga",
+    "deepseek",
+    "autohide",
+    "glassmorphism"
+  ],
+  "ignorePaths": [
+    "node_modules/**",
+    ".next/**",
+    "dist/**",
+    "build/**",
+    "*.min.js",
+    "*.min.css",
+    "package-lock.json",
+    "pnpm-lock.yaml"
+  ],
+  "enableFiletypes": [
+    "typescript",
+    "typescriptreact",
+    "javascript",
+    "javascriptreact"
+  ]
+}

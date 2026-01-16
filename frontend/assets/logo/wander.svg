@@ -1,0 +1,26 @@
+<svg viewBox="0 0 58 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path fill-rule="evenodd" clip-rule="evenodd"
+    d="M39.7903 14.0136L29.499 0.964308C29.0655 0.401696 28.6403 0.309813 28.1746 0.914092L17.8675 13.9924L27.8436 23.009L28.8124 2.35127L29.7812 23.009L39.7903 14.0136Z"
+    fill="url(#wander_grad0)" />
+  <path
+    d="M47.0982 27.5L57.5574 5.18035C57.7818 4.69144 57.246 4.20289 56.7798 4.47132L41.1404 13.4603L30.9749 24.9122L47.0982 27.5Z"
+    fill="url(#wander_grad1)" />
+  <path
+    d="M10.5119 27.5L0.0526943 5.18035C-0.171667 4.69144 0.364134 4.20289 0.830313 4.47132L16.4697 13.4603L26.6353 24.9122L10.5119 27.5Z"
+    fill="url(#wander_grad2)" />
+  <defs>
+    <linearGradient id="wander_grad0" x1="28.7517" y1="23.009" x2="28.7517" y2="0.5" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6B57F9" />
+      <stop offset="1" stop-color="#9787FF" />
+    </linearGradient>
+    <linearGradient id="wander_grad1" x1="35.135" y1="18.4187" x2="49.1781" y2="26.3958" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6B57F9" />
+      <stop offset="1" stop-color="#9787FF" />
+    </linearGradient>
+    <linearGradient id="wander_grad2" x1="22.4751" y1="18.4187" x2="8.43201" y2="26.3958"
+      gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6B57F9" />
+      <stop offset="1" stop-color="#9787FF" />
+    </linearGradient>
+  </defs>
+</svg>

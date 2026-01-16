@@ -1,0 +1,60 @@
+services:
+  # Nginx reverse proxy - entry point for all requests
+  nginx:
+    image: nginx:alpine
+    container_name: inheritance-nginx
+    ports:
+      - "${DOCKER_BIND_HOST:-0.0.0.0}:${NGINX_PORT:-7000}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      frontend:
+        condition: service_started
+      backend:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - inheritance
+
+  backend:
+    image: ${BACKEND_IMAGE:-inheritance-backend}
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: inheritance-backend
+    environment:
+      - NODE_ENV=${APP_ENV:-development}
+      - BACKEND_PORT=${BACKEND_PORT:-7002}
+      - ARWEAVE_GATEWAY=${ARWEAVE_GATEWAY:-https://arweave.net}
+    expose:
+      - "7002"
+    restart: unless-stopped
+    networks:
+      - inheritance
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-inheritance-frontend}
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: ${APP_ENV:-production}
+    container_name: inheritance-frontend
+    environment:
+      - BACKEND_BASE_URL=${BACKEND_BASE_URL:-http://backend:7002}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - NODE_ENV=${APP_ENV:-production}
+      - MCP_SERVER_CWD=/app/mcp-server
+      - MCP_SERVER_ENTRY=server.js
+      - PORT=${FRONTEND_PORT:-7001}
+    volumes:
+      - ./mcp-server:/app/mcp-server
+    expose:
+      - "${FRONTEND_PORT:-7001}"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - inheritance
+
+networks:
+  inheritance:

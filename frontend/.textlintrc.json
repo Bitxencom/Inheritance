@@ -1,0 +1,24 @@
+{
+  "filters": {},
+  "rules": {
+    "write-good": {
+      "severity": "warning",
+      "adverb": true,
+      "passive": true,
+      "illusion": true,
+      "so": true,
+      "thereIs": true,
+      "weasel": true,
+      "eprime": false
+    },
+    "common-misspellings": {
+      "severity": "error"
+    },
+    "no-todo": {
+      "severity": "warning"
+    },
+    "@textlint-rule/no-unmatched-pair": {
+      "severity": "error"
+    }
+  }
+}

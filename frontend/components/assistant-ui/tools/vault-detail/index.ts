@@ -1,0 +1,1 @@
+export { VaultDetailTool } from "./tool";
