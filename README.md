@@ -2,17 +2,24 @@
 
 ## 🚀 Quick Start with Docker
 
-### Using `start.sh` Script (Recommended)
+### Using Helper Scripts (Recommended)
 
-The `start.sh` script is the easiest way to run the entire application with Docker Compose as it handles environment setup, port checking, and logging automatically.
+The helper scripts (`start.sh` for Linux/macOS, `start.bat` for Windows) are the easiest way to run the application. They automatically handle environment setup, port checks, and logging.
 
 #### Preparing the environment
 
 Copy the `.env.example` file to `.env` and fill in the `DEEPSEEK_API_KEY`.
 
 #### Run the project
+
+**Linux / macOS:**
 ```bash
 ./start.sh prod --detach
+```
+
+**Windows:**
+```batch
+.\start.bat prod --detach
 ```
 
 You can access the application in your browser at: **http://localhost:7000**
