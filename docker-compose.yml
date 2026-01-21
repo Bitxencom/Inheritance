@@ -14,7 +14,7 @@ services:
         condition: service_started
     restart: unless-stopped
     networks:
-      - ${PROJECT_NAME:-inheritance}
+      - app-network
 
   backend:
     image: ${BACKEND_IMAGE:-inheritance-backend}
@@ -30,7 +30,7 @@ services:
       - "7002"
     restart: unless-stopped
     networks:
-      - ${PROJECT_NAME:-inheritance}
+      - app-network
 
   frontend:
     image: ${FRONTEND_IMAGE:-inheritance-frontend}
@@ -54,7 +54,8 @@ services:
       - backend
     restart: unless-stopped
     networks:
-      - ${PROJECT_NAME:-inheritance}
+      - app-network
 
 networks:
-  ${PROJECT_NAME:-inheritance}:
+  app-network:
+    name: ${PROJECT_NAME:-inheritance}-network
