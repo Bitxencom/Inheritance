@@ -33,7 +33,7 @@ export type EditFormState = {
   storageType: "arweave" | "bitxen";
   payment: {
     paymentMethod: "wander" | "metamask";
-    selectedChain?: string; // For Bitxen: bsc, eth, polygon, base, arbitrum
+    selectedChain?: string; // For Bitxen: bsc, eth, poly, base, arbitrum
   };
 };
 

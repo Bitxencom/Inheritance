@@ -1536,6 +1536,12 @@ export function VaultEditWizard({
               selectedChain={(formState.payment.selectedChain as ChainId) || DEFAULT_CHAIN}
               onClick={handleMetaMaskPayment}
               disabled={isSubmitting || isProcessingPayment}
+              onChainChange={(chain) =>
+                setFormState((prev) => ({
+                  ...prev,
+                  payment: { ...prev.payment, selectedChain: chain },
+                }))
+              }
             />
           );
         }

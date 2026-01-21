@@ -942,6 +942,12 @@ export function VaultCreationWizard({
                 onClick={handleMetaMaskPayment}
                 disabled={isSubmitting || isProcessingPayment}
                 selectedChain={(formState.payment.selectedChain || "bsc") as ChainId}
+                onChainChange={(chain) =>
+                  setFormState((prev) => ({
+                    ...prev,
+                    payment: { ...prev.payment, selectedChain: chain },
+                  }))
+                }
               />
               {paymentStatus && (
                 <p className="text-sm text-muted-foreground text-center">

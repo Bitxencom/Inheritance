@@ -32,6 +32,7 @@ const storageOptions = [
   {
     id: "bitxen" as const,
     name: "Bitxen",
+    badge: "BETA",
     description: "Multi-chain blockchain storage",
     details: "Store on BSC, Ethereum, Polygon, Base, or Arbitrum networks.",
     icon: Hexagon,
@@ -90,7 +91,14 @@ export function StorageSelector({
                     )}
                   </div>
                   <div>
-                    <h3 className="font-semibold">{option.name}</h3>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-semibold">{option.name}</h3>
+                      {(option as any).badge && (
+                        <div className="flex items-center !h-6 rounded-md bg-orange-100 dark:bg-orange-900/50 px-2 py-auto text-[10px] font-bold text-orange-600 dark:text-orange-400 border border-orange-200 dark:border-orange-800">
+                          {(option as any).badge}
+                        </div>
+                      )}
+                    </div>
                     <p className="text-sm text-muted-foreground mt-1">
                       {option.description}
                     </p>
@@ -108,48 +116,6 @@ export function StorageSelector({
           })}
         </div>
       </div>
-
-      {/* Chain Selection - Only for Bitxen */}
-      {selectedStorage === "bitxen" && (
-        <div className="space-y-3 animate-in fade-in slide-in-from-top-2 duration-300">
-          <p className="text-sm font-medium flex items-center gap-2">
-            <Link2 className="h-4 w-4" />
-            Select Blockchain Network
-          </p>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {availableChains.map((chainId) => {
-              const chain = CHAIN_CONFIG[chainId];
-              const isSelected = selectedChain === chainId;
-
-              return (
-                <button
-                  key={chainId}
-                  type="button"
-                  onClick={() => onChainChange?.(chainId)}
-                  disabled={disabled}
-                  className={cn(
-                    "rounded-lg border-2 px-3 py-2 text-sm transition-all cursor-pointer",
-                    isSelected
-                      ? "border-primary bg-primary/10 font-medium"
-                      : "border-border hover:border-primary/50",
-                    disabled && "opacity-50 cursor-not-allowed"
-                  )}
-                >
-                  <div className="flex flex-col items-center gap-1">
-                    <span className="font-medium">{chain.shortName}</span>
-                    <span className="text-[10px] text-muted-foreground">
-                      {chain.nativeCurrency.symbol}
-                    </span>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Each network has different gas fees. BSC typically offers the lowest fees.
-          </p>
-        </div>
-      )}
     </div>
   );
 }

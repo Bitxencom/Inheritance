@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Image from "next/image";
-import { Loader2, ExternalLink, AlertCircle, Smartphone, Download } from "lucide-react";
+import { Loader2, ExternalLink, AlertCircle, Smartphone, Download, Coins } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn, isMobile } from "@/lib/utils";
@@ -11,6 +11,9 @@ import {
   isMetaMaskInstalled,
   formatWalletAddress,
   getConnectedAddress,
+  getAvailableChains,
+  getRegistrationFee,
+  formatBitxenAmount,
   CHAIN_CONFIG,
   type ChainId,
 } from "@/lib/metamaskWallet";
@@ -20,6 +23,7 @@ interface MetaMaskWalletButtonProps {
   onClick?: () => Promise<void> | void;
   disabled?: boolean;
   selectedChain?: ChainId;
+  onChainChange?: (chain: ChainId) => void;
 }
 
 export function MetaMaskWalletButton({
@@ -27,13 +31,35 @@ export function MetaMaskWalletButton({
   onClick,
   disabled = false,
   selectedChain = "bsc",
+  onChainChange,
 }: MetaMaskWalletButtonProps) {
+  const availableChains = getAvailableChains();
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectedAddress, setConnectedAddress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [registrationFee, setRegistrationFee] = useState<string | null>(null);
+  const [isLoadingFee, setIsLoadingFee] = useState(false);
 
   const chainConfig = CHAIN_CONFIG[selectedChain];
   const isInstalled = isMetaMaskInstalled();
+
+  // Fetch registration fee when chain changes
+  useEffect(() => {
+    const fetchFee = async () => {
+      if (!isInstalled) return;
+      setIsLoadingFee(true);
+      try {
+        const fee = await getRegistrationFee(selectedChain, false);
+        setRegistrationFee(formatBitxenAmount(fee));
+      } catch (err) {
+        console.error("Failed to fetch fee:", err);
+        setRegistrationFee("~1.00 BITXEN"); // Fallback display
+      } finally {
+        setIsLoadingFee(false);
+      }
+    };
+    fetchFee();
+  }, [selectedChain, isInstalled]);
 
   const handleConnect = async () => {
     setError(null);
@@ -99,6 +125,57 @@ export function MetaMaskWalletButton({
         </div>
       </div>
 
+      {/* Chain Selection */}
+      <div className="space-y-3">
+        <p className="text-sm font-medium flex items-center gap-2">
+          <span className="h-4 w-4">🔗</span>
+          Select Blockchain Network
+        </p>
+        <div className="grid grid-cols-3 md:grid-cols-5 gap-2">
+          {availableChains.map((chainId) => {
+            const chain = CHAIN_CONFIG[chainId];
+            const isChainSelected = selectedChain === chainId;
+
+            return (
+              <button
+                key={chainId}
+                type="button"
+                onClick={() => onChainChange?.(chainId)}
+                disabled={disabled || isConnecting}
+                className={cn(
+                  "rounded-lg border-2 px-3 py-2 text-sm transition-all cursor-pointer group",
+                  isChainSelected
+                    ? "border-primary bg-primary/10 font-medium"
+                    : "border-border hover:border-primary/50 hover:bg-muted/50",
+                  (disabled || isConnecting) && "opacity-50 cursor-not-allowed"
+                )}
+              >
+                <div className="flex flex-col items-center gap-2">
+                  {(chain as any).logo && (
+                    <div className="h-6 w-6 rounded-full overflow-hidden bg-white/10 p-0.5">
+                      <img
+                        src={(chain as any).logo}
+                        alt={chain.shortName}
+                        className="h-full w-full object-contain"
+                      />
+                    </div>
+                  )}
+                  <div className="flex flex-col items-center leading-tight">
+                    <span className="font-medium text-[13px]">{chain.shortName}</span>
+                    <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                      BITXEN
+                    </span>
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Each network has different gas fees. BSC typically offers the lowest fees.
+        </p>
+      </div>
+
       {/* Install MetaMask Prompt */}
       {!isInstalled && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/50 dark:bg-amber-950/20">
@@ -127,10 +204,23 @@ export function MetaMaskWalletButton({
 
       {/* MetaMask Payment Section */}
       <div className="space-y-3 border-t pt-4">
-        {/* Network Fee Info */}
-        <div className="rounded-md bg-muted/50 p-3">
-          <p className="text-sm font-medium">
-            Network Fee: Gas fee in {chainConfig.nativeCurrency.symbol} (Paid by User)
+        {/* Fee Info */}
+        <div className="rounded-md bg-muted/50 p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Coins className="h-4 w-4 text-orange-500" />
+              <span className="text-sm font-medium">Storage Fee (BITXEN Token)</span>
+            </div>
+            <span className="text-sm font-semibold text-orange-600">
+              {isLoadingFee ? "Loading..." : registrationFee || "~1.00 BITXEN"}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>+ Gas Fee ({chainConfig.nativeCurrency.symbol})</span>
+            <span>Varies by network</span>
+          </div>
+          <p className="text-[10px] text-muted-foreground border-t pt-2 mt-1">
+            You will need to approve BITXEN token spending, then confirm the registration transaction.
           </p>
         </div>
 
