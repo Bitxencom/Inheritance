@@ -18,8 +18,10 @@ export const initialFormState: FormState = {
     triggerType: "manual",
     triggerDate: undefined,
   },
+  storageType: "arweave",
   payment: {
     paymentMethod: "wander",
+    selectedChain: undefined,
   },
 };
 
@@ -43,6 +45,11 @@ export const steps: readonly WizardStep[] = [
     key: "review", 
     label: "Review",
     description: "Review all information before submit."
+  },
+  { 
+    key: "storageSelection", 
+    label: "Storage",
+    description: "Choose where to store your vault: Arweave or Bitxen blockchain."
   },
   { 
     key: "payment", 

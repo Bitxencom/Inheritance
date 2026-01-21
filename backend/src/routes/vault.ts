@@ -59,7 +59,7 @@ const vaultSchema = z.object({
     triggerDate: z.string().optional(),
   }),
   payment: z.object({
-    paymentMethod: z.enum(["wander"]),
+    paymentMethod: z.enum(["wander", "metamask"]),
   }),
   enablePqc: z.boolean().optional().default(true),
 });

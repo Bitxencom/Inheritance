@@ -191,7 +191,12 @@ export const fetchVaultPayloadById = async (
     if (fallbackTxId) {
       console.log(`⚠️ Vault ID not found via GraphQL, trying fallback TxId: ${fallbackTxId}`);
       
-      // Check status of fallbackTxId
+      // If fallbackTxId starts with 0x, it's a Smart Chain transaction!
+      if (fallbackTxId.startsWith("0x")) {
+        return fetchVaultFromSmartChain(vaultId, fallbackTxId);
+      }
+
+      // Check status of fallbackTxId (Arweave)
       const status = await checkTxStatus(fallbackTxId);
       
       if (status === 202) {
@@ -203,17 +208,22 @@ export const fetchVaultPayloadById = async (
         txId = fallbackTxId;
       } else {
         // 404 or other error
-        // If GraphQL yielded an error (network issue) AND fallback failed, we should report the network issue as primary cause if possible,
-        // but here we know fallback ID is bad too.
-             throw new Error(
+        throw new Error(
           `Vault ID ${vaultId} not found on blockchain storage (and fallback ID invalid)`,
         );
       }
     } else {
       if (gqlError) {
-         // If we had a network error and no fallback, tell the user it's a specific connection error
          throw new Error("Connection to blockchain failed. Please try again.");
       }
+      
+      // FINAL FALLBACK: If we have no txId but vaultId looks like it could be on Smart Chain
+      // (This will only work if we have a way to scan logs or if vaultId IS the TxHash)
+      // Since we don't have a registry yet, we can only try if vaultId is passed as the Hash
+      if (vaultId.startsWith("0x")) {
+        return fetchVaultFromSmartChain(vaultId, vaultId);
+      }
+
       throw new Error(
         `Vault ID ${vaultId} not found on blockchain storage`,
       );
@@ -262,4 +272,60 @@ export const fetchVaultPayloadById = async (
     "Vault payload structure in blockchain storage is invalid or incomplete.",
   );
 };
+
+/**
+ * Fetch vault data from a Smart Chain (BSC, etc.) using JSON-RPC
+ * This is used as a fallback when data is not on Arweave
+ */
+async function fetchVaultFromSmartChain(
+  vaultId: string, 
+  txHash: string
+): Promise<UploadPayloadInput> {
+  console.log(`🌐 Fetching vault from Smart Chain: ${txHash}`);
+  
+  // List of RPC URLs to try (BSC as default)
+  const rpcs = ["https://bsc-dataseed.binance.org/", "https://binance.llamarpc.com"];
+  
+  for (const rpc of rpcs) {
+    try {
+      const response = await fetch(rpc, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "eth_getTransactionByHash",
+          params: [txHash],
+        }),
+      });
+
+      if (!response.ok) continue;
+
+      const json = await response.json();
+      const tx = json.result;
+
+      if (!tx || !tx.input || tx.input === "0x") continue;
+
+      // Transaction found! Parse UTF-8 from hex input
+      const hex = tx.input.startsWith("0x") ? tx.input.slice(2) : tx.input;
+      const jsonString = Buffer.from(hex, "hex").toString("utf8");
+      
+      const payload = JSON.parse(jsonString);
+
+      // Verify it's what we expect
+      if (payload.vaultId && payload.data) {
+        return {
+          vaultId: payload.vaultId,
+          encryptedData: payload.data,
+          metadata: payload.metadata || {}, // Smart Chain payload might be structured differently
+          latestTxId: txHash,
+        };
+      }
+    } catch (error) {
+      console.warn(`⚠️ Failed to fetch from RPC ${rpc}:`, error);
+    }
+  }
+
+  throw new Error(`Vault ID ${vaultId} not found on Smart Chain storage (Checked hash ${txHash})`);
+}
 

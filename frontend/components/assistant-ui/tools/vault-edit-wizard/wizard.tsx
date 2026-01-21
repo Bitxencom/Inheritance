@@ -38,13 +38,19 @@ import type {
   VaultEditWizardProps,
 } from "./types";
 import { editSteps, initialEditFormState } from "./constants";
-import { PaymentMethodSelector } from "@/components/shared/payment";
+import { StorageSelector, MetaMaskWalletButton, WanderWalletButton } from "@/components/shared/payment";
 import { Stepper } from "@/components/shared/stepper";
 import {
   connectWanderWallet,
   sendArPayment,
   WANDER_PAYMENT_CONFIG,
 } from "@/lib/wanderWallet";
+import {
+  dispatchToBitxen,
+  type ChainId,
+  getChainConfig,
+  DEFAULT_CHAIN,
+} from "@/lib/metamaskWallet";
 
 import { getVaultById, updateVaultTxId } from "@/lib/vault-storage";
 
@@ -88,9 +94,6 @@ export function VaultEditWizard({
       // isInitializing will be set to false after content loads in the other effect
     }
   }, [initialData, open]);
-
-
-
 
   const [stepError, setStepError] = useState<string | null>(null);
   const [isWarning, setIsWarning] = useState(false);
@@ -831,24 +834,43 @@ export function VaultEditWizard({
 
       let txId = data.details?.arweaveTxId;
 
+      let blockchainTxHash: string | undefined;
+      let blockchainChain: string | undefined;
+
       // Check if we need to dispatch from client (New Flow)
       if (data.shouldDispatch && data.details?.arweavePayload) {
         try {
-          // Dynamically import dispatch function (same as in Create Wizard)
-          const { dispatchToArweave } = await import("@/lib/wanderWallet");
+          if (formState.storageType === "bitxen") {
+            setPaymentStatus("Confirm transaction in MetaMask...");
+            const selectedChain = (formState.payment.selectedChain || DEFAULT_CHAIN) as ChainId;
+            const dispatchResult = await dispatchToBitxen(
+              data.details.arweavePayload,
+              data.details.vaultId,
+              selectedChain
+            );
+            txId = dispatchResult.txHash;
+            blockchainTxHash = dispatchResult.txHash;
+            blockchainChain = selectedChain;
+            setPaymentStatus(`Upload successful on ${selectedChain.toUpperCase()}!`);
+          } else {
+            // Default to Arweave/Wander
+            setPaymentStatus("Confirm transaction in Wander Wallet...");
+            const { dispatchToArweave } = await import("@/lib/wanderWallet");
 
-          const dispatchResult = await dispatchToArweave(
-            data.details.arweavePayload,
-            data.details.vaultId
-          );
+            const dispatchResult = await dispatchToArweave(
+              data.details.arweavePayload,
+              data.details.vaultId
+            );
 
-          txId = dispatchResult.txId;
+            txId = dispatchResult.txId;
+            setPaymentStatus("Upload successful!");
+          }
         } catch (dispatchError) {
           console.error("Failed to dispatch edit transaction:", dispatchError);
           throw new Error(
             dispatchError instanceof Error
               ? dispatchError.message
-              : "Failed to sign and upload transaction with Wander Wallet"
+              : "Failed to sign and upload transaction"
           );
         }
       }
@@ -859,7 +881,10 @@ export function VaultEditWizard({
         message:
           data.message ||
           "New version of inheritance successfully created and stored on blockchain storage.",
-        arweaveTxId: txId ?? null,
+        arweaveTxId: formState.storageType === "arweave" ? (txId ?? null) : null,
+        blockchainTxHash,
+        blockchainChain,
+        storageType: formState.storageType,
       };
 
       // Update localStorage with the new transaction ID
@@ -918,6 +943,28 @@ export function VaultEditWizard({
       setPaymentStatus("Payment successful!");
     } catch (error) {
       console.error("Wander Wallet error:", error);
+      setPaymentStatus(
+        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setIsProcessingPayment(false);
+    }
+  };
+
+  const handleMetaMaskPayment = async () => {
+    try {
+      setIsProcessingPayment(true);
+      setPaymentStatus("Connecting to MetaMask...");
+
+      // MetaMask connection happens within dispatchToBitxen if needed,
+      // but we can trigger it here for better UX
+      setPaymentStatus("MetaMask ready");
+
+      await submitEdit();
+
+      setPaymentStatus("Payment successful!");
+    } catch (error) {
+      console.error("MetaMask error:", error);
       setPaymentStatus(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
@@ -1454,17 +1501,48 @@ export function VaultEditWizard({
           </div>
         );
 
-      case "payment":
+      case "storageSelection":
         return (
-          <PaymentMethodSelector
-            selectedMethod={paymentState.paymentMethod}
-            onMethodChange={(method) =>
-              setPaymentState((prev) => ({
+          <StorageSelector
+            selectedStorage={formState.storageType}
+            selectedChain={(formState.payment.selectedChain as ChainId) || DEFAULT_CHAIN}
+            onStorageChange={(storage) => {
+              setFormState((prev) => ({
                 ...prev,
-                paymentMethod: method,
-              }))
-            }
-            onWanderPayment={handleWanderPayment}
+                storageType: storage,
+                payment: {
+                  ...prev.payment,
+                  paymentMethod: storage === "arweave" ? "wander" : "metamask",
+                },
+              }));
+            }}
+            onChainChange={(chain) => {
+              setFormState((prev) => ({
+                ...prev,
+                payment: {
+                  ...prev.payment,
+                  selectedChain: chain,
+                },
+              }));
+            }}
+          />
+        );
+
+      case "payment":
+        // Render different component based on storage type
+        if (formState.storageType === "bitxen") {
+          return (
+            <MetaMaskWalletButton
+              selectedChain={(formState.payment.selectedChain as ChainId) || DEFAULT_CHAIN}
+              onClick={handleMetaMaskPayment}
+              disabled={isSubmitting || isProcessingPayment}
+            />
+          );
+        }
+
+        return (
+          <WanderWalletButton
+            onClick={handleWanderPayment}
             isSubmitting={isSubmitting}
             isProcessingPayment={isProcessingPayment}
             paymentStatus={paymentStatus}
@@ -1508,7 +1586,9 @@ export function VaultEditWizard({
                 <div className="rounded-lg border bg-card p-4 shadow-sm">
                   <div className="flex items-center justify-between mb-2">
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                      Transaction ID (New Version)
+                      {formState.storageType === "bitxen"
+                        ? `Transaction Hash (${(formState.payment.selectedChain || DEFAULT_CHAIN).toUpperCase()})`
+                        : "Transaction ID (Arweave)"}
                     </p>
                     <div className="flex items-center gap-1">
                       <Button
@@ -1524,7 +1604,15 @@ export function VaultEditWizard({
                         variant="ghost"
                         size="icon"
                         className="h-6 w-6 text-xs"
-                        onClick={() => window.open(`https://viewblock.io/arweave/tx/${latestTxId}`, "_blank")}
+                        onClick={() => {
+                          if (formState.storageType === "bitxen") {
+                            const chain = (formState.payment.selectedChain || DEFAULT_CHAIN) as ChainId;
+                            const config = getChainConfig(chain);
+                            window.open(`${config.blockExplorer}/tx/${latestTxId}`, "_blank");
+                          } else {
+                            window.open(`https://viewblock.io/arweave/tx/${latestTxId}`, "_blank");
+                          }
+                        }}
                       >
                         <ExternalLink className="size-3" />
                       </Button>

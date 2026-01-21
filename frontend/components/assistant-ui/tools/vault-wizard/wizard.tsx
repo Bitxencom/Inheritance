@@ -18,8 +18,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { PaymentMethodSelector } from "@/components/shared/payment";
+import { WanderWalletButton, StorageSelector, MetaMaskWalletButton } from "@/components/shared/payment";
 import { Stepper } from "@/components/shared/stepper";
+import type { ChainId } from "@/lib/metamaskWallet";
 import {
   connectWanderWallet,
   sendArPayment,
@@ -107,8 +108,10 @@ export function VaultCreationWizard({
         triggerType: "manual",
         triggerDate,
       },
+      storageType: "arweave",
       payment: {
         paymentMethod: "wander",
+        selectedChain: undefined,
       },
     });
     setCurrentStep(0);
@@ -335,8 +338,6 @@ export function VaultCreationWizard({
   };
 
   const transformPayload = async () => {
-
-
     return {
       willDetails: {
         ...formState.willDetails,
@@ -344,7 +345,6 @@ export function VaultCreationWizard({
       },
       securityQuestions: formState.securityQuestions,
       triggerRelease: formState.triggerRelease,
-      // Backend only accepts paymentMethod
       payment: {
         paymentMethod: formState.payment.paymentMethod,
       },
@@ -439,25 +439,40 @@ export function VaultCreationWizard({
       // Use the appropriate wallet based on selected payment method
       let txId: string;
 
-      if (formState.payment.paymentMethod === "wander") {
+      let blockchainTxHash: string | undefined;
+      let blockchainChain: string | undefined;
+
+      if (formState.storageType === "arweave") {
         setPaymentStatus("Confirm transaction in Wander Wallet...");
         const { dispatchToArweave } = await import("@/lib/wanderWallet");
         const dispatchResult = await dispatchToArweave(arweavePayload, vaultId);
         txId = dispatchResult.txId;
         setPaymentStatus("Upload successful! We're saving your inheritance details...");
+      } else if (formState.storageType === "bitxen") {
+        setPaymentStatus("Confirm transaction in MetaMask...");
+        const { dispatchToBitxen } = await import("@/lib/metamaskWallet");
+        const selectedChain = (formState.payment.selectedChain || "bsc") as ChainId;
+        const dispatchResult = await dispatchToBitxen(arweavePayload, vaultId, selectedChain);
+        txId = dispatchResult.txHash;
+        blockchainTxHash = dispatchResult.txHash;
+        blockchainChain = selectedChain;
+        setPaymentStatus(`Upload successful on ${selectedChain.toUpperCase()}!`);
       } else {
-        throw new Error("Invalid payment method: " + formState.payment.paymentMethod);
+        throw new Error("Invalid storage type: " + formState.storageType);
       }
 
       // 3. Finalize success
       const resultData = {
         vaultId: vaultId,
-        arweaveTxId: txId,
+        arweaveTxId: formState.storageType === "arweave" ? txId : null,
+        blockchainTxHash,
+        blockchainChain,
         message: "Your inheritance has been successfully created and stored on blockchain.",
         fractionKeys: fractionKeyAssignments && fractionKeyAssignments.length > 0
           ? fractionKeyAssignments.map((a: { key: string }) => a.key)
           : (fractionKeys || []),
         willType: payload.willDetails.willType,
+        storageType: formState.storageType,
         createdAt: new Date().toISOString(),
         title: payload.willDetails.title,
         triggerType: payload.triggerRelease.triggerType,
@@ -528,6 +543,30 @@ export function VaultCreationWizard({
       // Status handled by submitToMCP
     } catch (error) {
       console.error("Wander Wallet error:", error);
+      setPaymentStatus(
+        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setIsProcessingPayment(false);
+    }
+  };
+
+  const handleMetaMaskPayment = async () => {
+    try {
+      setIsProcessingPayment(true);
+      setPaymentStatus("Connecting to MetaMask...");
+
+      const { connectMetaMask } = await import("@/lib/metamaskWallet");
+      await connectMetaMask();
+
+      setPaymentStatus("Wallet connected! Processing transaction...");
+
+      // Proceed to submit
+      await handleNext();
+
+      // Status handled by submitToMCP
+    } catch (error) {
+      console.error("MetaMask error:", error);
       setPaymentStatus(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
@@ -871,17 +910,50 @@ export function VaultCreationWizard({
             </ReviewSection> */}
           </div>
         );
-      case "payment":
+      case "storageSelection":
         return (
-          <PaymentMethodSelector
-            selectedMethod={formState.payment.paymentMethod as "wander"}
-            onMethodChange={(method) =>
+          <StorageSelector
+            selectedStorage={formState.storageType}
+            onStorageChange={(storage) => {
               setFormState((prev) => ({
                 ...prev,
-                payment: { ...prev.payment, paymentMethod: method },
-              }))
-            }
-            onWanderPayment={handleWanderPayment}
+                storageType: storage,
+                payment: {
+                  ...prev.payment,
+                  paymentMethod: storage === "arweave" ? "wander" : "metamask",
+                  selectedChain: storage === "bitxen" ? (prev.payment.selectedChain || "bsc") : undefined,
+                },
+              }));
+            }}
+            selectedChain={(formState.payment.selectedChain || "bsc") as ChainId}
+            onChainChange={(chain) => {
+              setFormState((prev) => ({
+                ...prev,
+                payment: { ...prev.payment, selectedChain: chain },
+              }));
+            }}
+          />
+        );
+      case "payment":
+        if (formState.storageType === "bitxen") {
+          return (
+            <div className="space-y-4">
+              <MetaMaskWalletButton
+                onClick={handleMetaMaskPayment}
+                disabled={isSubmitting || isProcessingPayment}
+                selectedChain={(formState.payment.selectedChain || "bsc") as ChainId}
+              />
+              {paymentStatus && (
+                <p className="text-sm text-muted-foreground text-center">
+                  {paymentStatus}
+                </p>
+              )}
+            </div>
+          );
+        }
+        return (
+          <WanderWalletButton
+            onClick={handleWanderPayment}
             isSubmitting={isSubmitting}
             isProcessingPayment={isProcessingPayment}
             paymentStatus={paymentStatus}

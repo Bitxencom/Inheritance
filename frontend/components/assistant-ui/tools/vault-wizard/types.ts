@@ -19,8 +19,10 @@ export type FormState = {
     triggerType: "date" | "manual";
     triggerDate?: string;
   };
+  storageType: "arweave" | "bitxen";
   payment: {
-    paymentMethod: "wander";
+    paymentMethod: "wander" | "metamask";
+    selectedChain?: string; // For Bitxen: bsc, eth, polygon, base, arbitrum
   };
 };
 
@@ -28,9 +30,12 @@ export type FormState = {
 export type SubmissionResult = {
   vaultId: string | null;
   arweaveTxId: string | null;
+  blockchainTxHash?: string | null; // For Bitxen transactions
+  blockchainChain?: string | null; // Which chain was used
   message: string | null;
   fractionKeys: string[];
   willType?: "one-time" | "editable";
+  storageType?: "arweave" | "bitxen";
   createdAt?: string;
   confirmedAt?: string;
   title?: string;
