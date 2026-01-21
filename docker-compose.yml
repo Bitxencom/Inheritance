@@ -2,7 +2,7 @@ services:
   # Nginx reverse proxy - entry point for all requests
   nginx:
     image: nginx:alpine
-    container_name: inheritance-nginx
+    container_name: ${PROJECT_NAME:-inheritance}-nginx
     ports:
       - "${DOCKER_BIND_HOST:-0.0.0.0}:${NGINX_PORT:-7000}:80"
     volumes:
@@ -14,14 +14,14 @@ services:
         condition: service_started
     restart: unless-stopped
     networks:
-      - inheritance
+      - ${PROJECT_NAME:-inheritance}
 
   backend:
     image: ${BACKEND_IMAGE:-inheritance-backend}
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: inheritance-backend
+    container_name: ${PROJECT_NAME:-inheritance}-backend
     environment:
       - NODE_ENV=${APP_ENV:-development}
       - BACKEND_PORT=${BACKEND_PORT:-7002}
@@ -30,7 +30,7 @@ services:
       - "7002"
     restart: unless-stopped
     networks:
-      - inheritance
+      - ${PROJECT_NAME:-inheritance}
 
   frontend:
     image: ${FRONTEND_IMAGE:-inheritance-frontend}
@@ -38,7 +38,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       target: ${APP_ENV:-production}
-    container_name: inheritance-frontend
+    container_name: ${PROJECT_NAME:-inheritance}-frontend
     environment:
       - BACKEND_BASE_URL=${BACKEND_BASE_URL:-http://backend:7002}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
@@ -54,7 +54,7 @@ services:
       - backend
     restart: unless-stopped
     networks:
-      - inheritance
+      - ${PROJECT_NAME:-inheritance}
 
 networks:
-  inheritance:
+  ${PROJECT_NAME:-inheritance}:
