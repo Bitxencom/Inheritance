@@ -13,6 +13,7 @@ import {
   getArweaveExplorerUrl,
   type PendingVaultStatus,
 } from "@/lib/vault-storage";
+import { getChainConfig, type ChainId } from "@/lib/metamaskWallet";
 
 type HealthStatus = {
   backend: {
@@ -118,20 +119,10 @@ export const VaultCreationWizardTool: ToolCallMessagePartComponent<{
         setSubmissionResult(result.data);
         setIsOpen(false);
 
-        // Save to localStorage
-        if (result.data.vaultId && result.data.arweaveTxId) {
-          savePendingVault({
-            vaultId: result.data.vaultId,
-            arweaveTxId: result.data.arweaveTxId,
-            title: result.data.title || "Inheritance",
-            willType: result.data.willType || "editable",
-            fractionKeys: result.data.fractionKeys || [],
-            triggerType: result.data.triggerType,
-            triggerDate: result.data.triggerDate,
-          });
+        // Save to localStorage is already handled in wizard.tsx before calling onResult
+        // Do NOT call savePendingVault here again as it might overwrite with incomplete data
 
-          // No auto-redirect - user can navigate via button when ready
-        }
+        // No auto-redirect - user can navigate via button when ready
       }
     },
     [],
@@ -289,12 +280,6 @@ Save this ID safely. You will need it to find and manage your inheritance later.
                   <p className="text-xs text-muted-foreground">
                     Submission successful. {arweaveStatus !== "confirmed" && "Blockchain confirmation usually takes about 20 minutes."}
                   </p>
-                  {/* Confirmed Timestamp */}
-                  {arweaveStatus === "confirmed" && submissionResult.confirmedAt && (
-                    <p className="text-[10px] text-muted-foreground">
-                      Confirmed at: {new Date(submissionResult.confirmedAt).toLocaleTimeString()}
-                    </p>
-                  )}
                 </div>
 
               </div>
@@ -319,13 +304,22 @@ Save this ID safely. You will need it to find and manage your inheritance later.
         </div>
 
         {/* Created & Confirmed Info */}
-        {/* Created & Confirmed Info */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="rounded-lg border bg-muted/5 p-3">
             <p className="text-sm text-muted-foreground mb-1">Created</p>
             <p className="text-sm font-medium">
               {submissionResult.createdAt
-                ? new Date(submissionResult.createdAt).toLocaleString()
+                ? new Intl.DateTimeFormat("en-GB", {
+                  day: "numeric",
+                  month: "short",
+                  year: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  hour12: true,
+                })
+                  .format(new Date(submissionResult.createdAt))
+                  .replace(":", ".")
+                  .replace(/\s?(am|pm)/i, (m) => ` ${m.trim().toUpperCase()}`)
                 : "-"}
             </p>
           </div>
@@ -333,7 +327,17 @@ Save this ID safely. You will need it to find and manage your inheritance later.
             <p className="text-sm text-muted-foreground mb-1">Confirmed</p>
             <p className="text-sm font-medium">
               {submissionResult.confirmedAt
-                ? new Date(submissionResult.confirmedAt).toLocaleString()
+                ? new Intl.DateTimeFormat("en-GB", {
+                  day: "numeric",
+                  month: "short",
+                  year: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  hour12: true,
+                })
+                  .format(new Date(submissionResult.confirmedAt))
+                  .replace(":", ".")
+                  .replace(/\s?(am|pm)/i, (m) => ` ${m.trim().toUpperCase()}`)
                 : "Pending"}
             </p>
           </div>
@@ -448,11 +452,40 @@ Save this ID safely. You will need it to find and manage your inheritance later.
             </div>
           )}
 
-          {/* Transaction ID Link */}
+          {/* Transaction IDs */}
+
+          {/* Bitxen Contract Transaction (Hybrid Mode) */}
+          {submissionResult.storageType === 'bitxenArweave' && submissionResult.blockchainTxHash && (
+            <div className="col-span-1 sm:col-span-2 rounded-lg border bg-muted/5 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <p className="text-sm text-muted-foreground mb-1">
+                  Smart Chain Transaction ({submissionResult.blockchainChain?.toUpperCase() || 'CHAIN'})
+                </p>
+                <p className="text-sm font-bold font-mono truncate max-w-[200px] sm:max-w-xs">
+                  {submissionResult.blockchainTxHash}
+                </p>
+              </div>
+              <a
+                href={submissionResult.blockchainChain ? `${getChainConfig(submissionResult.blockchainChain as ChainId).blockExplorer}/tx/${submissionResult.blockchainTxHash}` : '#'}
+                target="_blank"
+                rel="noreferrer"
+                className="text-sm flex items-center gap-1.5 text-primary hover:underline hover:text-primary/80 font-medium whitespace-nowrap"
+              >
+                View on Explorer
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            </div>
+          )}
+
+          {/* Arweave Transaction */}
           {submissionResult.arweaveTxId && (
             <div className="col-span-1 sm:col-span-2 rounded-lg border bg-muted/5 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
-                <p className="text-sm text-muted-foreground mb-1">Blockchain Storage Transaction</p>
+                <p className="text-sm text-muted-foreground mb-1">
+                  {submissionResult.storageType === 'bitxenArweave'
+                    ? 'Storage Transaction (Arweave)'
+                    : 'Blockchain Storage Transaction'}
+                </p>
                 <p className="text-sm font-bold font-mono truncate max-w-[200px] sm:max-w-xs">
                   {submissionResult.arweaveTxId}
                 </p>

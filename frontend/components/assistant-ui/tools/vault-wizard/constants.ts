@@ -47,14 +47,9 @@ export const steps: readonly WizardStep[] = [
     description: "Review all information before submit."
   },
   { 
-    key: "storageSelection", 
-    label: "Storage",
-    description: "Choose where to store your vault: Arweave or Bitxen blockchain."
-  },
-  { 
     key: "payment", 
-    label: "Payment",
-    description: "Complete payment to store vault permanently on blockchain storage."
+    label: "Storage Type",
+    description: "Choose your storage type to secure your vault on blockchain."
   },
 ] as const;
 

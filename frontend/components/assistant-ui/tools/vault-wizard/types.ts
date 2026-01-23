@@ -19,13 +19,12 @@ export type FormState = {
     triggerType: "date" | "manual";
     triggerDate?: string;
   };
-  storageType: "arweave" | "bitxen";
+  storageType: "arweave" | "bitxenArweave";
   payment: {
     paymentMethod: "wander" | "metamask";
     selectedChain?: string; // For Bitxen: bsc, eth, poly, base, arbitrum
   };
 };
-
 
 export type SubmissionResult = {
   vaultId: string | null;
@@ -35,7 +34,7 @@ export type SubmissionResult = {
   message: string | null;
   fractionKeys: string[];
   willType?: "one-time" | "editable";
-  storageType?: "arweave" | "bitxen";
+  storageType?: "arweave" | "bitxenArweave";
   createdAt?: string;
   confirmedAt?: string;
   title?: string;
@@ -60,4 +59,3 @@ export type WizardStep = {
   label: string;
   description?: string;
 };
-

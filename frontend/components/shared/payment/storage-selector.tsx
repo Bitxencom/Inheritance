@@ -8,7 +8,7 @@ import {
   type ChainId,
 } from "@/lib/metamaskWallet";
 
-export type StorageType = "arweave" | "bitxen";
+export type StorageType = "arweave" | "bitxenArweave";
 
 interface StorageSelectorProps {
   selectedStorage: StorageType;
@@ -30,14 +30,14 @@ const storageOptions = [
     borderColor: "border-purple-500",
   },
   {
-    id: "bitxen" as const,
+    id: "bitxenArweave" as const,
     name: "Bitxen",
     badge: "BETA",
-    description: "Multi-chain blockchain storage",
-    details: "Store on BSC, Ethereum, Polygon, Base, or Arbitrum networks.",
-    icon: Hexagon,
-    fee: "Gas fee varies",
-    color: "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300",
+    description: "Arweave storage + Smart Contract registry",
+    details: "Permanent Arweave storage with Bitxen contract tracking on BSC/ETH/Polygon.",
+    icon: Link2,
+    fee: "BITXEN + AR",
+    color: "bg-gradient-to-r from-purple-100 to-orange-100 dark:from-purple-900/30 dark:to-orange-900/30 text-purple-700 dark:text-purple-300",
     borderColor: "border-orange-500",
   },
 ];

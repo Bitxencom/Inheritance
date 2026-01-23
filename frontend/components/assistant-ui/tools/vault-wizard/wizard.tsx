@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { AlertMessage } from "@/components/ui/alert-message";
 import { FieldError } from "@/components/ui/field-error";
 import { ReviewSection, ReviewItem } from "@/components/ui/review-display";
+import { savePendingVault } from "@/lib/vault-storage";
 import { cn } from "@/lib/utils";
 
 import {
@@ -18,14 +19,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { WanderWalletButton, StorageSelector, MetaMaskWalletButton } from "@/components/shared/payment";
+import { UnifiedPaymentSelector, type PaymentMode } from "@/components/shared/payment";
 import { Stepper } from "@/components/shared/stepper";
 import type { ChainId } from "@/lib/metamaskWallet";
-import {
-  connectWanderWallet,
-  sendArPayment,
-  WANDER_PAYMENT_CONFIG,
-} from "@/lib/wanderWallet";
 
 
 import type {
@@ -406,9 +402,13 @@ export function VaultCreationWizard({
     return [];
   };
 
-  const submitToMCP = async () => {
+  const submitToMCP = async (overrides?: { storageType?: "arweave" | "bitxenArweave"; selectedChain?: ChainId }) => {
     setIsSubmitting(true);
     setStepError(null);
+
+    // Use overrides if provided, otherwise fall back to formState
+    const effectiveStorageType = overrides?.storageType ?? formState.storageType;
+    const effectiveChain = overrides?.selectedChain ?? (formState.payment.selectedChain as ChainId | undefined);
 
     // Initial status
     setPaymentStatus("Preparing inheritance...");
@@ -442,29 +442,36 @@ export function VaultCreationWizard({
       let blockchainTxHash: string | undefined;
       let blockchainChain: string | undefined;
 
-      if (formState.storageType === "arweave") {
+      if (effectiveStorageType === "arweave") {
         setPaymentStatus("Confirm transaction in Wander Wallet...");
         const { dispatchToArweave } = await import("@/lib/wanderWallet");
         const dispatchResult = await dispatchToArweave(arweavePayload, vaultId);
         txId = dispatchResult.txId;
         setPaymentStatus("Upload successful! We're saving your inheritance details...");
-      } else if (formState.storageType === "bitxen") {
-        setPaymentStatus("Confirm transaction in MetaMask...");
-        const { dispatchToBitxen } = await import("@/lib/metamaskWallet");
-        const selectedChain = (formState.payment.selectedChain || "bsc") as ChainId;
-        const dispatchResult = await dispatchToBitxen(arweavePayload, vaultId, selectedChain);
-        txId = dispatchResult.txHash;
-        blockchainTxHash = dispatchResult.txHash;
+      } else if (effectiveStorageType === "bitxenArweave") {
+        // Hybrid: Arweave storage + Bitxen contract registry
+        // We use the "bitxenArweave" storage type name but "hybrid" implementation under the hood
+        setPaymentStatus("Step 1/2: Confirm Arweave upload in Wander...");
+        const { dispatchHybrid } = await import("@/lib/metamaskWallet");
+        const selectedChain = (effectiveChain || "bsc") as ChainId;
+        const hybridResult = await dispatchHybrid(arweavePayload, vaultId, selectedChain, false, (status) => {
+          setPaymentStatus(status);
+        });
+
+        // Use contract tx hash for display
+        txId = hybridResult.arweaveTxId;
+        blockchainTxHash = hybridResult.contractTxHash;
         blockchainChain = selectedChain;
-        setPaymentStatus(`Upload successful on ${selectedChain.toUpperCase()}!`);
+        setPaymentStatus(`Hybrid storage complete! Arweave + ${selectedChain.toUpperCase()}`);
       } else {
-        throw new Error("Invalid storage type: " + formState.storageType);
+        throw new Error("Invalid storage type: " + effectiveStorageType);
       }
 
       // 3. Finalize success
       const resultData = {
         vaultId: vaultId,
-        arweaveTxId: formState.storageType === "arweave" ? txId : null,
+        // Ensure arweaveTxId is captured for both arweave and hybrid modes using the common txId variable
+        arweaveTxId: txId,
         blockchainTxHash,
         blockchainChain,
         message: "Your inheritance has been successfully created and stored on blockchain.",
@@ -472,7 +479,7 @@ export function VaultCreationWizard({
           ? fractionKeyAssignments.map((a: { key: string }) => a.key)
           : (fractionKeys || []),
         willType: payload.willDetails.willType,
-        storageType: formState.storageType,
+        storageType: effectiveStorageType,
         createdAt: new Date().toISOString(),
         title: payload.willDetails.title,
         triggerType: payload.triggerRelease.triggerType,
@@ -480,6 +487,26 @@ export function VaultCreationWizard({
       };
 
       console.log("✅ Inheritance created successfully:", resultData);
+
+      // Save to local storage for persistence
+      try {
+
+
+        savePendingVault({
+          vaultId: resultData.vaultId,
+          arweaveTxId: resultData.arweaveTxId || "",
+          title: resultData.title,
+          willType: resultData.willType as "one-time" | "editable",
+          fractionKeys: resultData.fractionKeys,
+          triggerType: resultData.triggerType as "date" | "manual" | undefined,
+          triggerDate: resultData.triggerDate,
+          storageType: resultData.storageType as "arweave" | "bitxenArweave",
+          blockchainTxHash: resultData.blockchainTxHash,
+          blockchainChain: resultData.blockchainChain
+        });
+      } catch (e) {
+        console.error("Failed to save vault to local storage:", e);
+      }
 
       onResult?.({
         status: "success",
@@ -528,45 +555,38 @@ export function VaultCreationWizard({
     setCurrentStep((prev) => Math.min(prev + 1, steps.length - 1));
   };
 
-  const handleWanderPayment = async () => {
+  const handleUnifiedPayment = async (mode: PaymentMode, chainId?: ChainId) => {
     try {
       setIsProcessingPayment(true);
-      setPaymentStatus("Connecting to your Wander Wallet...");
 
-      await connectWanderWallet();
+      // Calculate effective values immediately (don't rely on async state update)
+      const effectiveStorageType = mode === "wander" ? "arweave" : "bitxenArweave";
+      const effectiveChain = chainId;
 
-      setPaymentStatus("Wallet connected successfully! We're creating your inheritance now...");
+      // Also update form state for UI consistency (but don't depend on it for submit)
+      setFormState((prev) => ({
+        ...prev,
+        storageType: effectiveStorageType,
+        payment: {
+          paymentMethod: mode === "wander" ? "wander" : "metamask",
+          selectedChain: chainId,
+        },
+      }));
 
-      // No separate payment - fee inheritance be handled during blockchain upload
-      await handleNext();
+      if (mode === "wander") {
+        setPaymentStatus("Preparing your vault...");
+      } else {
+        setPaymentStatus("Step 1/2: Uploading to Arweave...");
+      }
 
-      // Status handled by submitToMCP
+      // Pass overrides directly to submitToMCP to avoid async state issues
+      await submitToMCP({
+        storageType: effectiveStorageType,
+        selectedChain: effectiveChain,
+      });
+
     } catch (error) {
-      console.error("Wander Wallet error:", error);
-      setPaymentStatus(
-        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
-    } finally {
-      setIsProcessingPayment(false);
-    }
-  };
-
-  const handleMetaMaskPayment = async () => {
-    try {
-      setIsProcessingPayment(true);
-      setPaymentStatus("Connecting to MetaMask...");
-
-      const { connectMetaMask } = await import("@/lib/metamaskWallet");
-      await connectMetaMask();
-
-      setPaymentStatus("Wallet connected! Processing transaction...");
-
-      // Proceed to submit
-      await handleNext();
-
-      // Status handled by submitToMCP
-    } catch (error) {
-      console.error("MetaMask error:", error);
+      console.error("Payment error:", error);
       setPaymentStatus(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
@@ -910,58 +930,11 @@ export function VaultCreationWizard({
             </ReviewSection> */}
           </div>
         );
-      case "storageSelection":
-        return (
-          <StorageSelector
-            selectedStorage={formState.storageType}
-            onStorageChange={(storage) => {
-              setFormState((prev) => ({
-                ...prev,
-                storageType: storage,
-                payment: {
-                  ...prev.payment,
-                  paymentMethod: storage === "arweave" ? "wander" : "metamask",
-                  selectedChain: storage === "bitxen" ? (prev.payment.selectedChain || "bsc") : undefined,
-                },
-              }));
-            }}
-            selectedChain={(formState.payment.selectedChain || "bsc") as ChainId}
-            onChainChange={(chain) => {
-              setFormState((prev) => ({
-                ...prev,
-                payment: { ...prev.payment, selectedChain: chain },
-              }));
-            }}
-          />
-        );
       case "payment":
-        if (formState.storageType === "bitxen") {
-          return (
-            <div className="space-y-4">
-              <MetaMaskWalletButton
-                onClick={handleMetaMaskPayment}
-                disabled={isSubmitting || isProcessingPayment}
-                selectedChain={(formState.payment.selectedChain || "bsc") as ChainId}
-                onChainChange={(chain) =>
-                  setFormState((prev) => ({
-                    ...prev,
-                    payment: { ...prev.payment, selectedChain: chain },
-                  }))
-                }
-              />
-              {paymentStatus && (
-                <p className="text-sm text-muted-foreground text-center">
-                  {paymentStatus}
-                </p>
-              )}
-            </div>
-          );
-        }
         return (
-          <WanderWalletButton
-            onClick={handleWanderPayment}
-            isSubmitting={isSubmitting}
-            isProcessingPayment={isProcessingPayment}
+          <UnifiedPaymentSelector
+            onSubmit={handleUnifiedPayment}
+            isSubmitting={isSubmitting || isProcessingPayment}
             paymentStatus={paymentStatus}
           />
         );

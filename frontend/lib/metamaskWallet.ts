@@ -10,6 +10,21 @@
 
 // Chain configurations with Bitxen contract addresses
 export const CHAIN_CONFIG = {
+  // BSC Testnet - for development testing
+  // Get free tBNB from: https://www.bnbchain.org/en/testnet-faucet
+  // Contract verified: BITXEN token with custom registration functions
+  bscTestnet: {
+    chainId: 97,
+    chainIdHex: "0x61",
+    name: "BNB Smart Chain Testnet",
+    shortName: "BSC Testnet",
+    nativeCurrency: { name: "tBNB", symbol: "tBNB", decimals: 18 },
+    rpcUrl: "https://data-seed-prebsc-1-s1.binance.org:8545/",
+    blockExplorer: "https://testnet.bscscan.com",
+    contractAddress: "0xE9a33420eF860bAE14e41a47f37e2D632D4A7bE7",
+    logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/smartchain/info/logo.png",
+    isTestnet: true,
+  },
   bsc: {
     chainId: 56,
     chainIdHex: "0x38",
@@ -18,8 +33,9 @@ export const CHAIN_CONFIG = {
     nativeCurrency: { name: "BNB", symbol: "BNB", decimals: 18 },
     rpcUrl: "https://bsc-dataseed.binance.org/",
     blockExplorer: "https://bscscan.com",
-    contractAddress: "0x1f3310a9dE5e554CdE6717648E25888EF35B3254",
+    contractAddress: "0x42936dAEC40CAC532b032eE8119c3f86548c19B4",
     logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/smartchain/info/logo.png",
+    isTestnet: false,
   },
   eth: {
     chainId: 1,
@@ -31,6 +47,7 @@ export const CHAIN_CONFIG = {
     blockExplorer: "https://etherscan.io",
     contractAddress: "0xa5e79731386f70ac4165cd9beb63a4876097ad8a",
     logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/info/logo.png",
+    isTestnet: false,
   },
   polygon: {
     chainId: 137,
@@ -42,6 +59,7 @@ export const CHAIN_CONFIG = {
     blockExplorer: "https://polygonscan.com",
     contractAddress: "0x8c7D96de6a5E7734E9E300e0F4D6C02e348ddf31",
     logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/polygon/info/logo.png",
+    isTestnet: false,
   },
   base: {
     chainId: 8453,
@@ -53,6 +71,7 @@ export const CHAIN_CONFIG = {
     blockExplorer: "https://basescan.org",
     contractAddress: "0xE6311C46841d6953D3EBc035CDdCC2f10C9d821c",
     logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/base/info/logo.png",
+    isTestnet: false,
   },
   arbitrum: {
     chainId: 42161,
@@ -64,6 +83,7 @@ export const CHAIN_CONFIG = {
     blockExplorer: "https://arbiscan.io",
     contractAddress: "0xE6311C46841d6953D3EBc035CDdCC2f10C9d821c",
     logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/arbitrum/info/logo.png",
+    isTestnet: false,
   },
 } as const;
 
@@ -87,7 +107,10 @@ export function getChainConfig(chainId: ChainId) {
  */
 export function isMetaMaskInstalled(): boolean {
   if (typeof window === "undefined") return false;
-  return typeof window.ethereum !== "undefined" && window.ethereum.isMetaMask === true;
+  return (
+    typeof window.ethereum !== "undefined" &&
+    window.ethereum.isMetaMask === true
+  );
 }
 
 /**
@@ -96,14 +119,20 @@ export function isMetaMaskInstalled(): boolean {
  */
 export async function connectMetaMask(): Promise<string> {
   if (!isMetaMaskInstalled() || !window.ethereum) {
-    throw new Error("MetaMask is not installed. Please install MetaMask to continue.");
+    throw new Error(
+      "MetaMask is not installed. Please install MetaMask to continue.",
+    );
   }
 
   try {
-    const accounts = await window.ethereum.request({ method: "eth_requestAccounts" }) as string[];
-    
+    const accounts = (await window.ethereum.request({
+      method: "eth_requestAccounts",
+    })) as string[];
+
     if (!accounts || accounts.length === 0) {
-      throw new Error("No accounts found. Please connect your MetaMask wallet.");
+      throw new Error(
+        "No accounts found. Please connect your MetaMask wallet.",
+      );
     }
 
     return accounts[0];
@@ -112,7 +141,7 @@ export async function connectMetaMask(): Promise<string> {
       throw new Error("Connection request was rejected. Please try again.");
     }
     throw new Error(
-      `Failed to connect MetaMask: ${error instanceof Error ? error.message : "Unknown error"}`
+      `Failed to connect MetaMask: ${error instanceof Error ? error.message : "Unknown error"}`,
     );
   }
 }
@@ -124,7 +153,9 @@ export async function getConnectedAddress(): Promise<string | null> {
   if (!isMetaMaskInstalled() || !window.ethereum) return null;
 
   try {
-    const accounts = await window.ethereum.request({ method: "eth_accounts" }) as string[];
+    const accounts = (await window.ethereum.request({
+      method: "eth_accounts",
+    })) as string[];
     return accounts[0] || null;
   } catch {
     return null;
@@ -179,14 +210,14 @@ export async function switchToChain(chainId: ChainId): Promise<void> {
         });
       } catch (addError) {
         throw new Error(
-          `Failed to add ${config.name} network: ${addError instanceof Error ? addError.message : "Unknown error"}`
+          `Failed to add ${config.name} network: ${addError instanceof Error ? addError.message : "Unknown error"}`,
         );
       }
     } else if ((error as { code?: number }).code === 4001) {
       throw new Error("Network switch was rejected. Please try again.");
     } else {
       throw new Error(
-        `Failed to switch to ${config.name}: ${error instanceof Error ? error.message : "Unknown error"}`
+        `Failed to switch to ${config.name}: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     }
   }
@@ -203,17 +234,21 @@ export interface DispatchResult {
 }
 
 /**
+ * Hybrid dispatch result (Arweave storage + Bitxen contract registry)
+ */
+export interface HybridDispatchResult {
+  arweaveTxId: string; // Arweave transaction ID where data is stored
+  contractTxHash: string; // Bitxen contract transaction hash
+  contractDataId: string; // Data ID from contract (hash)
+  chainId: ChainId;
+  blockExplorerUrl: string;
+  arweaveUrl: string; // Direct link to Arweave data
+}
+
+/**
  * Bitxen Contract ABI (partial - only functions we need)
  */
 const BITXEN_ABI = {
-  // ERC20 approve function
-  approve: {
-    name: "approve",
-    inputs: [
-      { name: "spender", type: "address" },
-      { name: "value", type: "uint256" },
-    ],
-  },
   // Registration fee getter
   registrationFee: {
     name: "registrationFee",
@@ -244,22 +279,9 @@ const BITXEN_ABI = {
 };
 
 /**
- * Encode function call for ERC20 approve
- */
-function encodeApprove(spender: string, amount: bigint): string {
-  // Function selector: keccak256("approve(address,uint256)")[0:4]
-  const selector = "095ea7b3";
-  // Pad address to 32 bytes (remove 0x prefix, pad left)
-  const paddedSpender = spender.slice(2).toLowerCase().padStart(64, "0");
-  // Convert amount to hex, pad to 32 bytes
-  const paddedAmount = amount.toString(16).padStart(64, "0");
-  return "0x" + selector + paddedSpender + paddedAmount;
-}
-
-/**
  * Encode function call for registerData
  */
-function encodeRegisterData(
+export function encodeRegisterData(
   dataHash: string,
   storageURI: string,
   provider: number,
@@ -268,58 +290,16 @@ function encodeRegisterData(
   fileName: string,
   isPermanent: boolean,
   releaseDate: bigint,
-  encryptedKey: string
+  encryptedKey: string,
 ): string {
   // Function selector: keccak256("registerData((bytes32,string,uint8,uint256,string,string,bool,uint256,string))")[0:4]
-  // Pre-computed: 0x5a66b38d (you may need to verify this)
-  const selector = "5a66b38d";
-
-  // Helper to encode string
-  const encodeString = (str: string): string => {
-    const bytes = new TextEncoder().encode(str);
-    const length = bytes.length.toString(16).padStart(64, "0");
-    const paddedBytes = Array.from(bytes)
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("")
-      .padEnd(Math.ceil(bytes.length / 32) * 64, "0");
-    return length + paddedBytes;
-  };
-
-  // Build dynamic data offsets
-  // The struct has 9 fields, but 5 are dynamic (strings)
-  // Static data size: 32*4 + 1 (bool as 32) = 160 bytes per static field
-  // Dynamic fields need offsets
-
-  // This is complex ABI encoding - let's use a simpler approach
-  // We'll encode as raw hex with proper padding
-
-  // dataHash (bytes32 - 32 bytes)
-  const encodedDataHash = dataHash.startsWith("0x")
-    ? dataHash.slice(2).padStart(64, "0")
-    : dataHash.padStart(64, "0");
-
-  // For simplicity, we'll encode the tuple as individual params
-  // Since the contract expects a struct, we need proper tuple encoding
-
-  // Tuple offset (starts at 32 bytes = 0x20)
-  const tupleOffset = "0000000000000000000000000000000000000000000000000000000000000020";
-
-  // Static fields in order: dataHash, provider, fileSize, isPermanent, releaseDate
-  // Dynamic fields: storageURI, contentType, fileName, encryptedKey
-
-  // Encode static parts
-  const encodedProvider = provider.toString(16).padStart(64, "0");
-  const encodedFileSize = fileSize.toString(16).padStart(64, "0");
-  const encodedIsPermanent = (isPermanent ? 1 : 0).toString(16).padStart(64, "0");
-  const encodedReleaseDate = releaseDate.toString(16).padStart(64, "0");
-
-  // Calculate offsets for dynamic data
-  // Position after all static fields (9 * 32 = 288 bytes = 0x120)
-  const dynamicStart = 9 * 32;
-  let currentOffset = dynamicStart;
+  // Correct Selector for V2 Contract: 0x822d01b4
+  const selector = "822d01b4";
 
   // Helper for string encoding with length prefix
-  const encodeStringToBytes = (str: string): { offset: string; data: string } => {
+  const encodeStringToBytes = (
+    str: string,
+  ): { offset: string; data: string } => {
     const bytes = new TextEncoder().encode(str);
     const length = bytes.length;
     const lengthHex = length.toString(16).padStart(64, "0");
@@ -327,9 +307,35 @@ function encodeRegisterData(
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
     // Pad to 32-byte boundary
+    // 32 bytes = 64 hex chars
     const paddedData = dataHex.padEnd(Math.ceil(length / 32) * 64, "0");
     return { offset: "", data: lengthHex + paddedData };
   };
+
+  // dataHash (bytes32 - 32 bytes)
+  const encodedDataHash = dataHash.startsWith("0x")
+    ? dataHash.slice(2).padStart(64, "0")
+    : dataHash.padStart(64, "0");
+
+  // Tuple offset (starts at 32 bytes = 0x20)
+  const tupleOffset =
+    "0000000000000000000000000000000000000000000000000000000000000020";
+
+  // Static fields in order: dataHash, provider, fileSize, isPermanent, releaseDate
+  // Dynamic fields: storageURI, contentType, fileName, encryptedKey
+
+  // Encode static parts
+  const encodedProvider = provider.toString(16).padStart(64, "0");
+  const encodedFileSize = fileSize.toString(16).padStart(64, "0");
+  const encodedIsPermanent = (isPermanent ? 1 : 0)
+    .toString(16)
+    .padStart(64, "0");
+  const encodedReleaseDate = releaseDate.toString(16).padStart(64, "0");
+
+  // Calculate offsets for dynamic data
+  // Position after all static fields (9 * 32 = 288 bytes = 0x120)
+  const dynamicStart = 9 * 32;
+  let currentOffset = dynamicStart;
 
   // Encode all strings
   const storageURIData = encodeStringToBytes(storageURI);
@@ -339,11 +345,14 @@ function encodeRegisterData(
 
   // Calculate actual offsets
   const storageURIOffset = currentOffset;
-  currentOffset += 32 + Math.ceil(new TextEncoder().encode(storageURI).length / 32) * 32;
+  currentOffset +=
+    32 + Math.ceil(new TextEncoder().encode(storageURI).length / 32) * 32;
   const contentTypeOffset = currentOffset;
-  currentOffset += 32 + Math.ceil(new TextEncoder().encode(contentType).length / 32) * 32;
+  currentOffset +=
+    32 + Math.ceil(new TextEncoder().encode(contentType).length / 32) * 32;
   const fileNameOffset = currentOffset;
-  currentOffset += 32 + Math.ceil(new TextEncoder().encode(fileName).length / 32) * 32;
+  currentOffset +=
+    32 + Math.ceil(new TextEncoder().encode(fileName).length / 32) * 32;
   const encryptedKeyOffset = currentOffset;
 
   // Build the full encoded data
@@ -385,7 +394,7 @@ async function hashData(data: string): Promise<string> {
  */
 export async function getRegistrationFee(
   chainId: ChainId = DEFAULT_CHAIN,
-  isPermanent: boolean = false
+  isPermanent: boolean = false,
 ): Promise<bigint> {
   if (!window.ethereum) {
     throw new Error("MetaMask not installed");
@@ -407,6 +416,13 @@ export async function getRegistrationFee(
         "latest",
       ],
     })) as string;
+
+    // Handle empty or invalid result
+    if (!result || result === "0x" || result.length < 3) {
+      console.warn("Empty result from registrationFee, using fallback");
+      const fallbackFee = BigInt("1000000000000000000"); // 1 token
+      return isPermanent ? fallbackFee * BigInt(10) : fallbackFee;
+    }
 
     const baseFee = BigInt(result);
     // Permanent storage costs 10x
@@ -443,14 +459,53 @@ export function formatBitxenAmount(amount: bigint): string {
  * @param chainId - Which chain to use (default: bsc)
  * @param isPermanent - Whether storage is permanent (costs 10x more)
  */
-export async function dispatchToBitxen(
-  data: unknown,
+
+/**
+ * Dispatch data using hybrid storage: Arweave for content + Bitxen contract for registry
+ *
+ * Flow:
+ * 1. Upload encrypted vault to Arweave (via Wander wallet)
+ * 2. Register metadata in Bitxen contract (via MetaMask) with ar:// URI
+ *
+ * @param arweavePayload - The payload to store on Arweave
+ * @param vaultId - Unique vault identifier
+ * @param chainId - Which EVM chain to use for contract (default: bsc)
+ * @param isPermanent - Whether storage is permanent (costs more in contract)
+ */
+export async function dispatchHybrid(
+  arweavePayload: unknown,
   vaultId: string,
   chainId: ChainId = DEFAULT_CHAIN,
-  isPermanent: boolean = false
-): Promise<DispatchResult> {
+  isPermanent: boolean = false,
+  onProgress?: (status: string) => void,
+): Promise<HybridDispatchResult> {
+  // Step 1: Upload to Arweave via Wander Wallet
+  console.log("📤 Step 1/2: Uploading to Arweave...");
+
+  const {
+    dispatchToArweave,
+    isWalletReady: isWanderReady,
+    connectWanderWallet,
+  } = await import("@/lib/wanderWallet");
+
+  if (!(await isWanderReady())) {
+    console.log("Wander Wallet not connected, initiating connection...");
+    await connectWanderWallet();
+  }
+
+  const arweaveResult = await dispatchToArweave(arweavePayload, vaultId);
+  const arweaveTxId = arweaveResult.txId;
+
+  console.log(`✅ Arweave upload complete: ${arweaveTxId}`);
+
+  // Step 2: Register in Bitxen Contract via MetaMask
+  console.log("📝 Step 2/2: Registering in Bitxen contract...");
+  if (onProgress) onProgress("Step 2/2: Confirm in MetaMask (Registering)...");
+
   if (!isMetaMaskInstalled() || !window.ethereum) {
-    throw new Error("MetaMask is not installed. Please install MetaMask to continue.");
+    throw new Error(
+      "MetaMask is not installed. Please install MetaMask to continue.",
+    );
   }
 
   const config = CHAIN_CONFIG[chainId];
@@ -462,59 +517,39 @@ export async function dispatchToBitxen(
   }
 
   // Get connected account
-  const accounts = (await window.ethereum.request({ method: "eth_accounts" })) as string[];
+  const accounts = (await window.ethereum.request({
+    method: "eth_accounts",
+  })) as string[];
   if (!accounts || accounts.length === 0) {
-    throw new Error("No wallet connected. Please connect MetaMask first.");
+    throw new Error(
+      "No MetaMask wallet connected. Please connect MetaMask first.",
+    );
   }
   const fromAddress = accounts[0];
 
   try {
-    // Prepare data
-    const payload = JSON.stringify({
-      vaultId,
-      data, // Encrypted vault data
-      timestamp: Date.now(),
-    });
-
-    const dataHash = await hashData(payload);
-    const fileSize = BigInt(new TextEncoder().encode(payload).length);
+    // Prepare data hash
+    const payloadString = JSON.stringify(arweavePayload);
+    const dataHash = await hashData(payloadString);
+    const fileSize = BigInt(new TextEncoder().encode(payloadString).length);
 
     // Get the required fee
     const fee = await getRegistrationFee(chainId, isPermanent);
     console.log(`📝 Registration fee: ${formatBitxenAmount(fee)}`);
 
-    // Step 1: Approve token spending
-    console.log("🔐 Step 1/2: Requesting token approval...");
-    const approveData = encodeApprove(config.contractAddress, fee);
-
-    const approveTxHash = (await window.ethereum.request({
-      method: "eth_sendTransaction",
-      params: [
-        {
-          from: fromAddress,
-          to: config.contractAddress, // BITXEN token is the same as the contract
-          data: approveData,
-        },
-      ],
-    })) as string;
-
-    console.log(`✅ Approval tx sent: ${approveTxHash}`);
-    await waitForTransaction(approveTxHash);
-    console.log(`✅ Approval confirmed`);
-
-    // Step 2: Register data
-    console.log("📦 Step 2/2: Registering data on blockchain...");
+    // Register with ar:// URI pointing to Arweave
+    const storageURI = `ar://${arweaveTxId}`;
 
     const registerData = encodeRegisterData(
       dataHash,
-      `bitxen://${vaultId}`, // Storage URI (using our own protocol)
-      2, // CUSTOM provider
+      storageURI, // ar://{txId} - points to Arweave
+      1, // ARWEAVE provider (not CUSTOM)
       fileSize,
-      "application/json", // Content type
-      `vault-${vaultId}.json`, // File name
+      "application/json",
+      `vault-${vaultId}.json`,
       isPermanent,
       BigInt(0), // Release date (0 = immediate)
-      "" // Encrypted key (empty for now)
+      "", // Encrypted key
     );
 
     const registerTxHash = (await window.ethereum.request({
@@ -524,29 +559,32 @@ export async function dispatchToBitxen(
           from: fromAddress,
           to: config.contractAddress,
           data: registerData,
+          gas: "0x1E8480", // 2,000,000 Gas Limit (Manual override for estimation issues)
         },
       ],
     })) as string;
 
-    console.log(`✅ Registration tx sent on ${config.name}:`, registerTxHash);
+    console.log(`✅ Contract registration tx sent: ${registerTxHash}`);
     await waitForTransaction(registerTxHash);
-    console.log(`✅ Registration confirmed on ${config.name}:`, registerTxHash);
+    console.log(`✅ Hybrid storage complete!`);
 
     return {
-      txHash: registerTxHash,
+      arweaveTxId,
+      contractTxHash: registerTxHash,
+      contractDataId: dataHash,
       chainId,
       blockExplorerUrl: `${config.blockExplorer}/tx/${registerTxHash}`,
-      dataId: dataHash, // The data ID is the hash
+      arweaveUrl: `https://arweave.net/${arweaveTxId}`,
     };
   } catch (error) {
-    console.error("Bitxen dispatch error:", error);
+    console.error("Hybrid dispatch error:", error);
 
     if ((error as { code?: number }).code === 4001) {
       throw new Error("Transaction was rejected. Please try again.");
     }
 
     throw new Error(
-      `Failed to store on ${config.name}: ${error instanceof Error ? error.message : "Unknown error"}`
+      `Failed hybrid storage: ${error instanceof Error ? error.message : "Unknown error"}`,
     );
   }
 }
@@ -554,29 +592,34 @@ export async function dispatchToBitxen(
 /**
  * Wait for transaction to be mined
  */
-async function waitForTransaction(txHash: string, maxAttempts = 30): Promise<void> {
+async function waitForTransaction(
+  txHash: string,
+  maxAttempts = 30,
+): Promise<void> {
   if (!window.ethereum) return;
-  
+
   for (let i = 0; i < maxAttempts; i++) {
     try {
       const receipt = await window.ethereum.request({
         method: "eth_getTransactionReceipt",
         params: [txHash],
       });
-      
+
       if (receipt) {
         return; // Transaction confirmed
       }
     } catch {
       // Ignore errors, keep polling
     }
-    
+
     // Wait 2 seconds before next attempt
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise((resolve) => setTimeout(resolve, 2000));
   }
-  
+
   // Transaction not confirmed after max attempts, but still submitted
-  console.warn("Transaction submitted but not yet confirmed. It may take a few minutes.");
+  console.warn(
+    "Transaction submitted but not yet confirmed. It may take a few minutes.",
+  );
 }
 
 /**
@@ -600,9 +643,15 @@ declare global {
   interface Window {
     ethereum?: {
       isMetaMask?: boolean;
-      request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+      request: (args: {
+        method: string;
+        params?: unknown[];
+      }) => Promise<unknown>;
       on?: (event: string, handler: (...args: unknown[]) => void) => void;
-      removeListener?: (event: string, handler: (...args: unknown[]) => void) => void;
+      removeListener?: (
+        event: string,
+        handler: (...args: unknown[]) => void,
+      ) => void;
     };
   }
 }

@@ -46,7 +46,7 @@ import {
   WANDER_PAYMENT_CONFIG,
 } from "@/lib/wanderWallet";
 import {
-  dispatchToBitxen,
+
   type ChainId,
   getChainConfig,
   DEFAULT_CHAIN,
@@ -840,18 +840,23 @@ export function VaultEditWizard({
       // Check if we need to dispatch from client (New Flow)
       if (data.shouldDispatch && data.details?.arweavePayload) {
         try {
-          if (formState.storageType === "bitxen") {
-            setPaymentStatus("Confirm transaction in MetaMask...");
+          if (formState.storageType === "bitxenArweave") {
+            // "bitxenArweave" option now means Hybrid (Arweave + Contract)
+            setPaymentStatus("Step 1/2: Confirm Arweave upload in Wander...");
+            const { dispatchHybrid } = await import("@/lib/metamaskWallet");
             const selectedChain = (formState.payment.selectedChain || DEFAULT_CHAIN) as ChainId;
-            const dispatchResult = await dispatchToBitxen(
+            const hybridResult = await dispatchHybrid(
               data.details.arweavePayload,
               data.details.vaultId,
               selectedChain
             );
-            txId = dispatchResult.txHash;
-            blockchainTxHash = dispatchResult.txHash;
+
+            // Map hybrid result to what we need
+            // txId should be Arweave ID for storage
+            txId = hybridResult.arweaveTxId;
+            blockchainTxHash = hybridResult.contractTxHash;
             blockchainChain = selectedChain;
-            setPaymentStatus(`Upload successful on ${selectedChain.toUpperCase()}!`);
+            setPaymentStatus(`Hybrid storage complete! Arweave + ${selectedChain.toUpperCase()}`);
           } else {
             // Default to Arweave/Wander
             setPaymentStatus("Confirm transaction in Wander Wallet...");
@@ -890,7 +895,11 @@ export function VaultEditWizard({
       // Update localStorage with the new transaction ID
       // This ensures the vault always points to the latest version
       if (txId) {
-        const updated = updateVaultTxId(formState.vaultId, txId);
+        const updated = updateVaultTxId(formState.vaultId, txId, {
+          storageType: formState.storageType,
+          blockchainTxHash: blockchainTxHash || undefined,
+          blockchainChain: blockchainChain || undefined
+        });
         if (updated) {
           console.log(`✅ Updated vault ${formState.vaultId} with new txId: ${txId}`);
         } else {
@@ -1530,7 +1539,7 @@ export function VaultEditWizard({
 
       case "payment":
         // Render different component based on storage type
-        if (formState.storageType === "bitxen") {
+        if (formState.storageType === "bitxenArweave") {
           return (
             <MetaMaskWalletButton
               selectedChain={(formState.payment.selectedChain as ChainId) || DEFAULT_CHAIN}
@@ -1592,7 +1601,7 @@ export function VaultEditWizard({
                 <div className="rounded-lg border bg-card p-4 shadow-sm">
                   <div className="flex items-center justify-between mb-2">
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                      {formState.storageType === "bitxen"
+                      {formState.storageType === "bitxenArweave"
                         ? `Transaction Hash (${(formState.payment.selectedChain || DEFAULT_CHAIN).toUpperCase()})`
                         : "Transaction ID (Arweave)"}
                     </p>
@@ -1611,7 +1620,7 @@ export function VaultEditWizard({
                         size="icon"
                         className="h-6 w-6 text-xs"
                         onClick={() => {
-                          if (formState.storageType === "bitxen") {
+                          if (formState.storageType === "bitxenArweave") {
                             const chain = (formState.payment.selectedChain || DEFAULT_CHAIN) as ChainId;
                             const config = getChainConfig(chain);
                             window.open(`${config.blockExplorer}/tx/${latestTxId}`, "_blank");
