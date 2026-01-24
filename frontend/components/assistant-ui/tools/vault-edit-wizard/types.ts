@@ -23,6 +23,13 @@ export type EditFormState = {
   willDetails: {
     title: string;
     content: string;
+    existingDocuments: Array<{
+      name: string;
+      size: number;
+      type: string;
+      content?: string;
+    }>;
+    newDocuments: File[];
   };
 
   // Step 5: Edit Security Questions (optional)

@@ -117,9 +117,9 @@ export function AlertMessage({
 
       {/* Content */}
       <div className="flex-1">
-        {showHeader && (
+        {/* {showHeader && (
           <p className="font-semibold mb-1">{headerText}</p>
-        )}
+        )} */}
         {messageLines.length > 1 ? (
           <div className="whitespace-pre-wrap">
             {messageLines.map((line, idx) => (

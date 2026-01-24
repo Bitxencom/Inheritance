@@ -12,6 +12,7 @@ export const initialFormState: FormState = {
     willType: "one-time",
     title: "",
     content: "",
+    documents: [],
   },
   securityQuestions: defaultSecurityQuestions,
   triggerRelease: {

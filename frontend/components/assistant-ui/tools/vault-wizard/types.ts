@@ -13,6 +13,7 @@ export type FormState = {
     willType: "one-time" | "editable";
     title: string;
     content: string;
+    documents: File[];
   };
   securityQuestions: SecurityQuestion[];
   triggerRelease: {

@@ -11,6 +11,7 @@ import { FieldError } from "@/components/ui/field-error";
 import { ReviewSection, ReviewItem } from "@/components/ui/review-display";
 import { savePendingVault } from "@/lib/vault-storage";
 import { cn } from "@/lib/utils";
+import { FileText, X } from "lucide-react";
 
 import {
   Dialog,
@@ -36,6 +37,15 @@ const placeholderSecurityQuestions = [
   "e.g. What is my favorite Indonesian food?",
   "e.g. What is our first car's brand?",
 ];
+
+const fileToBase64 = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = (error) => reject(error);
+  });
+};
 
 export function VaultCreationWizard({
   variant = "dialog",
@@ -98,6 +108,7 @@ export function VaultCreationWizard({
         willType: "editable",
         title: `Inheritance ${faker.company.name()}`,
         content: loremParagraphs.replace(/\n/g, "\n\n"),
+        documents: [],
       },
       securityQuestions,
       triggerRelease: {
@@ -152,6 +163,34 @@ export function VaultCreationWizard({
 
 
 
+
+  const handleDocumentsChange = (files: FileList | null) => {
+    if (!files) return;
+    const newFiles = Array.from(files);
+    setFormState((prev) => ({
+      ...prev,
+      willDetails: {
+        ...prev.willDetails,
+        documents: [...prev.willDetails.documents, ...newFiles],
+      },
+    }));
+  };
+
+  const removeDocument = (index: number) => {
+    setFormState((prev) => ({
+      ...prev,
+      willDetails: {
+        ...prev.willDetails,
+        documents: prev.willDetails.documents.filter((_, i) => i !== index),
+      },
+    }));
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
 
   const handleSecurityQuestionChange = (
     index: number,
@@ -334,10 +373,34 @@ export function VaultCreationWizard({
   };
 
   const transformPayload = async () => {
+    // Convert File to base64 for each document
+    const documentsWithContent = await Promise.all(
+      formState.willDetails.documents.map(async (doc) => {
+        const base64Content = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result as string;
+            // Remove data URL prefix (data:application/pdf;base64,)
+            const base64 = result.split(",")[1] || result;
+            resolve(base64);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(doc);
+        });
+
+        return {
+          name: doc.name,
+          size: doc.size,
+          type: doc.type,
+          content: base64Content,
+        };
+      }),
+    );
+
     return {
       willDetails: {
         ...formState.willDetails,
-        ...formState.willDetails,
+        documents: documentsWithContent,
       },
       securityQuestions: formState.securityQuestions,
       triggerRelease: formState.triggerRelease,
@@ -710,6 +773,54 @@ export function VaultCreationWizard({
                 className={cn("w-full max-w-full resize-none overflow-hidden", fieldErrors.content ? "border-destructive" : "")}
               />
               <FieldError message={fieldErrors.content} />
+            </div>
+
+            <div className="space-y-3">
+              <label className="text-sm font-medium">
+                Additional Documents (optional)
+              </label>
+
+              <label className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-border bg-muted/30 p-6 transition-colors hover:bg-muted/50">
+                <FileText className="mb-2 size-8 text-muted-foreground" />
+                <p className="text-sm font-medium">Click to upload documents</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  PDF, DOC, DOCX, or TXT
+                </p>
+                <Input
+                  type="file"
+                  multiple
+                  accept=".pdf,.doc,.docx,.txt"
+                  onChange={(event) => handleDocumentsChange(event.target.files)}
+                  className="sr-only"
+                />
+              </label>
+
+              {formState.willDetails.documents.length > 0 && (
+                <div className="space-y-2">
+                  {formState.willDetails.documents.map((file, index) => (
+                    <div
+                      key={`${file.name}-${index}`}
+                      className="flex items-center gap-3 rounded-md border bg-background px-3 py-2"
+                    >
+                      <FileText className="size-4 shrink-0 text-muted-foreground" />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{file.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatFileSize(file.size)}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeDocument(index)}
+                        className="shrink-0 rounded-sm p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                        aria-label="Remove file"
+                      >
+                        <X className="size-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 

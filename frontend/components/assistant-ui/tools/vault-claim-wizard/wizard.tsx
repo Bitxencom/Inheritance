@@ -654,6 +654,71 @@ export function VaultClaimWizard({
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
   };
 
+  const downloadDocument = async (documentIndex: number) => {
+    try {
+      // Build request body with fraction keys and security answers
+      // Adapted from old-project: using fractionKeys instead of shardKeys to match current backend/state
+      const fractionKeysArray = [
+        formState.fractionKeys.key1,
+        formState.fractionKeys.key2,
+        formState.fractionKeys.key3,
+      ];
+
+      // Need arweaveTxId for backend to find the correct data version
+      const localVault = getVaultById(formState.vaultId);
+      const arweaveTxId = localVault?.arweaveTxId;
+
+      const url = `/api/vault/${formState.vaultId}/document/${documentIndex}`;
+
+      // Use POST to avoid URL length limit issues with large keys
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          fractionKeys: fractionKeysArray,
+          securityQuestionAnswers: formState.securityQuestionAnswers,
+          arweaveTxId,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || "Failed to download document.");
+      }
+
+      // Get filename from header or use name from document
+      const contentDisposition = response.headers.get("Content-Disposition");
+      let filename = unlockedDocuments[documentIndex]?.name || "document";
+
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+        if (filenameMatch && filenameMatch[1]) {
+          filename = decodeURIComponent(filenameMatch[1].replace(/['"]/g, ""));
+        }
+      }
+
+      // Convert response to blob and download
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+    } catch (error) {
+      console.error("Failed to download document:", error);
+      const message =
+        error instanceof Error
+          ? error.message
+          : "An error occurred while downloading the document.";
+      setStepError(message);
+    }
+  };
+
   const handleDownload = () => {
     const content = `INHERITANCE DETAILS
 ================================================================
@@ -1102,9 +1167,6 @@ ${formState.vaultContent || "No Content"}
 
             </div>
 
-
-
-
             {/* Documents */}
             {unlockedDocuments.length > 0 && (
               <div className="rounded-lg border px-4 py-3">
@@ -1119,6 +1181,16 @@ ${formState.vaultContent || "No Content"}
                         <p className="text-sm font-medium truncate">{doc.name}</p>
                         <p className="text-xs text-muted-foreground">{formatBytes(doc.size)}</p>
                       </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 hover:bg-background shrink-0"
+                        onClick={() => downloadDocument(i)}
+                        title="Download Document"
+                        disabled={isSubmitting}
+                      >
+                        <Download className="h-4 w-4" />
+                      </Button>
                     </div>
                   ))}
                 </div>

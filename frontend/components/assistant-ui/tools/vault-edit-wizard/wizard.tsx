@@ -8,7 +8,10 @@ import {
   Check,
   Copy,
   ExternalLink,
-  AlertCircle
+  AlertCircle,
+  FileText,
+  X,
+  Download
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -274,6 +277,110 @@ export function VaultEditWizard({
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
+  };
+
+  // Helper functions for documents
+  const handleDocumentsChange = (files: FileList | null) => {
+    if (!files) return;
+    const newFiles = Array.from(files);
+    setFormState((prev) => ({
+      ...prev,
+      willDetails: {
+        ...prev.willDetails,
+        newDocuments: [...prev.willDetails.newDocuments, ...newFiles],
+      },
+    }));
+  };
+
+  const removeNewDocument = (index: number) => {
+    setFormState((prev) => ({
+      ...prev,
+      willDetails: {
+        ...prev.willDetails,
+        newDocuments: prev.willDetails.newDocuments.filter((_, i) => i !== index),
+      },
+    }));
+  };
+
+  const removeExistingDocument = (index: number) => {
+    setFormState((prev) => ({
+      ...prev,
+      willDetails: {
+        ...prev.willDetails,
+        existingDocuments: prev.willDetails.existingDocuments.filter((_, i) => i !== index),
+      },
+    }));
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const downloadDocument = async (documentIndex: number) => {
+    try {
+      // Build request body with fraction keys and security answers
+      // Adapted from old-project: using fractionKeys instead of shardKeys
+      const fractionKeysArray = [
+        formState.fractionKeys.key1,
+        formState.fractionKeys.key2,
+        formState.fractionKeys.key3,
+      ];
+
+      // Need arweaveTxId for backend to find the correct data version
+      const localVault = getVaultById(formState.vaultId);
+      const arweaveTxId = localVault?.arweaveTxId;
+
+      const url = `/api/vault/${formState.vaultId}/document/${documentIndex}`;
+
+      // Use POST to avoid URL length limit issues with large keys
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          fractionKeys: fractionKeysArray,
+          securityQuestionAnswers: formState.securityQuestionAnswers,
+          arweaveTxId,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || "Failed to download document.");
+      }
+
+      // Get filename from header or use name from document
+      const contentDisposition = response.headers.get("Content-Disposition");
+      let filename = formState.willDetails.existingDocuments[documentIndex]?.name || "document";
+
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+        if (filenameMatch && filenameMatch[1]) {
+          filename = decodeURIComponent(filenameMatch[1].replace(/['"]/g, ""));
+        }
+      }
+
+      // Convert response to blob and download
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+    } catch (error) {
+      console.error("Failed to download document:", error);
+      const message =
+        error instanceof Error
+          ? error.message
+          : "An error occurred while downloading the document.";
+      setStepError(message);
+    }
   };
 
   // === Handlers for Editing Security Questions ===
@@ -712,6 +819,14 @@ export function VaultEditWizard({
           willDetails: {
             title: data.willDetails.title ?? "",
             content: data.willDetails.content ?? "",
+            // Ensure documents from backend have correct structure
+            existingDocuments: (data.willDetails.documents ?? []).map((doc: { name?: string; size?: number; type?: string; content?: string }) => ({
+              name: doc.name || "",
+              size: doc.size || 0,
+              type: doc.type || "application/octet-stream",
+              content: doc.content || "", // Content must be present from backend
+            })),
+            newDocuments: prev.willDetails.newDocuments, // Preserve new documents already selected by user
           },
         }));
       }
@@ -784,12 +899,116 @@ export function VaultEditWizard({
     setStepError(null);
 
     try {
+      // Convert new Files to base64
+      const newDocumentsWithContent = await Promise.all(
+        formState.willDetails.newDocuments.map(async (doc) => {
+          const base64Content = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const result = reader.result as string;
+              // Remove data URL prefix (data:application/pdf;base64,)
+              const base64 = result.split(",")[1] || result;
+              resolve(base64);
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(doc);
+          });
+
+          return {
+            name: doc.name,
+            size: doc.size,
+            type: doc.type,
+            content: base64Content,
+          };
+        }),
+      );
+
+      // Download content for existing documents that don't have content
+      const existingDocumentsWithContent = await Promise.all(
+        formState.willDetails.existingDocuments.map(async (doc, index) => {
+          // If document already has content, use that content
+          if (doc.content && doc.content.trim() !== "") {
+            return {
+              name: doc.name,
+              size: doc.size,
+              type: doc.type,
+              content: doc.content,
+            };
+          }
+
+          // If no content, download from backend
+          try {
+            const fractionKeysArray = [
+              formState.fractionKeys.key1,
+              formState.fractionKeys.key2,
+              formState.fractionKeys.key3,
+            ];
+
+            const params = new URLSearchParams({
+              fractionKeys: JSON.stringify(fractionKeysArray),
+              securityQuestionAnswers: JSON.stringify(formState.securityQuestionAnswers),
+            });
+
+            const url = `/api/vault/${formState.vaultId}/document/${index}?${params.toString()}`;
+            const response = await fetch(url, {
+              method: "POST", // Changed to POST to match download implementation
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                fractionKeys: fractionKeysArray,
+                securityQuestionAnswers: formState.securityQuestionAnswers,
+                arweaveTxId: getVaultById(formState.vaultId)?.arweaveTxId,
+              })
+            });
+
+            if (!response.ok) {
+              throw new Error(`Failed to download document ${doc.name}`);
+            }
+
+            // Convert blob to base64
+            const blob = await response.blob();
+            const base64Content = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => {
+                const result = reader.result as string;
+                const base64 = result.split(",")[1] || result;
+                resolve(base64);
+              };
+              reader.onerror = reject;
+              reader.readAsDataURL(blob);
+            });
+
+            return {
+              name: doc.name,
+              size: doc.size,
+              type: doc.type,
+              content: base64Content,
+            };
+          } catch (error) {
+            console.error(`Failed to download document ${doc.name}:`, error);
+            // If download fails, send with empty content (backend will handle)
+            return {
+              name: doc.name,
+              size: doc.size,
+              type: doc.type,
+              content: "",
+            };
+          }
+        }),
+      );
+
       // Prepare request body
       const requestBody: Record<string, unknown> = {
         vaultId: formState.vaultId,
         willDetails: {
           title: formState.willDetails.title,
           content: formState.willDetails.content,
+          // Combine existing documents (with content) with new documents
+          documents: [
+            ...existingDocumentsWithContent,
+            ...newDocumentsWithContent,
+          ],
         },
         fractionKeys: [
           formState.fractionKeys.key1,
@@ -1374,6 +1593,107 @@ export function VaultEditWizard({
                 )}
               />
               <FieldError message={fieldErrors["willDetails.content"]} />
+            </div>
+
+            <div className="space-y-3">
+              <label className="text-sm font-medium">
+                Additional Documents (optional)
+              </label>
+
+              <label className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-border bg-muted/30 p-6 transition-colors hover:bg-muted/50">
+                <FileText className="mb-2 size-8 text-muted-foreground" />
+                <p className="text-sm font-medium">Click to upload documents</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  PDF, DOC, DOCX, or TXT
+                </p>
+                <Input
+                  type="file"
+                  multiple
+                  accept=".pdf,.doc,.docx,.txt"
+                  onChange={(event) => handleDocumentsChange(event.target.files)}
+                  className="sr-only"
+                />
+              </label>
+
+              {/* Existing Documents */}
+              {formState.willDetails.existingDocuments.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 mt-4">
+                    Existing Documents
+                  </div>
+                  {formState.willDetails.existingDocuments.map((file, index) => (
+                    <div
+                      key={`existing-${index}`}
+                      className="flex items-center gap-3 rounded-md border bg-muted/50 px-3 py-2"
+                    >
+                      <div className="relative">
+                        <FileText className="size-4 shrink-0 text-muted-foreground" />
+                        <div className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-blue-500" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{file.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatFileSize(file.size)}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => downloadDocument(index)}
+                          className="shrink-0 cursor-pointer rounded-sm p-1 text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+                          aria-label="Download file"
+                          title="Download"
+                        >
+                          <Download className="size-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeExistingDocument(index)}
+                          className="shrink-0 cursor-pointer rounded-sm p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                          aria-label="Remove file"
+                          title="Remove"
+                        >
+                          <X className="size-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* New Documents */}
+              {formState.willDetails.newDocuments.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 mt-4">
+                    New Documents
+                  </div>
+                  {formState.willDetails.newDocuments.map((file, index) => (
+                    <div
+                      key={`new-${index}`}
+                      className="flex items-center gap-3 rounded-md border bg-background px-3 py-2"
+                    >
+                      <div className="relative">
+                        <FileText className="size-4 shrink-0 text-muted-foreground" />
+                        <div className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-green-500" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{file.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatFileSize(file.size)}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeNewDocument(index)}
+                        className="shrink-0 cursor-pointer rounded-sm p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                        aria-label="Remove file"
+                      >
+                        <X className="size-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <p className="mt-2 text-xs text-muted-foreground">

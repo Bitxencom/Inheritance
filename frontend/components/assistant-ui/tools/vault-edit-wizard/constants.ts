@@ -11,6 +11,8 @@ export const initialEditFormState: EditFormState = {
   willDetails: {
     title: "",
     content: "",
+    existingDocuments: [],
+    newDocuments: [],
   },
   // New: Security questions editing
   editedSecurityQuestions: [],
