@@ -25,7 +25,7 @@ const storageOptions = [
     description: "Permanent decentralized storage",
     details: "Pay once, store forever. Data persists indefinitely on Arweave network.",
     icon: Globe,
-    fee: "~0.0008 AR",
+    fee: "Network Fee varies (Paid by User)",
     color: "bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300",
     borderColor: "border-purple-500",
   },

@@ -167,6 +167,19 @@ export function VaultCreationWizard({
   const handleDocumentsChange = (files: FileList | null) => {
     if (!files) return;
     const newFiles = Array.from(files);
+
+    // Calculate total size including existing documents and already selected new documents
+    const existingSize = formState.willDetails.documents.reduce((acc, doc) => acc + doc.size, 0);
+    const incomingSize = newFiles.reduce((acc, doc) => acc + doc.size, 0);
+
+    const totalSize = existingSize + incomingSize;
+    const MAX_SIZE = 1024 * 1024 * 1024; // 1 GB
+
+    if (totalSize > MAX_SIZE) {
+      setStepError("Total document size cannot exceed 1 GB.");
+      return;
+    }
+
     setFormState((prev) => ({
       ...prev,
       willDetails: {
@@ -174,6 +187,8 @@ export function VaultCreationWizard({
         documents: [...prev.willDetails.documents, ...newFiles],
       },
     }));
+    // Clear error if adding files was successful
+    setStepError(null);
   };
 
   const removeDocument = (index: number) => {
