@@ -1,4 +1,12 @@
-import { createHash, randomUUID, pbkdf2Sync, randomBytes, createCipheriv, createDecipheriv } from "crypto";
+import {
+  createHash,
+  randomUUID,
+  pbkdf2Sync,
+  randomBytes,
+  createCipheriv,
+  createDecipheriv,
+  timingSafeEqual,
+} from "crypto";
 
 import { appEnv } from "../config/env.js";
 import {
@@ -31,6 +39,34 @@ const randomVaultId = () => randomUUID();
 export const hashSecurityAnswer = (answer: string): string => {
   const normalized = answer.toLowerCase().trim();
   return createHash("sha256").update(normalized).digest("hex");
+};
+
+export const verifySecurityAnswer = (answer: string, storedHash: string): boolean => {
+  if (typeof storedHash !== "string" || storedHash.length === 0) return false;
+
+  if (storedHash.startsWith("pbkdf2-sha256$")) {
+    const parts = storedHash.split("$");
+    if (parts.length !== 4) return false;
+
+    const iterations = Number(parts[1]);
+    if (!Number.isFinite(iterations) || iterations <= 0) return false;
+
+    const saltBase64 = parts[2];
+    const expectedHex = parts[3].toLowerCase();
+    if (expectedHex.length !== 64) return false;
+
+    const normalized = answer.normalize("NFKC").toLowerCase().trim();
+    const salt = Buffer.from(saltBase64, "base64");
+    const derivedHex = pbkdf2Sync(normalized, salt, iterations, 32, "sha256").toString("hex");
+
+    const expectedBuf = Buffer.from(expectedHex, "hex");
+    const derivedBuf = Buffer.from(derivedHex, "hex");
+    if (expectedBuf.length !== derivedBuf.length) return false;
+    return timingSafeEqual(expectedBuf, derivedBuf);
+  }
+
+  const computed = hashSecurityAnswer(answer);
+  return computed === storedHash;
 };
 
 /**

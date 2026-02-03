@@ -2,6 +2,7 @@
  * Unit tests for PQC (Post-Quantum Cryptography) service
  */
 import { describe, it, expect } from "vitest";
+import crypto from "crypto";
 import {
   generatePqcKeyPair,
   encapsulate,
@@ -14,6 +15,7 @@ import {
 import {
   encryptPayloadHybrid,
   decryptPayloadHybrid,
+  decryptPayload,
 } from "./aes.js";
 
 describe("PQC Service - ML-KEM-768", () => {
@@ -146,5 +148,54 @@ describe("Hybrid Encryption - AES-256 + ML-KEM", () => {
     const decrypted = decryptPayloadHybrid(encrypted, keyPair.secretKey);
 
     expect(decrypted).toEqual(largePayload);
+  });
+});
+
+describe("Classic Decrypt - AES-GCM compatibility", () => {
+  it("should decrypt AES-GCM payload when IV is 12 bytes", () => {
+    const key = crypto.randomBytes(32);
+    const iv = crypto.randomBytes(12);
+    const payload = { message: "hello", n: 1 };
+
+    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+    const plain = Buffer.from(JSON.stringify(payload), "utf8");
+    const cipherText = Buffer.concat([cipher.update(plain), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+    const packed = Buffer.concat([cipherText, authTag]);
+
+    const decrypted = decryptPayload(
+      {
+        cipherText: packed.toString("base64"),
+        iv: iv.toString("base64"),
+        checksum: "unused",
+      },
+      key,
+    );
+
+    expect(decrypted).toEqual(payload);
+  });
+
+  it("should fail to decrypt AES-GCM payload with wrong key", () => {
+    const key = crypto.randomBytes(32);
+    const wrongKey = crypto.randomBytes(32);
+    const iv = crypto.randomBytes(12);
+    const payload = { secret: "nope" };
+
+    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+    const plain = Buffer.from(JSON.stringify(payload), "utf8");
+    const cipherText = Buffer.concat([cipher.update(plain), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+    const packed = Buffer.concat([cipherText, authTag]);
+
+    expect(() => {
+      decryptPayload(
+        {
+          cipherText: packed.toString("base64"),
+          iv: iv.toString("base64"),
+          checksum: "unused",
+        },
+        wrongKey,
+      );
+    }).toThrow();
   });
 });

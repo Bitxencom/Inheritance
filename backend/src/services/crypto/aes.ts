@@ -25,12 +25,17 @@ export const generateAesKey = (): Buffer => {
   return crypto.randomBytes(32); // 256-bit
 };
 
+const normalizeAes256Key = (key: Buffer): Buffer => {
+  if (key.length === 32) return key;
+  return crypto.createHash("sha256").update(key).digest();
+};
+
 export const encryptPayload = (
   payload: object,
   key: Buffer,
 ): EncryptedVault => {
   const iv = crypto.randomBytes(16); // 128-bit block size
-  const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
+  const cipher = crypto.createCipheriv("aes-256-cbc", normalizeAes256Key(key), iv);
   const serialized = JSON.stringify(payload);
   const cipherText = Buffer.concat([
     cipher.update(serialized, "utf8"),
@@ -55,8 +60,35 @@ export const decryptPayload = (
 ): Record<string, unknown> => {
   const iv = Buffer.from(encrypted.iv, "base64");
   const cipherBuffer = Buffer.from(encrypted.cipherText, "base64");
-  const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
-  const plain = Buffer.concat([decipher.update(cipherBuffer), decipher.final()]);
+  const encryptedWithAlg = encrypted as EncryptedVault & {
+    alg?: "AES-CBC" | "AES-GCM";
+  };
+
+  const inferredAlg: "AES-CBC" | "AES-GCM" =
+    encryptedWithAlg.alg === "AES-CBC" || encryptedWithAlg.alg === "AES-GCM"
+      ? encryptedWithAlg.alg
+      : iv.length === 12
+        ? "AES-GCM"
+        : "AES-CBC";
+
+  const normalizedKey = normalizeAes256Key(key);
+
+  const plain =
+    inferredAlg === "AES-GCM"
+      ? (() => {
+          if (cipherBuffer.length < 16) {
+            throw new Error("Invalid AES-GCM payload: missing auth tag.");
+          }
+          const authTag = cipherBuffer.subarray(cipherBuffer.length - 16);
+          const cipherTextOnly = cipherBuffer.subarray(0, cipherBuffer.length - 16);
+          const decipher = crypto.createDecipheriv("aes-256-gcm", normalizedKey, iv);
+          decipher.setAuthTag(authTag);
+          return Buffer.concat([decipher.update(cipherTextOnly), decipher.final()]);
+        })()
+      : (() => {
+          const decipher = crypto.createDecipheriv("aes-256-cbc", normalizedKey, iv);
+          return Buffer.concat([decipher.update(cipherBuffer), decipher.final()]);
+        })();
 
   return JSON.parse(plain.toString("utf8"));
 };

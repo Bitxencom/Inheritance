@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 
-import { prepareVault, hashSecurityAnswer, encryptMetadata, hashSecurityQuestionAnswers } from "../services/vault-service.js";
+import { prepareVault, verifySecurityAnswer, encryptMetadata, hashSecurityQuestionAnswers } from "../services/vault-service.js";
 import { combineShares } from "../services/crypto/shamir.js";
 import {
   decryptPayload,
@@ -282,18 +282,29 @@ vaultRouter.post("/:vaultId/unlock", async (req, res, next) => {
 
     // (Optional) Verify security questions if provided
     if (parsed.securityQuestionAnswers && parsed.securityQuestionAnswers.length > 0) {
-      const storedQuestions = decrypted.securityQuestions || [];
       const providedAnswers = parsed.securityQuestionAnswers;
+      const storedHashes = (uploadPayload.metadata?.securityQuestionHashes as Array<{
+        a?: string;
+        answerHash?: string;
+      }>) || [];
 
-      const allMatch = providedAnswers.every((provided) => {
-        const match = storedQuestions.find(
-          (sq) =>
-            !provided.question ||
-            sq.question === provided.question,
-        );
-        if (!match) return false;
-        return match.answer.trim().toLowerCase() === provided.answer.trim().toLowerCase();
-      });
+      const allMatch =
+        storedHashes.length > 0
+          ? providedAnswers.every((provided, index) => {
+              if (index >= storedHashes.length) return false;
+              const storedHash = storedHashes[index].a || storedHashes[index].answerHash;
+              return typeof storedHash === "string" && verifySecurityAnswer(provided.answer, storedHash);
+            })
+          : (() => {
+              const storedQuestions = decrypted.securityQuestions || [];
+              return providedAnswers.every((provided) => {
+                const match = storedQuestions.find(
+                  (sq) => !provided.question || sq.question === provided.question,
+                );
+                if (!match) return false;
+                return match.answer.trim().toLowerCase() === provided.answer.trim().toLowerCase();
+              });
+            })();
 
       if (!allMatch) {
         return res.status(401).json({
@@ -389,10 +400,9 @@ vaultRouter.post("/claim", async (req, res, next) => {
       const allMatch = securityAnswers.every((provided, index) => {
         if (index >= storedHashes.length) return false;
         
-        const hashedAnswer = hashSecurityAnswer(provided.answer);
         // Support obfuscated (a) and legacy (answerHash)
         const storedHash = storedHashes[index].a || storedHashes[index].answerHash;
-        return storedHash === hashedAnswer;
+        return typeof storedHash === "string" && verifySecurityAnswer(provided.answer, storedHash);
       });
 
       if (!allMatch) {
@@ -780,18 +790,29 @@ vaultRouter.post("/:vaultId/preview", async (req, res, next) => {
 
     // Verify security questions if provided
     if (parsed.securityQuestionAnswers && parsed.securityQuestionAnswers.length > 0) {
-      const storedQuestions = decrypted.securityQuestions || [];
       const providedAnswers = parsed.securityQuestionAnswers;
+      const storedHashes = (uploadPayload.metadata?.securityQuestionHashes as Array<{
+        a?: string;
+        answerHash?: string;
+      }>) || [];
 
-      const allMatch = providedAnswers.every((provided) => {
-        const match = storedQuestions.find(
-          (sq) =>
-            !provided.question ||
-            sq.question === provided.question,
-        );
-        if (!match) return false;
-        return match.answer.trim().toLowerCase() === provided.answer.trim().toLowerCase();
-      });
+      const allMatch =
+        storedHashes.length > 0
+          ? providedAnswers.every((provided, index) => {
+              if (index >= storedHashes.length) return false;
+              const storedHash = storedHashes[index].a || storedHashes[index].answerHash;
+              return typeof storedHash === "string" && verifySecurityAnswer(provided.answer, storedHash);
+            })
+          : (() => {
+              const storedQuestions = decrypted.securityQuestions || [];
+              return providedAnswers.every((provided) => {
+                const match = storedQuestions.find(
+                  (sq) => !provided.question || sq.question === provided.question,
+                );
+                if (!match) return false;
+                return match.answer.trim().toLowerCase() === provided.answer.trim().toLowerCase();
+              });
+            })();
 
       if (!allMatch) {
         return res.status(401).json({
@@ -1007,8 +1028,6 @@ vaultRouter.post("/:vaultId/verify-security-questions", async (req, res) => {
     }
 
     // Import hash function
-    const { hashSecurityAnswer } = await import("../services/vault-service.js");
-
     // Validate each answer
     const providedAnswers = parsed.securityQuestionAnswers;
     
@@ -1021,10 +1040,9 @@ vaultRouter.post("/:vaultId/verify-security-questions", async (req, res) => {
         return;
       }
       
-      const hashedAnswer = hashSecurityAnswer(provided.answer);
       // Support obfuscated (a) and legacy (answerHash)
       const storedHash = storedHashes[index].a || storedHashes[index].answerHash;
-      if (storedHash !== hashedAnswer) {
+      if (typeof storedHash !== "string" || !verifySecurityAnswer(provided.answer, storedHash)) {
         incorrectIndexes.push(index);
       } else {
         correctIndexes.push(index);
@@ -1275,18 +1293,29 @@ vaultRouter.post("/:vaultId/document/:documentIndex", async (req, res, next) => 
 
     // Verify security questions if provided
     if (parsed.securityQuestionAnswers && parsed.securityQuestionAnswers.length > 0) {
-      const storedQuestions = decrypted.securityQuestions || [];
       const providedAnswers = parsed.securityQuestionAnswers;
+      const storedHashes = (uploadPayload.metadata?.securityQuestionHashes as Array<{
+        a?: string;
+        answerHash?: string;
+      }>) || [];
 
-      const allMatch = providedAnswers.every((provided) => {
-        const match = storedQuestions.find(
-          (sq) =>
-            !provided.question ||
-            sq.question === provided.question,
-        );
-        if (!match) return false;
-        return match.answer.trim().toLowerCase() === provided.answer.trim().toLowerCase();
-      });
+      const allMatch =
+        storedHashes.length > 0
+          ? providedAnswers.every((provided, index) => {
+              if (index >= storedHashes.length) return false;
+              const storedHash = storedHashes[index].a || storedHashes[index].answerHash;
+              return typeof storedHash === "string" && verifySecurityAnswer(provided.answer, storedHash);
+            })
+          : (() => {
+              const storedQuestions = decrypted.securityQuestions || [];
+              return providedAnswers.every((provided) => {
+                const match = storedQuestions.find(
+                  (sq) => !provided.question || sq.question === provided.question,
+                );
+                if (!match) return false;
+                return match.answer.trim().toLowerCase() === provided.answer.trim().toLowerCase();
+              });
+            })();
 
       if (!allMatch) {
         return res.status(401).json({
@@ -1348,4 +1377,3 @@ vaultRouter.post("/:vaultId/document/:documentIndex", async (req, res, next) => 
     next(error);
   }
 });
-
