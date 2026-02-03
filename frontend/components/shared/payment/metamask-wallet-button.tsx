@@ -151,12 +151,15 @@ export function MetaMaskWalletButton({
                 )}
               >
                 <div className="flex flex-col items-center gap-2">
-                  {(chain as any).logo && (
+                  {chain.logo && (
                     <div className="h-6 w-6 rounded-full overflow-hidden bg-white/10 p-0.5">
-                      <img
-                        src={(chain as any).logo}
+                      <Image
+                        src={chain.logo}
                         alt={chain.shortName}
+                        width={24}
+                        height={24}
                         className="h-full w-full object-contain"
+                        unoptimized
                       />
                     </div>
                   )}

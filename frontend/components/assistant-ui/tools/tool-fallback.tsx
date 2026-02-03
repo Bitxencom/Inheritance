@@ -34,16 +34,16 @@ const ToolFallback: ToolCallMessagePartComponent = ({
   };
 
   // Format result for more user-friendly display
-  const formatResult = (result: any) => {
-    if (typeof result === "string") {
+  const formatResult = (toolResult: unknown) => {
+    if (typeof toolResult === "string") {
       try {
-        const parsed = JSON.parse(result);
+        const parsed = JSON.parse(toolResult);
         return JSON.stringify(parsed, null, 2);
       } catch {
-        return result;
+        return toolResult;
       }
     }
-    return JSON.stringify(result, null, 2);
+    return JSON.stringify(toolResult, null, 2);
   };
 
   return (

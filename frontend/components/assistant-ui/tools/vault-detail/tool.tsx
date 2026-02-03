@@ -131,7 +131,7 @@ export const VaultDetailTool: ToolCallMessagePartComponent<{
         <div className="rounded-2xl border border-border bg-background p-6 dark:border-muted-foreground/15">
           <div className="flex items-center gap-3">
             <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-            <p className="text-sm text-muted-foreground">We're retrieving the inheritance details...</p>
+            <p className="text-sm text-muted-foreground">We&apos;re retrieving the inheritance details...</p>
           </div>
         </div>
       </div>
@@ -188,9 +188,9 @@ export const VaultDetailTool: ToolCallMessagePartComponent<{
           <div className="flex flex-col items-center gap-3 text-center">
             <Shield className="h-10 w-10 text-muted-foreground/30" />
             <div>
-              <p className="font-medium">We couldn't find that vault</p>
+              <p className="font-medium">We couldn&apos;t find that vault</p>
               <p className="text-sm text-muted-foreground">
-                We couldn't find a inheritance with ID <strong className="rounded bg-muted px-1 text-xs">{vaultId}</strong> in your local storage.
+                We couldn&apos;t find a inheritance with ID <strong className="rounded bg-muted px-1 text-xs">{vaultId}</strong> in your local storage.
               </p>
             </div>
           </div>
@@ -302,7 +302,7 @@ export const VaultDetailTool: ToolCallMessagePartComponent<{
               <DialogTitle>Remove this inheritance from history?</DialogTitle>
               <DialogDescription>
                 This will remove the inheritance information from this browser.
-                Please ensure you've saved your Inheritance ID and Fraction Keys elsewhere.
+                Please ensure you&apos;ve saved your Inheritance ID and Fraction Keys elsewhere.
                 The actual inheritance data onblockchain storage will not be deleted.
               </DialogDescription>
             </DialogHeader>

@@ -44,15 +44,6 @@ export async function validateSecurityQuestionsApi(
   const data = await response.json();
 
   if (!response.ok || !data.success) {
-    // If inheritance doesn't support separate validation (fallbackRequired),
-    // just continue and validation will be done during unlock/preview
-    if (data.fallbackRequired) {
-      console.log(
-        "Legacy inheritance does not support separate validation, will be validated during unlock/preview"
-      );
-      return { success: true, fallbackRequired: true };
-    }
-
     return {
       success: false,
       error: data?.error || "Security question answers do not match.",

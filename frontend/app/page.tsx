@@ -1,5 +1,5 @@
-import { Assistant } from "./assistant";
+import { AssistantDynamic } from "./assistant-dynamic";
 
 export default function Home() {
-  return <Assistant />;
+  return <AssistantDynamic />;
 }

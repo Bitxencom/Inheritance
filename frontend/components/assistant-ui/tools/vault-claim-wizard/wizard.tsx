@@ -14,7 +14,7 @@ import {
 import { Search, Loader2, FileText, Check, Copy, Download } from "lucide-react";
 import { AlertMessage } from "@/components/ui/alert-message";
 import { Stepper } from "@/components/shared/stepper";
-import { getVaultById } from "@/lib/vault-storage";
+import { getVaultById, updateVaultTxId } from "@/lib/vault-storage";
 import {
   InheritanceIdField,
   SecurityQuestionsField,
@@ -23,6 +23,13 @@ import {
   getLocalVaultErrorMessage,
   generateSecurityQuestionFieldErrors,
 } from "@/components/assistant-ui/tools/shared";
+import { combineSharesClient } from "@/lib/shamirClient";
+import {
+  decryptVaultPayloadClient,
+  encryptVaultPayloadClient,
+  type EncryptedVaultClient,
+} from "@/lib/clientVaultCrypto";
+import { getAvailableChains, type ChainId } from "@/lib/metamaskWallet";
 
 import type { ClaimFormState, ClaimSubmissionResult, VaultClaimWizardProps } from "./types";
 import { initialClaimFormState, claimSteps } from "./constants";
@@ -54,7 +61,17 @@ export function VaultClaimWizard({
     triggerDate?: string;
   } | null>(null);
   const [unlockedDocuments, setUnlockedDocuments] = useState<Array<{ name: string; size: number; type: string }>>([]);
+  const [unlockedDecryptedDocuments, setUnlockedDecryptedDocuments] = useState<
+    Array<{
+      name: string;
+      size: number;
+      type: string;
+      content?: string;
+      attachment?: { txId?: string; iv?: string; checksum?: string };
+    }>
+  >([]);
   const [vaultTitle, setVaultTitle] = useState<string | null>(null);
+  const [combinedKeyForAttachments, setCombinedKeyForAttachments] = useState<Uint8Array | null>(null);
 
   // State for version tracking
   const [newerVersionAvailable, setNewerVersionAvailable] = useState(false);
@@ -81,7 +98,9 @@ export function VaultClaimWizard({
     setIsSecurityAnswersVerified(false);
     setTriggerRelease(null);
     setUnlockedDocuments([]);
+    setUnlockedDecryptedDocuments([]);
     setVaultTitle(null);
+    setCombinedKeyForAttachments(null);
     setNewerVersionAvailable(false);
     setLatestTxId(null);
     setHasPendingEdit(false);
@@ -144,6 +163,7 @@ export function VaultClaimWizard({
     }));
     setVerificationSuccess(false);
     setTriggerRelease(null);
+    setCombinedKeyForAttachments(null);
     setStepError(null);
   };
 
@@ -551,6 +571,28 @@ export function VaultClaimWizard({
       const localVault = getVaultById(formState.vaultId);
       const arweaveTxId = localVault?.arweaveTxId;
 
+      const fractionKeysArray = [
+        formState.fractionKeys.key1,
+        formState.fractionKeys.key2,
+        formState.fractionKeys.key3,
+      ]
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0);
+
+      if (fractionKeysArray.length < 3) {
+        setStepError("Please provide at least 3 Fraction Keys to open the inheritance.");
+        setIsSubmitting(false);
+        return;
+      }
+
+      let combinedKey: Uint8Array;
+      try {
+        combinedKey = combineSharesClient(fractionKeysArray);
+        setCombinedKeyForAttachments(combinedKey);
+      } catch {
+        throw new Error("Fraction keys do not match. Make sure all 3 fraction keys are correct.");
+      }
+
       const response = await fetch("/api/vault/claim/unlock", {
         method: "POST",
         headers: {
@@ -559,7 +601,11 @@ export function VaultClaimWizard({
         body: JSON.stringify({
           vaultId: formState.vaultId.trim(),
           securityQuestionAnswers: formState.securityQuestionAnswers,
-          fractionKeys: formState.fractionKeys,
+          fractionKeys: {
+            key1: formState.fractionKeys.key1,
+            key2: formState.fractionKeys.key2,
+            key3: formState.fractionKeys.key3,
+          },
           arweaveTxId,
         }),
       });
@@ -567,17 +613,19 @@ export function VaultClaimWizard({
       const data = await response.json();
 
       if (!response.ok || !data.success) {
-        let errorMessage = data?.error || "We couldn't open the inheritance. Please check that all fraction keys are correct.";
+        let errorMessage =
+          data?.error ||
+          "We couldn't open the inheritance. Please check that all fraction keys are correct.";
         const errorType = detectErrorType(errorMessage);
 
-        // Replace "Invalid key length" error message with more user-friendly one
         if (errorMessage.toLowerCase().includes("invalid key length")) {
           errorMessage = "One or more Fraction Keys appear to be incorrect.";
         }
 
-        // Navigate to appropriate step based on error type
         if (errorType === "fractionKeys") {
-          const fractionKeysStepIndex = claimSteps.findIndex((step) => step.key === "fractionKeys");
+          const fractionKeysStepIndex = claimSteps.findIndex(
+            (step) => step.key === "fractionKeys",
+          );
           if (fractionKeysStepIndex !== -1) {
             setCurrentStep(fractionKeysStepIndex);
             setStepError(errorMessage);
@@ -585,7 +633,9 @@ export function VaultClaimWizard({
             return;
           }
         } else if (errorType === "securityQuestions") {
-          const verificationStepIndex = claimSteps.findIndex((step) => step.key === "verification");
+          const verificationStepIndex = claimSteps.findIndex(
+            (step) => step.key === "verification",
+          );
           if (verificationStepIndex !== -1) {
             setCurrentStep(verificationStepIndex);
             setStepError(errorMessage);
@@ -594,16 +644,157 @@ export function VaultClaimWizard({
           }
         }
 
-        // If can't determine step, stay at unlock step and show error
         throw new Error(errorMessage);
+      }
+
+      let vaultContent: string | null = null;
+      let vaultTitle: string | null = null;
+
+      let decrypted: {
+        willDetails?: {
+          content?: string;
+          title?: string;
+          documents?: Array<{
+            name: string;
+            size: number;
+            type: string;
+            content?: string;
+            attachment?: { txId?: string; iv?: string; checksum?: string };
+          }>;
+        };
+      };
+
+      if (data.decryptedVault) {
+        decrypted = data.decryptedVault as typeof decrypted;
+      } else {
+        if (!data.encryptedVault) {
+          throw new Error("Unable to unlock vault. Encrypted payload is missing.");
+        }
+        try {
+          decrypted = (await decryptVaultPayloadClient(
+            data.encryptedVault as EncryptedVaultClient,
+            combinedKey,
+          )) as typeof decrypted;
+        } catch {
+          throw new Error("Fraction keys do not match. Make sure all 3 fraction keys are correct.");
+        }
+      }
+
+      if (data.decryptedVault && data.legacy?.isPqcEnabled === true) {
+        const localVaultForMigration = getVaultById(formState.vaultId.trim());
+        if (localVaultForMigration) {
+          try {
+            const encryptedVaultForUpload = await encryptVaultPayloadClient(decrypted, combinedKey);
+
+            const metadataForUpload = {
+              trigger: data.metadata?.trigger ?? null,
+              beneficiaryCount:
+                typeof data.metadata?.beneficiaryCount === "number" ? data.metadata.beneficiaryCount : 0,
+              securityQuestionHashes: Array.isArray(data.metadata?.securityQuestionHashes)
+                ? data.metadata.securityQuestionHashes
+                : [],
+              willType:
+                typeof data.metadata?.willType === "string"
+                  ? data.metadata.willType
+                  : (decrypted.willDetails as { willType?: string } | undefined)?.willType || "one-time",
+              encryptionVersion: "v2-client" as const,
+            };
+
+            const prepareResponse = await fetch("/api/vault/prepare-client", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                vaultId: formState.vaultId.trim(),
+                encryptedVault: encryptedVaultForUpload,
+                metadata: metadataForUpload,
+              }),
+            });
+
+            const prepareData = await prepareResponse.json().catch(() => ({}));
+            if (prepareResponse.ok && prepareData?.success && prepareData?.details?.arweavePayload) {
+              let nextTxId: string | null = null;
+              let blockchainTxHash: string | undefined;
+              let blockchainChain: string | undefined;
+
+              if (localVaultForMigration.storageType === "bitxenArweave") {
+                const { dispatchHybrid } = await import("@/lib/metamaskWallet");
+                const availableChains = getAvailableChains();
+                const chainCandidate = localVaultForMigration.blockchainChain;
+                const selectedChain: ChainId = availableChains.includes(chainCandidate as ChainId)
+                  ? (chainCandidate as ChainId)
+                  : "bsc";
+                const hybridResult = await dispatchHybrid(
+                  prepareData.details.arweavePayload,
+                  prepareData.details.vaultId,
+                  selectedChain,
+                  false,
+                );
+                nextTxId = hybridResult.arweaveTxId;
+                blockchainTxHash = hybridResult.contractTxHash;
+                blockchainChain = selectedChain;
+              } else {
+                const { dispatchToArweave } = await import("@/lib/wanderWallet");
+                const dispatchResult = await dispatchToArweave(
+                  prepareData.details.arweavePayload,
+                  prepareData.details.vaultId,
+                );
+                nextTxId = dispatchResult.txId;
+              }
+
+              if (nextTxId) {
+                updateVaultTxId(formState.vaultId.trim(), nextTxId, {
+                  storageType: localVaultForMigration.storageType,
+                  blockchainTxHash,
+                  blockchainChain,
+                });
+                setLatestTxId(nextTxId);
+              }
+            }
+          } catch (error) {
+            console.error("Failed to migrate legacy PQC vault to v2-client:", error);
+          }
+        }
+      }
+
+      vaultContent = decrypted.willDetails?.content ?? null;
+      vaultTitle = decrypted.willDetails?.title ?? null;
+      const decryptedDocuments = decrypted.willDetails?.documents ?? [];
+      const missingAttachments = decryptedDocuments
+        .map((doc, index) => ({
+          index,
+          name: (doc as { name?: string } | undefined)?.name || `document-${index + 1}`,
+          hasContent:
+            typeof (doc as { content?: unknown } | undefined)?.content === "string" &&
+            ((doc as { content?: string } | undefined)?.content || "").trim().length > 0,
+          hasAttachment:
+            typeof (doc as { attachment?: { txId?: unknown; iv?: unknown } } | undefined)?.attachment?.txId ===
+              "string" &&
+            typeof (doc as { attachment?: { txId?: unknown; iv?: unknown } } | undefined)?.attachment?.iv ===
+              "string",
+        }))
+        .filter((item) => !item.hasContent && !item.hasAttachment);
+
+      if (missingAttachments.length > 0) {
+        const names = missingAttachments.slice(0, 3).map((item) => item.name).join(", ");
+        const suffix =
+          missingAttachments.length > 3 ? ` (+${missingAttachments.length - 3} more)` : "";
+        setStepError(
+          `Some attachments were stored without content and cannot be downloaded: ${names}${suffix}.`,
+        );
       }
 
       const resultData: ClaimSubmissionResult = {
         success: true,
         vaultId: formState.vaultId,
-        vaultContent: data.vaultContent || null,
-        vaultTitle: data.vaultTitle || null,
-        documents: data.documents || [],
+        vaultContent,
+        vaultTitle,
+        documents: decryptedDocuments.map((doc) => ({
+          name: doc.name,
+          size: doc.size,
+          type: doc.type,
+        })),
         message: data.message || "Inheritance successfully opened.",
       };
 
@@ -614,6 +805,7 @@ export function VaultClaimWizard({
         vaultContent: resultData.vaultContent,
         error: null,
       }));
+      setUnlockedDecryptedDocuments(decryptedDocuments);
       setUnlockedDocuments(resultData.documents || []);
       setVaultTitle(resultData.vaultTitle || null);
 
@@ -654,53 +846,72 @@ export function VaultClaimWizard({
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
   };
 
+  const base64ToBlob = (content: string, mimeType: string): Blob => {
+    const base64 = content.startsWith("data:")
+      ? (content.split(",")[1] || "")
+      : (content.includes(",") ? (content.split(",")[1] || "") : content);
+
+    if (!base64) {
+      throw new Error("This document has no content available for download.");
+    }
+
+    const byteArrays: BlobPart[] = [];
+    const sliceSize = 4 * 1024 * 1024;
+
+    for (let offset = 0; offset < base64.length; offset += sliceSize) {
+      const slice = base64.slice(offset, offset + sliceSize);
+      const binary = atob(slice);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      byteArrays.push(bytes);
+    }
+
+    return new Blob(byteArrays, { type: mimeType || "application/octet-stream" });
+  };
+
   const downloadDocument = async (documentIndex: number) => {
     try {
-      // Build request body with fraction keys and security answers
-      // Adapted from old-project: using fractionKeys instead of shardKeys to match current backend/state
-      const fractionKeysArray = [
-        formState.fractionKeys.key1,
-        formState.fractionKeys.key2,
-        formState.fractionKeys.key3,
-      ];
-
-      // Need arweaveTxId for backend to find the correct data version
-      const localVault = getVaultById(formState.vaultId);
-      const arweaveTxId = localVault?.arweaveTxId;
-
-      const url = `/api/vault/${formState.vaultId}/document/${documentIndex}`;
-
-      // Use POST to avoid URL length limit issues with large keys
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          fractionKeys: fractionKeysArray,
-          securityQuestionAnswers: formState.securityQuestionAnswers,
-          arweaveTxId,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || "Failed to download document.");
+      const doc = unlockedDecryptedDocuments[documentIndex];
+      if (!doc) {
+        throw new Error("Document not found.");
       }
 
-      // Get filename from header or use name from document
-      const contentDisposition = response.headers.get("Content-Disposition");
-      let filename = unlockedDocuments[documentIndex]?.name || "document";
+      const filename = doc.name || `document-${documentIndex + 1}`;
+      let blob: Blob | null = null;
 
-      if (contentDisposition) {
-        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-        if (filenameMatch && filenameMatch[1]) {
-          filename = decodeURIComponent(filenameMatch[1].replace(/['"]/g, ""));
+      if (typeof doc.content === "string" && doc.content.trim().length > 0) {
+        blob = base64ToBlob(doc.content, doc.type || "application/octet-stream");
+      } else if (doc.attachment && typeof doc.attachment.txId === "string" && typeof doc.attachment.iv === "string") {
+        if (!combinedKeyForAttachments) {
+          throw new Error("Unable to download: encryption key is not available.");
         }
+        const response = await fetch(`https://arweave.net/${doc.attachment.txId}`);
+        if (!response.ok) {
+          throw new Error("Failed to fetch attachment from blockchain storage.");
+        }
+        const cipherBuffer = await response.arrayBuffer();
+        const { decryptBytesClient } = await import("@/lib/clientVaultCrypto");
+        const plainBytes = await decryptBytesClient(
+          {
+            cipherBytes: cipherBuffer,
+            iv: doc.attachment.iv,
+            checksum: typeof doc.attachment.checksum === "string" ? doc.attachment.checksum : undefined,
+          },
+          combinedKeyForAttachments,
+        );
+        const plainBuffer = plainBytes.buffer.slice(
+          plainBytes.byteOffset,
+          plainBytes.byteOffset + plainBytes.byteLength,
+        ) as ArrayBuffer;
+        blob = new Blob([plainBuffer], { type: doc.type || "application/octet-stream" });
       }
 
-      // Convert response to blob and download
-      const blob = await response.blob();
+      if (!blob) {
+        throw new Error("This document has no content available for download.");
+      }
+
       const downloadUrl = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = downloadUrl;
@@ -808,27 +1019,21 @@ ${formState.vaultContent || "No Content"}
     setStepError(null);
 
     try {
-      const localVault = getVaultById(formState.vaultId);
-      const arweaveTxId = localVault?.arweaveTxId;
+      const fractionKeysArray = [
+        formState.fractionKeys.key1,
+        formState.fractionKeys.key2,
+        formState.fractionKeys.key3,
+      ].map((k) => k.trim());
 
-      const response = await fetch("/api/vault/verify-fraction-keys", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          vaultId: formState.vaultId.trim(),
-          fractionKeys: formState.fractionKeys,
-          arweaveTxId,
-        }),
-      });
+      const uniqueFractionKeys = new Set(fractionKeysArray);
+      if (uniqueFractionKeys.size !== 3) {
+        throw new Error("Fraction Keys must be unique. Duplicates are not allowed.");
+      }
 
-      const data = await response.json();
-
-      if (!response.ok || !data.success) {
-        throw new Error(
-          data?.error || "The fraction keys provided are invalid. Please check them and try again.",
-        );
+      try {
+        combineSharesClient(fractionKeysArray);
+      } catch {
+        throw new Error("Invalid fraction keys. Make sure all 3 fraction keys are correct.");
       }
 
       setIsFractionKeysVerified(true);
@@ -1346,4 +1551,3 @@ ${formState.vaultContent || "No Content"}
     </div>
   );
 }
-

@@ -38,7 +38,8 @@ FROM deps AS build
 # Create public directory if it doesn't exist (Next.js may need it)
 RUN mkdir -p public
 COPY . .
-RUN npm run build
+# RUN npm run build
+RUN NEXT_DIST_DIR=.next-docker npm run build
 
 FROM node:22-alpine AS production
 
@@ -64,7 +65,7 @@ RUN echo '#!/bin/sh' > /entrypoint.sh && \
     echo 'exec "$@"' >> /entrypoint.sh && \
     chmod +x /entrypoint.sh
 
-COPY --from=build /app/.next ./.next
+COPY --from=build /app/.next-docker ./.next
 COPY --from=build /app/next.config.ts ./next.config.ts
 # Copy public folder (now guaranteed to exist from build stage)
 COPY --from=build /app/public ./public

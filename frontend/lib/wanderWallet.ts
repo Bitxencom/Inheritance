@@ -387,53 +387,439 @@ const arweave = Arweave.init({
   protocol: 'https',
 });
 
-export async function dispatchToArweave(data: unknown, vaultId?: string): Promise<DispatchResult> {
+type ArweaveUploadResumeRecord = {
+  key: string;
+  vaultId?: string;
+  payloadHash: string;
+  payloadB64: string;
+  txRaw?: unknown;
+  uploaderRaw?: unknown;
+  txId?: string;
+  updatedAt: string;
+};
+
+const ARWEAVE_UPLOAD_DB = "bitxen_arweave_uploads";
+const ARWEAVE_UPLOAD_STORE = "uploads";
+const ARWEAVE_UPLOAD_DB_VERSION = 1;
+
+function openArweaveUploadDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(ARWEAVE_UPLOAD_DB, ARWEAVE_UPLOAD_DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(ARWEAVE_UPLOAD_STORE)) {
+        db.createObjectStore(ARWEAVE_UPLOAD_STORE, { keyPath: "key" });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error ?? new Error("Failed to open IndexedDB"));
+  });
+}
+
+async function idbGetUploadRecord(key: string): Promise<ArweaveUploadResumeRecord | null> {
+  const db = await openArweaveUploadDb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(ARWEAVE_UPLOAD_STORE, "readonly");
+      const store = tx.objectStore(ARWEAVE_UPLOAD_STORE);
+      const req = store.get(key);
+      req.onsuccess = () => resolve((req.result as ArweaveUploadResumeRecord | undefined) ?? null);
+      req.onerror = () => reject(req.error ?? new Error("Failed to read IndexedDB"));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function idbPutUploadRecord(record: ArweaveUploadResumeRecord): Promise<void> {
+  const db = await openArweaveUploadDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(ARWEAVE_UPLOAD_STORE, "readwrite");
+      const store = tx.objectStore(ARWEAVE_UPLOAD_STORE);
+      const req = store.put(record);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error ?? new Error("Failed to write IndexedDB"));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function idbDeleteUploadRecord(key: string): Promise<void> {
+  const db = await openArweaveUploadDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(ARWEAVE_UPLOAD_STORE, "readwrite");
+      const store = tx.objectStore(ARWEAVE_UPLOAD_STORE);
+      const req = store.delete(key);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error ?? new Error("Failed to delete IndexedDB"));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+function bytesToB64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function b64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function sha256B64Url(bytes: Uint8Array): Promise<string> {
+  const copy = new Uint8Array(bytes);
+  const digest = await crypto.subtle.digest("SHA-256", copy.buffer);
+  const digestBytes = new Uint8Array(digest);
+  const b64 = bytesToB64(digestBytes);
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function makeResumeKey(vaultId: string | undefined, payloadHash: string): string {
+  const safeVault = typeof vaultId === "string" && vaultId.trim().length > 0 ? vaultId.trim() : "no_vault";
+  return `arweave_upload:${safeVault}:${payloadHash}`;
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function dispatchToArweave(
+  data: unknown,
+  vaultId?: string,
+  tags?: Record<string, string>,
+  onProgress?: (progress: number) => void,
+  onStatus?: (status: string) => void,
+): Promise<DispatchResult> {
   const isReady = await isWalletReady();
   if (!isReady) {
     throw new Error('Wallet not connected. Please connect your wallet to proceed.');
   }
 
   try {
-    // 1. Create transaction using arweave-js
+    onStatus?.("Preparing Arweave transaction...");
+    const encoder = new TextEncoder();
+    const isBinaryPayload = data instanceof Uint8Array || data instanceof ArrayBuffer;
+    const payloadBytes =
+      data instanceof Uint8Array
+        ? data
+        : data instanceof ArrayBuffer
+          ? new Uint8Array(data)
+          : encoder.encode(JSON.stringify(data));
+
+    const payloadHash = await sha256B64Url(payloadBytes);
+    const resumeKey = makeResumeKey(vaultId, payloadHash);
+
+    let resumeRecord: ArweaveUploadResumeRecord | null = null;
+    try {
+      resumeRecord = await idbGetUploadRecord(resumeKey);
+    } catch {
+      resumeRecord = null;
+    }
+
+    const savedPayloadBytes =
+      resumeRecord?.payloadHash === payloadHash && typeof resumeRecord.payloadB64 === "string"
+        ? b64ToBytes(resumeRecord.payloadB64)
+        : null;
+
+    const effectivePayloadBytes = savedPayloadBytes ?? payloadBytes;
+
+    const resumeIfPossible = async (): Promise<DispatchResult | null> => {
+      if (!resumeRecord) return null;
+      const dataBytes = effectivePayloadBytes;
+      try {
+        const uploader =
+          resumeRecord.uploaderRaw
+            ? await arweave.transactions.getUploader(resumeRecord.uploaderRaw as never, dataBytes)
+            : resumeRecord.txRaw
+              ? await arweave.transactions.getUploader(
+                  arweave.transactions.fromRaw(resumeRecord.txRaw as never) as never,
+                  dataBytes,
+                )
+              : null;
+
+        if (!uploader) return null;
+
+        const txId =
+          typeof resumeRecord.txId === "string" && resumeRecord.txId.trim().length > 0
+            ? resumeRecord.txId.trim()
+            : typeof (uploader as unknown as { tx?: { id?: unknown } }).tx?.id === "string"
+              ? ((uploader as unknown as { tx: { id: string } }).tx.id as string)
+              : typeof (uploader as unknown as { transaction?: { id?: unknown } }).transaction?.id === "string"
+                ? ((uploader as unknown as { transaction: { id: string } }).transaction.id as string)
+                : null;
+
+        if (!txId) return null;
+
+        onStatus?.("Resuming Arweave upload...");
+
+        const maxChunkRetries = 8;
+        while (!(uploader as unknown as { isComplete: boolean }).isComplete) {
+          let attempt = 0;
+          while (true) {
+            try {
+              await (uploader as unknown as { uploadChunk: () => Promise<void> }).uploadChunk();
+              break;
+            } catch (e) {
+              attempt += 1;
+              if (attempt >= maxChunkRetries) throw e;
+              const backoffMs = Math.min(10_000, 500 * Math.pow(2, attempt - 1));
+              onStatus?.(`Upload chunk failed, retrying (${attempt}/${maxChunkRetries})...`);
+              await sleep(backoffMs);
+            }
+          }
+
+          const uploaderJson =
+            typeof (uploader as unknown as { toJSON?: unknown }).toJSON === "function"
+              ? (uploader as unknown as { toJSON: () => unknown }).toJSON()
+              : null;
+          if (uploaderJson) {
+            try {
+              await idbPutUploadRecord({
+                ...resumeRecord,
+                payloadB64: bytesToB64(dataBytes),
+                txId,
+                uploaderRaw: uploaderJson,
+                updatedAt: new Date().toISOString(),
+              });
+            } catch {
+            }
+          }
+
+          const pct =
+            typeof (uploader as unknown as { pctComplete?: unknown }).pctComplete === "number"
+              ? (uploader as unknown as { pctComplete: number }).pctComplete
+              : typeof (uploader as unknown as { uploadedChunks?: unknown }).uploadedChunks === "number" &&
+                  typeof (uploader as unknown as { totalChunks?: unknown }).totalChunks === "number" &&
+                  (uploader as unknown as { totalChunks: number }).totalChunks > 0
+                ? ((uploader as unknown as { uploadedChunks: number }).uploadedChunks /
+                    (uploader as unknown as { totalChunks: number }).totalChunks) *
+                  100
+                : 0;
+          onProgress?.(Math.max(0, Math.min(100, pct)));
+        }
+
+        const lastStatus =
+          typeof (uploader as unknown as { lastResponseStatus?: unknown }).lastResponseStatus === "number"
+            ? (uploader as unknown as { lastResponseStatus: number }).lastResponseStatus
+            : 0;
+        if (lastStatus && lastStatus !== 200 && lastStatus !== 202) {
+          throw new Error(`Failed to upload transaction to blockchain storage (Status: ${lastStatus})`);
+        }
+
+        onStatus?.("Upload successful.");
+        try {
+          await idbDeleteUploadRecord(resumeKey);
+        } catch {
+        }
+
+        return { txId, type: "BASE" };
+      } catch {
+        return null;
+      }
+    };
+
+    const resumed = await resumeIfPossible();
+    if (resumed) return resumed;
+
     const transaction = await arweave.createTransaction({
-      data: JSON.stringify(data),
+      data: effectivePayloadBytes,
     });
 
-    // Add tags (using obfuscated names to hide purpose)
-    transaction.addTag('Content-Type', 'application/json');
-    transaction.addTag('App-Name', 'doc-storage');  // Generic app name
-    transaction.addTag('Type', 'doc');               // Generic type
-    transaction.addTag('Ts', Date.now().toString()); // Short timestamp key
+    const defaultTags: Record<string, string> = {
+      'Content-Type': isBinaryPayload ? 'application/octet-stream' : 'application/json',
+      'App-Name': 'doc-storage',
+      Type: isBinaryPayload ? 'bin' : 'doc',
+      Ts: Date.now().toString(),
+    };
+
+    const mergedTags = { ...defaultTags, ...(tags || {}) };
+    Object.entries(mergedTags).forEach(([name, value]) => {
+      if (typeof value === 'string' && value.length > 0) {
+        transaction.addTag(name, value);
+      }
+    });
     
     // Add Doc-Id tag (obfuscated vault ID) required for lookup
     if (vaultId) {
       transaction.addTag('Doc-Id', vaultId);
     }
 
-    // 2. Sign transaction explicitly using Wander Wallet
-    // Wander Wallet's sign method returns the signed transaction object
-    // We must use this return value as it might not mutate the original object in-place reliably across environments
-    const signedTransaction = await getArweaveWallet()!.sign(transaction) as typeof transaction;
+    onStatus?.("Waiting for wallet signature...");
+    if (!transaction.last_tx || transaction.last_tx.length < 43) {
+      (transaction as unknown as { last_tx: string }).last_tx =
+        await arweave.transactions.getTransactionAnchor();
+    }
+    if (!transaction.reward || transaction.reward === "0") {
+      transaction.reward = await arweave.transactions.getPrice(effectivePayloadBytes.byteLength);
+    }
+    onStatus?.("Preparing upload (chunking data)...");
+    await transaction.prepareChunks(effectivePayloadBytes);
+    onStatus?.("Waiting for wallet signature...");
+
+    const wallet = getArweaveWallet();
+    if (!wallet) {
+      throw new Error('Wallet not connected. Please connect your wallet to proceed.');
+    }
+
+    if (effectivePayloadBytes.byteLength <= 250_000 && typeof wallet.dispatch === "function") {
+      onStatus?.("Waiting for wallet confirmation...");
+      const dispatched = await wallet.dispatch(transaction as unknown as never);
+      onProgress?.(100);
+      onStatus?.("Upload successful.");
+      return {
+        txId: dispatched.id,
+        type: typeof dispatched.type === "string" && dispatched.type.trim().length > 0 ? dispatched.type : "DISPATCH",
+      };
+    }
+
+    const signedRaw = (await wallet.sign(transaction)) as unknown;
+    if (!signedRaw || typeof signedRaw !== "object") {
+      throw new Error("Wallet signature response is invalid");
+    }
+
+    const normalizeB64Url = (value: string) =>
+      value.trim().replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+
+    const signed = signedRaw as Record<string, unknown>;
+    const signedNormalized: Record<string, unknown> = { ...signed };
+    for (const key of ["id", "owner", "signature", "last_tx", "data_root"]) {
+      const v = signedNormalized[key];
+      if (typeof v === "string") {
+        signedNormalized[key] = normalizeB64Url(v);
+      }
+    }
+
+    const signedTx = arweave.transactions.fromRaw(signedNormalized);
+
+    (transaction as unknown as { last_tx: string }).last_tx = signedTx.last_tx;
+    transaction.reward = signedTx.reward || transaction.reward;
+    transaction.data_root = signedTx.data_root || transaction.data_root;
+    transaction.setSignature({
+      id: signedTx.id,
+      owner: signedTx.owner,
+      reward: signedTx.reward,
+      tags: signedTx.tags,
+      signature: signedTx.signature,
+    });
+
+    const txToPost = transaction;
+
+    try {
+      const isValid = await arweave.transactions.verify(txToPost);
+      if (!isValid) {
+        throw new Error("verify() returned false");
+      }
+    } catch (e) {
+      throw new Error(
+        `Arweave signature verification failed (client-side): ${
+          e instanceof Error ? e.message : "Unknown error"
+        }`,
+      );
+    }
 
     // 3. Post transaction to the network
-    // Use the signed transaction returned by the wallet
-    const txToPost = signedTransaction || transaction;
-    const response = await arweave.transactions.post(txToPost);
+    onStatus?.("Uploading to Arweave...");
+    const txRawForResume =
+      typeof (txToPost as unknown as { toJSON?: unknown }).toJSON === "function"
+        ? (txToPost as unknown as { toJSON: () => unknown }).toJSON()
+        : (txToPost as unknown as { getRaw?: unknown }).getRaw && typeof (txToPost as unknown as { getRaw: () => unknown }).getRaw === "function"
+          ? (txToPost as unknown as { getRaw: () => unknown }).getRaw()
+          : null;
 
-    if (response.status === 200 || response.status === 202) {
-      console.log('✅ Transaction posted successfully:', {
-        id: txToPost.id,
-        status: response.status
-      });
-      return {
-        txId: txToPost.id,
-        type: 'BASE', // L1 Transaction
-      };
-    } else {
-      // If post fails, throw error with status
-      console.error('❌ Post failed:', response);
-      throw new Error(`Failed to post transaction to blockchain storage (Status: ${response.status} - ${response.statusText})`);
+    const baseRecord: ArweaveUploadResumeRecord = {
+      key: resumeKey,
+      vaultId,
+      payloadHash,
+      payloadB64: bytesToB64(effectivePayloadBytes),
+      txRaw: txRawForResume ?? undefined,
+      txId: txToPost.id,
+      uploaderRaw: undefined,
+      updatedAt: new Date().toISOString(),
+    };
+
+    try {
+      await idbPutUploadRecord(baseRecord);
+    } catch {
     }
+
+    const uploader = await arweave.transactions.getUploader(txToPost, effectivePayloadBytes);
+
+    const maxChunkRetries = 8;
+    while (!(uploader as unknown as { isComplete: boolean }).isComplete) {
+      let attempt = 0;
+      while (true) {
+        try {
+          await (uploader as unknown as { uploadChunk: () => Promise<void> }).uploadChunk();
+          break;
+        } catch (e) {
+          attempt += 1;
+          if (attempt >= maxChunkRetries) throw e;
+          const backoffMs = Math.min(10_000, 500 * Math.pow(2, attempt - 1));
+          onStatus?.(`Upload chunk failed, retrying (${attempt}/${maxChunkRetries})...`);
+          await sleep(backoffMs);
+        }
+      }
+
+      const uploaderJson =
+        typeof (uploader as unknown as { toJSON?: unknown }).toJSON === "function"
+          ? (uploader as unknown as { toJSON: () => unknown }).toJSON()
+          : null;
+      if (uploaderJson) {
+        try {
+          await idbPutUploadRecord({
+            ...baseRecord,
+            uploaderRaw: uploaderJson,
+            updatedAt: new Date().toISOString(),
+          });
+        } catch {
+        }
+      }
+
+      const pct =
+        typeof (uploader as unknown as { pctComplete?: unknown }).pctComplete === "number"
+          ? (uploader as unknown as { pctComplete: number }).pctComplete
+          : typeof (uploader as unknown as { uploadedChunks?: unknown }).uploadedChunks === "number" &&
+              typeof (uploader as unknown as { totalChunks?: unknown }).totalChunks === "number" &&
+              (uploader as unknown as { totalChunks: number }).totalChunks > 0
+            ? ((uploader as unknown as { uploadedChunks: number }).uploadedChunks /
+                (uploader as unknown as { totalChunks: number }).totalChunks) *
+              100
+            : 0;
+      onProgress?.(Math.max(0, Math.min(100, pct)));
+    }
+
+    const lastStatus =
+      typeof (uploader as unknown as { lastResponseStatus?: unknown }).lastResponseStatus === "number"
+        ? (uploader as unknown as { lastResponseStatus: number }).lastResponseStatus
+        : 0;
+    if (lastStatus && lastStatus !== 200 && lastStatus !== 202) {
+      throw new Error(`Failed to upload transaction to blockchain storage (Status: ${lastStatus})`);
+    }
+
+    console.log('✅ Transaction uploaded successfully:', {
+      id: txToPost.id,
+      status: lastStatus || 200
+    });
+    onStatus?.("Upload successful.");
+    try {
+      await idbDeleteUploadRecord(resumeKey);
+    } catch {
+    }
+    return {
+      txId: txToPost.id,
+      type: 'BASE',
+    };
 
   } catch (error) {
     console.error('Dispatch error:', error);

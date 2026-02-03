@@ -4,6 +4,7 @@ import { fakerID_ID as faker } from "@faker-js/faker";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { AlertMessage } from "@/components/ui/alert-message";
@@ -23,7 +24,9 @@ import {
 import { UnifiedPaymentSelector, type PaymentMode } from "@/components/shared/payment";
 import { Stepper } from "@/components/shared/stepper";
 import type { ChainId } from "@/lib/metamaskWallet";
-
+import { generateVaultKey, encryptVaultPayloadClient } from "@/lib/clientVaultCrypto";
+import { splitKeyClient } from "@/lib/shamirClient";
+import { hashSecurityAnswerClient } from "@/lib/securityQuestionsClient";
 
 import type {
   FormState,
@@ -37,15 +40,6 @@ const placeholderSecurityQuestions = [
   "e.g. What is my favorite Indonesian food?",
   "e.g. What is our first car's brand?",
 ];
-
-const fileToBase64 = (file: File): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = (error) => reject(error);
-  });
-};
 
 export function VaultCreationWizard({
   variant = "dialog",
@@ -63,6 +57,10 @@ export function VaultCreationWizard({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
   const [paymentStatus, setPaymentStatus] = useState<string | null>(null);
+  const [paymentProgress, setPaymentProgress] = useState<number | null>(null);
+  const [paymentPhase, setPaymentPhase] = useState<"confirm" | "upload" | "finalize" | null>(null);
+  const vaultIdRef = useRef<string | null>(null);
+  const vaultKeyRef = useRef<Uint8Array | null>(null);
 
   useEffect(() => {
     onStepChange?.(currentStep);
@@ -134,6 +132,10 @@ export function VaultCreationWizard({
     setStepError(null);
     setFieldErrors({});
     setIsSubmitting(false);
+    setIsProcessingPayment(false);
+    setPaymentStatus(null);
+    vaultIdRef.current = null;
+    vaultKeyRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -160,13 +162,10 @@ export function VaultCreationWizard({
     return () => window.removeEventListener("keydown", handleHotkey);
   }, [fillWithDummyData]);
 
-
-
-
-
   const handleDocumentsChange = (files: FileList | null) => {
     if (!files) return;
     const newFiles = Array.from(files);
+
 
     // Calculate total size including existing documents and already selected new documents
     const existingSize = formState.willDetails.documents.reduce((acc, doc) => acc + doc.size, 0);
@@ -206,6 +205,8 @@ export function VaultCreationWizard({
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
+
+  const isNextBlockedByAttachmentPrep = false;
 
   const handleSecurityQuestionChange = (
     index: number,
@@ -264,26 +265,6 @@ export function VaultCreationWizard({
       });
       return newErrors;
     });
-  };
-
-  const handlePaymentMethodChange = (
-    method: FormState["payment"]["paymentMethod"],
-  ) => {
-    setFormState((prev) => ({
-      ...prev,
-      payment: {
-        ...prev.payment,
-        paymentMethod: method,
-      },
-    }));
-    // Clear error when user selects payment method
-    if (fieldErrors.paymentMethod) {
-      setFieldErrors((prev) => {
-        const newErrors = { ...prev };
-        delete newErrors.paymentMethod;
-        return newErrors;
-      });
-    }
   };
 
   const handleTriggerTypeChange = (
@@ -387,30 +368,65 @@ export function VaultCreationWizard({
     }
   };
 
-  const transformPayload = async () => {
-    // Convert File to base64 for each document
-    const documentsWithContent = await Promise.all(
-      formState.willDetails.documents.map(async (doc) => {
-        const base64Content = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const result = reader.result as string;
-            // Remove data URL prefix (data:application/pdf;base64,)
-            const base64 = result.split(",")[1] || result;
-            resolve(base64);
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(doc);
-        });
+  const transformPayload = async (params: {
+    vaultId: string;
+    vaultKey: Uint8Array;
+    onStatus?: (status: string) => void;
+  }) => {
+    const normalizeBase64 = (content: string): string => {
+      if (!content) return "";
+      if (!content.startsWith("data:")) return content;
+      const commaIndex = content.indexOf(",");
+      return commaIndex === -1 ? content : content.slice(commaIndex + 1);
+    };
 
-        return {
-          name: doc.name,
-          size: doc.size,
-          type: doc.type,
-          content: base64Content,
+    const estimateBase64Bytes = (base64: string): number => {
+      const trimmed = base64.trim();
+      if (!trimmed) return 0;
+      let padding = 0;
+      if (trimmed.endsWith("==")) padding = 2;
+      else if (trimmed.endsWith("=")) padding = 1;
+      return (trimmed.length * 3) / 4 - padding;
+    };
+
+    const readFileAsBase64 = async (file: File): Promise<string> =>
+      await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = typeof reader.result === "string" ? reader.result : "";
+          resolve(normalizeBase64(result));
         };
-      }),
-    );
+        reader.onerror = () => reject(reader.error ?? new Error("Failed to read file."));
+        reader.readAsDataURL(file);
+      });
+
+    const documentsWithContent: Array<{
+      name: string;
+      size: number;
+      type: string;
+      content?: string;
+      attachment?: { txId: string; iv: string; checksum: string };
+    }> = [];
+
+    for (const doc of formState.willDetails.documents) {
+      params.onStatus?.(`Reading document: ${doc.name}`);
+      const base64Content = await readFileAsBase64(doc);
+      if (!base64Content) {
+        throw new Error(`Attachment "${doc.name}" has no content. Please re-upload the file.`);
+      }
+
+      const decodedSize = estimateBase64Bytes(base64Content);
+      if (!Number.isFinite(decodedSize) || decodedSize <= 0 || Math.abs(decodedSize - doc.size) > 4) {
+        throw new Error(`Attachment "${doc.name}" looks corrupted or incomplete. Please re-upload the file.`);
+      }
+
+      documentsWithContent.push({
+        name: doc.name,
+        size: doc.size,
+        type: doc.type,
+        content: base64Content,
+      });
+    }
 
     return {
       willDetails: {
@@ -425,105 +441,146 @@ export function VaultCreationWizard({
     };
   };
 
-  const extractFractionKeys = (details: Record<string, unknown> | null | undefined) => {
-    if (!details || typeof details !== "object") {
-      console.warn("⚠️ extractFractionKeys: details is null or not an object");
-      return [];
-    }
-
-    // Priority 1: fractionKeys directly from backend (array of strings)
-    const fractionKeysArray = Array.isArray(
-      (details as { fractionKeys?: unknown }).fractionKeys,
-    )
-      ? ((details as { fractionKeys?: unknown }).fractionKeys as unknown[])
-      : null;
-
-    if (fractionKeysArray && fractionKeysArray.length > 0) {
-      const extracted = fractionKeysArray
-        .map((value) => (typeof value === "string" ? value : null))
-        .filter((key): key is string => Boolean(key))
-        .slice(0, 5);
-
-      console.log("✅ extractFractionKeys: Found fractionKeys array:", {
-        count: extracted.length,
-        firstKey: extracted[0]?.substring(0, 20) + "...",
-      });
-
-      return extracted;
-    }
-
-    // Priority 2: keys with structure { key: string, beneficiary: ... }
-    const assignedKeys = Array.isArray((details as { fractionKeyAssignments?: unknown }).fractionKeyAssignments)
-      ? ((details as { fractionKeyAssignments?: unknown }).fractionKeyAssignments as Array<{ key?: string }>)
-      : [];
-
-    if (assignedKeys.length > 0) {
-      const extracted = assignedKeys
-        .map((entry) => (typeof entry?.key === "string" ? entry.key : null))
-        .filter((key): key is string => Boolean(key))
-        .slice(0, 5);
-
-      console.log("✅ extractFractionKeys: Found fractionKeyAssignments array:", {
-        count: extracted.length,
-        firstKey: extracted[0]?.substring(0, 20) + "...",
-      });
-
-      return extracted;
-    }
-
-    console.warn("⚠️ extractFractionKeys: No fraction keys found in details:", {
-      hasFractionKeys: !!fractionKeysArray,
-      hasAssignments: assignedKeys.length > 0,
-      detailsKeys: Object.keys(details),
-    });
-
-    return [];
-  };
-
   const submitToMCP = async (overrides?: { storageType?: "arweave" | "bitxenArweave"; selectedChain?: ChainId }) => {
     setIsSubmitting(true);
     setStepError(null);
+    setPaymentProgress(null);
+    setPaymentPhase(null);
 
-    // Use overrides if provided, otherwise fall back to formState
     const effectiveStorageType = overrides?.storageType ?? formState.storageType;
     const effectiveChain = overrides?.selectedChain ?? (formState.payment.selectedChain as ChainId | undefined);
 
-    // Initial status
-    setPaymentStatus("Preparing inheritance...");
+    setPaymentStatus(effectiveStorageType === "bitxenArweave" ? "Step 1/2: Preparing your vault..." : "Preparing your vault...");
 
     try {
-      // 1. Prepare inheritance logic (Backend encrypts data)
-      const payload = await transformPayload();
+      const vaultId =
+        vaultIdRef.current ??
+        (typeof globalThis.crypto?.randomUUID === "function"
+          ? globalThis.crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+      vaultIdRef.current = vaultId;
 
-      // Call prepare endpoint instead of create
-      const prepareResponse = await fetch("/api/vault/prepare", {
+      const vaultKey = vaultKeyRef.current ?? generateVaultKey();
+      vaultKeyRef.current = vaultKey;
+
+      const setStepStatus = (status: string) => {
+        if (effectiveStorageType !== "bitxenArweave") {
+          setPaymentStatus(status);
+          return;
+        }
+
+        const normalized = status.toLowerCase();
+        if (normalized.includes("step 2") || normalized.includes("contract") || normalized.includes("metamask")) {
+          setPaymentStatus(status);
+          return;
+        }
+
+        if (normalized.startsWith("step 1/2:")) {
+          setPaymentStatus(status);
+          return;
+        }
+
+        setPaymentStatus(`Step 1/2: ${status}`);
+      };
+
+      const payload = await transformPayload({
+        vaultId,
+        vaultKey,
+        onStatus: (status) => setStepStatus(status),
+      });
+
+      const encryptedVault = await encryptVaultPayloadClient(payload, vaultKey);
+
+      const fractionKeys = splitKeyClient(vaultKey);
+
+      const securityQuestionHashes = await Promise.all(
+        payload.securityQuestions.map(async (sq) => ({
+          question: sq.question,
+          answerHash: await hashSecurityAnswerClient(sq.answer),
+        })),
+      );
+
+      const metadata = {
+        trigger: payload.triggerRelease,
+        beneficiaryCount: 0,
+        securityQuestionHashes,
+        willType: payload.willDetails.willType,
+        encryptionVersion: "v2-client" as const,
+      };
+
+      const prepareResponse = await fetch("/api/vault/prepare-client", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          vaultId,
+          encryptedVault,
+          metadata,
+        }),
       });
 
       const prepareData = await prepareResponse.json();
 
-      if (!prepareResponse.ok || !prepareData.success) {
-        throw new Error(prepareData.error || prepareData.message || "We couldn't prepare the inheritance. Please try again.");
+      if (!prepareResponse.ok || !prepareData.success || !prepareData.details) {
+        throw new Error(
+          prepareData.error ||
+            prepareData.message ||
+            "We couldn't prepare the inheritance. Please try again.",
+        );
       }
 
       const { details } = prepareData;
-      const { arweavePayload, fractionKeys, fractionKeyAssignments, vaultId } = details;
+      const { arweavePayload } = details;
 
-      // 2. Dispatch to blockchain (Frontend signs & uploads)
-      // Use the appropriate wallet based on selected payment method
       let txId: string;
 
       let blockchainTxHash: string | undefined;
       let blockchainChain: string | undefined;
 
       if (effectiveStorageType === "arweave") {
-        setPaymentStatus("Confirm transaction in Wander Wallet...");
-        const { dispatchToArweave } = await import("@/lib/wanderWallet");
-        const dispatchResult = await dispatchToArweave(arweavePayload, vaultId);
+        setPaymentStatus("Step 1/2: Confirm transaction in Wander Wallet...");
+        setPaymentPhase("confirm");
+        setPaymentProgress(null);
+        const { dispatchToArweave, isWalletReady, connectWanderWallet } = await import("@/lib/wanderWallet");
+        if (!(await isWalletReady())) {
+          await connectWanderWallet();
+        }
+        const dispatchResult = await dispatchToArweave(
+          arweavePayload,
+          vaultId,
+          undefined,
+          (progress) => {
+            setPaymentProgress(progress);
+            if (progress >= 0 && progress < 100) setPaymentPhase("upload");
+            if (progress >= 100) setPaymentPhase("finalize");
+          },
+          (status) => {
+            setPaymentStatus(status);
+            const normalized = status.toLowerCase();
+            if (
+              normalized.includes("waiting for wallet") ||
+              normalized.includes("confirm transaction") ||
+              normalized.includes("confirm arweave") ||
+              normalized.includes("signature")
+            ) {
+              setPaymentPhase("confirm");
+              return;
+            }
+            if (
+              normalized.includes("uploading") ||
+              normalized.includes("upload chunk") ||
+              normalized.includes("resuming") ||
+              normalized.includes("preparing upload")
+            ) {
+              setPaymentPhase("upload");
+              return;
+            }
+            if (normalized.includes("upload successful") || normalized.includes("successful")) {
+              setPaymentPhase("finalize");
+            }
+          },
+        );
         txId = dispatchResult.txId;
         setPaymentStatus("Upload successful! We're saving your inheritance details...");
       } else if (effectiveStorageType === "bitxenArweave") {
@@ -545,17 +602,13 @@ export function VaultCreationWizard({
         throw new Error("Invalid storage type: " + effectiveStorageType);
       }
 
-      // 3. Finalize success
       const resultData = {
         vaultId: vaultId,
-        // Ensure arweaveTxId is captured for both arweave and hybrid modes using the common txId variable
         arweaveTxId: txId,
         blockchainTxHash,
         blockchainChain,
         message: "Your inheritance has been successfully created and stored on blockchain.",
-        fractionKeys: fractionKeyAssignments && fractionKeyAssignments.length > 0
-          ? fractionKeyAssignments.map((a: { key: string }) => a.key)
-          : (fractionKeys || []),
+        fractionKeys: fractionKeys || [],
         willType: payload.willDetails.willType,
         storageType: effectiveStorageType,
         createdAt: new Date().toISOString(),
@@ -636,6 +689,8 @@ export function VaultCreationWizard({
   const handleUnifiedPayment = async (mode: PaymentMode, chainId?: ChainId) => {
     try {
       setIsProcessingPayment(true);
+      setPaymentProgress(null);
+      setPaymentPhase(null);
 
       // Calculate effective values immediately (don't rely on async state update)
       const effectiveStorageType = mode === "wander" ? "arweave" : "bitxenArweave";
@@ -653,6 +708,7 @@ export function VaultCreationWizard({
 
       if (mode === "wander") {
         setPaymentStatus("Preparing your vault...");
+        setPaymentPhase("confirm");
       } else {
         setPaymentStatus("Step 1/2: Uploading to Arweave...");
       }
@@ -795,16 +851,24 @@ export function VaultCreationWizard({
                 Additional Documents (optional)
               </label>
 
+              {stepError && (
+                <AlertMessage
+                  message={stepError}
+                  variant="error"
+                  showIcon
+                />
+              )}
+
               <label className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-border bg-muted/30 p-6 transition-colors hover:bg-muted/50">
                 <FileText className="mb-2 size-8 text-muted-foreground" />
                 <p className="text-sm font-medium">Click to upload documents</p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  PDF, DOC, DOCX, or TXT
+                  PDF, Office, images, video, audio, and more
                 </p>
                 <Input
                   type="file"
                   multiple
-                  accept=".pdf,.doc,.docx,.txt"
+                  accept=".pdf,.txt,.doc,.docx,.csv,.xls,.xlsx,.heic,.heiv,.hevc,.jpg,.jpeg,.png,.gif,.mp4,.mov,.avi,.m4v,.rtf,.rtfd,.html,.odt,.ai,.eps,.svg,.tiff,.psd,.fbx,.stp,.step,.igs,.iges,.stl,.3mf,.obg,.mp3,.aac,.wav,.flac,.alac,.aiff,.ogg,.m4a"
                   onChange={(event) => handleDocumentsChange(event.target.files)}
                   className="sr-only"
                 />
@@ -820,14 +884,22 @@ export function VaultCreationWizard({
                       <FileText className="size-4 shrink-0 text-muted-foreground" />
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">{file.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {formatFileSize(file.size)}
-                        </p>
+                        <div className="mt-0.5 flex items-center justify-start gap-2 text-xs text-muted-foreground">
+                          <span>{formatFileSize(file.size)}</span>
+                          <Badge
+                            className={cn(
+                              "shrink-0 gap-1.5 border !shadow-none",
+                              "border-emerald-200 bg-emerald-50 hover:bg-emerald-50 text-emerald-800 dark:border-emerald-800/50 dark:bg-emerald-950/40 dark:text-emerald-200",
+                            )}
+                          >
+                            <span>Encrypted</span>
+                          </Badge>
+                        </div>
                       </div>
                       <button
                         type="button"
                         onClick={() => removeDocument(index)}
-                        className="shrink-0 rounded-sm p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                        className="shrink-0 rounded-sm p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive cursor-pointer"
                         aria-label="Remove file"
                       >
                         <X className="size-4" />
@@ -1062,6 +1134,10 @@ export function VaultCreationWizard({
             onSubmit={handleUnifiedPayment}
             isSubmitting={isSubmitting || isProcessingPayment}
             paymentStatus={paymentStatus}
+            paymentProgress={paymentProgress}
+            paymentPhase={paymentPhase}
+            isReady={true}
+            blockedReason={null}
           />
         );
       default:
@@ -1081,7 +1157,7 @@ export function VaultCreationWizard({
       )}
       {/* Hide Next button in payment step - payment is done via wallet button in PaymentMethodSelector */}
       {currentStep !== steps.length - 1 && (
-        <Button onClick={handleNext} disabled={isSubmitting}>
+        <Button onClick={handleNext} disabled={isSubmitting || isNextBlockedByAttachmentPrep}>
           Next
         </Button>
       )}

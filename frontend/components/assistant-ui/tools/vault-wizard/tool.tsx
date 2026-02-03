@@ -2,13 +2,11 @@ import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useCallback, useEffect, useState, useRef } from "react";
 import { RefreshCw, Clock, Check, Copy, ExternalLink, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useRouter } from "next/navigation";
-import { FractionKeyList, InfoBox, DownloadBackupButton } from "@/components/shared/vault";
+import { FractionKeyList, DownloadBackupButton } from "@/components/shared/vault";
 
 import { VaultCreationWizard } from "./wizard";
 import type { SubmissionResult } from "./types";
 import {
-  savePendingVault,
   checkArweaveStatus,
   getArweaveExplorerUrl,
   type PendingVaultStatus,
@@ -35,12 +33,10 @@ type HealthStatus = {
 export const VaultCreationWizardTool: ToolCallMessagePartComponent<{
   reason?: string;
   metadata?: Record<string, unknown>;
-}> = ({ args }) => {
+}> = () => {
   const [isOpen, setIsOpen] = useState(false); // Start with false, will be opened after all services are ready
   const [submissionResult, setSubmissionResult] = useState<SubmissionResult | null>(null);
-  const router = useRouter();
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
-  const [copyArweaveTxIdState, setCopyArweaveTxIdState] = useState<"idle" | "copied">("idle");
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(null);
   const [isCheckingHealth, setIsCheckingHealth] = useState(true);
   const [arweaveStatus, setArweaveStatus] = useState<PendingVaultStatus>("pending");
@@ -140,18 +136,6 @@ export const VaultCreationWizardTool: ToolCallMessagePartComponent<{
     }
   };
 
-  const handleCopyArweaveTxId = async () => {
-    if (!submissionResult?.arweaveTxId) return;
-
-    try {
-      await navigator.clipboard?.writeText(submissionResult.arweaveTxId);
-      setCopyArweaveTxIdState("copied");
-      setTimeout(() => setCopyArweaveTxIdState("idle"), 2000);
-    } catch (error) {
-      console.error("Failed to copy Transaction ID:", error);
-    }
-  };
-
   const handleDownloadId = () => {
     if (!submissionResult?.vaultId) return;
 
@@ -236,15 +220,6 @@ Save this ID safely. You will need it to find and manage your inheritance later.
     // Cleanup interval on unmount or when status becomes confirmed
     return () => clearInterval(intervalId);
   }, [submissionResult?.arweaveTxId, arweaveStatus]);
-
-  const reason =
-    args && typeof args === "object" && "reason" in args
-      ? String(
-        (args as {
-          reason?: string | number | boolean;
-        }).reason ?? "",
-      ).trim()
-      : "";
 
   // Show result if form is completed (has submissionResult)
   if (submissionResult) {
@@ -562,7 +537,7 @@ Save this ID safely. You will need it to find and manage your inheritance later.
       <div className="aui-vault-wizard-tool mt-3 w-full">
         <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-4 text-sm dark:border-red-800 dark:bg-red-950">
           <p className="font-medium text-red-700 dark:text-red-300 mb-3">
-            ❌ We can't open the form right now because some services are unavailable
+            ❌ We can&apos;t open the form right now because some services are unavailable
           </p>
           <div className="space-y-2 text-xs text-red-600 dark:text-red-400">
             {!healthStatus.backend.available && (
@@ -638,4 +613,3 @@ Save this ID safely. You will need it to find and manage your inheritance later.
     </div>
   );
 };
-

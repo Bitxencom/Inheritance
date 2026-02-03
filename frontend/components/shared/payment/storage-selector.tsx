@@ -1,7 +1,8 @@
 "use client";
 
+import Image from "next/image";
 import { cn } from "@/lib/utils";
-import { Database, Link2, Globe, Hexagon } from "lucide-react";
+import { Database, Link2, Globe, type LucideIcon } from "lucide-react";
 import {
   CHAIN_CONFIG,
   getAvailableChains,
@@ -18,7 +19,19 @@ interface StorageSelectorProps {
   disabled?: boolean;
 }
 
-const storageOptions = [
+type StorageOption = {
+  id: StorageType;
+  name: string;
+  badge?: string;
+  description: string;
+  details: string;
+  icon: LucideIcon;
+  fee: string;
+  color: string;
+  borderColor: string;
+};
+
+const storageOptions: StorageOption[] = [
   {
     id: "arweave" as const,
     name: "Arweave",
@@ -93,9 +106,9 @@ export function StorageSelector({
                   <div>
                     <div className="flex items-center gap-2">
                       <h3 className="font-semibold">{option.name}</h3>
-                      {(option as any).badge && (
+                      {option.badge && (
                         <div className="flex items-center !h-6 rounded-md bg-orange-100 dark:bg-orange-900/50 px-2 py-auto text-[10px] font-bold text-orange-600 dark:text-orange-400 border border-orange-200 dark:border-orange-800">
-                          {(option as any).badge}
+                          {option.badge}
                         </div>
                       )}
                     </div>
@@ -116,6 +129,61 @@ export function StorageSelector({
           })}
         </div>
       </div>
+
+      {selectedStorage === "bitxenArweave" && (
+        <div className="space-y-3">
+          <p className="text-sm font-medium flex items-center gap-2">
+            <span className="h-4 w-4">🔗</span>
+            Select Blockchain Network
+          </p>
+          <div className="grid grid-cols-3 md:grid-cols-5 gap-2">
+            {availableChains.map((chainId) => {
+              const chain = CHAIN_CONFIG[chainId];
+              const isChainSelected = selectedChain === chainId;
+
+              return (
+                <button
+                  key={chainId}
+                  type="button"
+                  onClick={() => onChainChange?.(chainId)}
+                  disabled={disabled}
+                  className={cn(
+                    "rounded-lg border-2 px-3 py-2 text-sm transition-all cursor-pointer group",
+                    isChainSelected
+                      ? "border-primary bg-primary/10 font-medium"
+                      : "border-border hover:border-primary/50 hover:bg-muted/50",
+                    disabled && "opacity-50 cursor-not-allowed",
+                  )}
+                >
+                  <div className="flex flex-col items-center gap-2">
+                    {chain.logo && (
+                      <div className="h-6 w-6 rounded-full overflow-hidden bg-white/10 p-0.5">
+                        <Image
+                          src={chain.logo}
+                          alt={chain.shortName}
+                          width={24}
+                          height={24}
+                          className="h-full w-full object-contain"
+                          unoptimized
+                        />
+                      </div>
+                    )}
+                    <div className="flex flex-col items-center leading-tight">
+                      <span className="font-medium text-[13px]">{chain.shortName}</span>
+                      <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                        BITXEN
+                      </span>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Each network has different gas fees. BSC typically offers the lowest fees.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

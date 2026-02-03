@@ -505,8 +505,9 @@ export async function POST(req: Request) {
   }
 
   // Filter out search_service_information to prevent "Service Info" cards
-  const { search_service_information, ...filteredTools } = tools;
-  // Use filteredTools instead of tools
+  const filteredTools = { ...tools } as Record<string, unknown>;
+  delete (filteredTools as Record<string, unknown>)["search_service_information"];
+
   const combinedTools = {
     ...filteredTools,
     open_vault_wizard: openVaultWizardTool,
@@ -518,7 +519,6 @@ export async function POST(req: Request) {
   };
 
   // Augment system prompt with RAG context
-  const language = (req.headers.get("accept-language") || "en").substring(0, 2);
   const systemPromptParts = [
     `You are an AI assistant for a Digital Legacy Vault platform called Inheritance.`,
     `Your primary language is English.`,

@@ -11,6 +11,13 @@ const arweave = Arweave.init({
   protocol: "https",
 });
 
+const ARWEAVE_GATEWAYS = [
+  "https://arweave.net",
+  "https://ar-io.net",
+  "https://g8way.io",
+  "https://arweave.dev",
+];
+
 /**
  * Internal format for upload (with clear keys)
  */
@@ -95,6 +102,7 @@ export const fetchVaultPayloadById = async (
 
   let txId: string | null = null;
   let gqlError = false;
+  let gqlBlockHeight: number | null = null;
 
   // Retry logic for GraphQL query
   const maxRetries = 3;
@@ -121,12 +129,21 @@ export const fetchVaultPayloadById = async (
         const gqlJson = (await gqlResponse.json()) as {
           data?: {
             transactions?: {
-              edges?: { node?: { id?: string } }[];
+              edges?: {
+                node?: {
+                  id?: string;
+                  block?: { height?: number | null } | null;
+                };
+              }[];
             };
           };
         };
         const edges = gqlJson.data?.transactions?.edges ?? [];
         txId = edges[0]?.node?.id || null;
+        gqlBlockHeight =
+          typeof edges[0]?.node?.block?.height === "number"
+            ? edges[0]?.node?.block?.height
+            : null;
         success = true;
       } else {
         console.warn(`⚠️ Blockchain GraphQL query failed: HTTP ${gqlResponse.status}`);
@@ -148,24 +165,38 @@ export const fetchVaultPayloadById = async (
   
   // Helper to check status of a specific TxID
   const checkTxStatus = async (id: string): Promise<number> => {
-    try {
-      // We check via the data endpoint head/get request usually, 
-      // but to be sure about "Pending" (202), we can use the /tx/{id}/status endpoint or just fetch data
-      // Arweave gateway /tx/{id}/status returns { status: 200, confirmed: ... }
-      const statusResponse = await fetch(`https://arweave.net/tx/${id}/status`);
-      if (statusResponse.ok) {
-        const statusData = await statusResponse.json();
-        // status 202 = Pending, 200 = Confirmed
-        return statusData.status; 
+    let lastNon404Status: number | null = null;
+
+    for (const gateway of ARWEAVE_GATEWAYS) {
+      try {
+        const statusResponse = await fetch(`${gateway}/tx/${id}/status`, {
+          method: "GET",
+          redirect: "follow",
+        });
+
+        if (statusResponse.ok) {
+          const statusData = (await statusResponse.json().catch(() => null)) as
+            | { status?: unknown }
+            | null;
+          return typeof statusData?.status === "number" ? statusData.status : 200;
+        }
+
+        if (statusResponse.status === 202) return 202;
+        if (statusResponse.status !== 404) lastNon404Status = statusResponse.status;
+      } catch (e) {
+        continue;
       }
-      return statusResponse.status;
-    } catch (e) {
-      return 0;
     }
+
+    return lastNon404Status ?? 0;
   };
 
   // Case 1: GraphQL passed and found a TxID
   if (txId && !gqlError) {
+    if (gqlBlockHeight === null) {
+      throw new Error("Vault transaction is pending");
+    }
+
     // Check if fallbackTxId exists and is DIFFERENT from found txId
     // This implies fallbackTxId might be NEWER (pending) or OLDER. 
     // We assume if it's in local storage and different, it likely might be a pending newer version.
@@ -231,27 +262,103 @@ export const fetchVaultPayloadById = async (
   }
 
   // Fetch transaction data using the resolved txId
-  const dataUrl = `https://arweave.net/${txId}`;
-  const txResponse = await fetch(dataUrl, { redirect: 'follow' });
-  if (!txResponse.ok) {
-     // Double check if it's pending just in case fetching data fails (e.g. 202 Accepted for data fetch)
-      if (txResponse.status === 202) {
-         throw new Error("Vault transaction is pending");
-      }
-    throw new Error(
-      `Failed to fetch blockchain transaction data for txId=${txId}: HTTP ${txResponse.status}`,
-    );
-  }
+  const fetchWithTimeout = async (
+    url: string,
+    options: RequestInit,
+    timeoutMs: number,
+  ): Promise<Response> => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
 
-  const payloadJson = await txResponse.json();
+  const fetchTxJson = async (id: string): Promise<unknown> => {
+    const paths = [`/${id}`, `/raw/${id}`, `/tx/${id}/data`];
+    let lastNon404Status: number | null = null;
+
+    for (const gateway of ARWEAVE_GATEWAYS) {
+      for (const path of paths) {
+        const url = `${gateway}${path}`;
+        try {
+          const response = await fetchWithTimeout(
+            url,
+            {
+              method: "GET",
+              headers: {
+                Accept: "application/json, text/plain;q=0.9, */*;q=0.8",
+              },
+              redirect: "follow",
+            },
+            8000,
+          );
+
+          if (response.status === 202) {
+            throw new Error("Vault transaction is pending");
+          }
+
+          if (!response.ok) {
+            if (response.status !== 404) lastNon404Status = response.status;
+            continue;
+          }
+
+          const text = await response.text();
+          try {
+            return JSON.parse(text);
+          } catch {
+            return text;
+          }
+        } catch (error) {
+          if (error instanceof Error && error.name === "AbortError") {
+            continue;
+          }
+          if (
+            error instanceof Error &&
+            (error.message.includes("pending") || error.message.includes("Newer version"))
+          ) {
+            throw error;
+          }
+          continue;
+        }
+      }
+    }
+
+    if (lastNon404Status === null) {
+      const status = await checkTxStatus(id);
+      if (status === 202 || status === 0) {
+        throw new Error("Vault transaction is pending");
+      }
+      if (status === 200) {
+        throw new Error(
+          "Vault transaction is pending (transaction exists but data is not yet available on gateways)",
+        );
+      }
+    }
+
+    throw new Error(
+      `Failed to fetch blockchain transaction data for txId=${id}: HTTP ${lastNon404Status ?? 404}`,
+    );
+  };
+
+  const payloadJson = await fetchTxJson(txId);
 
   // Handle obfuscated format (id, v, t, m, d) - used in newer versions
-  if (payloadJson.id && payloadJson.m && payloadJson.d) {
+  if (
+    payloadJson &&
+    typeof payloadJson === "object" &&
+    "id" in payloadJson &&
+    "m" in payloadJson &&
+    "d" in payloadJson
+  ) {
     try {
+      const obfuscated = payloadJson as { id: string; m: string; d: unknown };
       return {
-        vaultId: payloadJson.id,
-        encryptedData: payloadJson.d,
-        metadata: decryptMetadata(payloadJson.m, payloadJson.id),
+        vaultId: obfuscated.id,
+        encryptedData: obfuscated.d,
+        metadata: decryptMetadata(obfuscated.m, obfuscated.id),
         latestTxId: txId, // Include the latest transaction ID
       };
     } catch (error) {
@@ -261,7 +368,12 @@ export const fetchVaultPayloadById = async (
   }
 
   // Handle legacy format (vaultId, encryptedData, metadata)
-  if (payloadJson.vaultId && payloadJson.encryptedData) {
+  if (
+    payloadJson &&
+    typeof payloadJson === "object" &&
+    "vaultId" in payloadJson &&
+    "encryptedData" in payloadJson
+  ) {
     return {
       ...payloadJson,
       latestTxId: txId, // Include the latest transaction ID
@@ -328,4 +440,3 @@ async function fetchVaultFromSmartChain(
 
   throw new Error(`Vault ID ${vaultId} not found on Smart Chain storage (Checked hash ${txHash})`);
 }
-

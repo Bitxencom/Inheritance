@@ -200,13 +200,13 @@ export const prepareVault = async (
     ? hashSecurityQuestionAnswers(payload.securityQuestions, vaultId)
     : [];
 
-  // Prepare internal metadata
   const metadata = {
     trigger: payload.triggerRelease,
     beneficiaryCount: payload.beneficiaries.length,
     securityQuestionHashes,
     willType: payload.willDetails?.willType || "one-time",
     isPqcEnabled: usePqc,
+    encryptionVersion: "v1-backend",
     ...(usePqc && pqcKeyPairSerialized ? { pqcPublicKey: pqcKeyPairSerialized.publicKey } : {}),
   };
 

@@ -43,11 +43,7 @@ import type {
 import { editSteps, initialEditFormState } from "./constants";
 import { StorageSelector, MetaMaskWalletButton, WanderWalletButton } from "@/components/shared/payment";
 import { Stepper } from "@/components/shared/stepper";
-import {
-  connectWanderWallet,
-  sendArPayment,
-  WANDER_PAYMENT_CONFIG,
-} from "@/lib/wanderWallet";
+import { connectWanderWallet } from "@/lib/wanderWallet";
 import {
 
   type ChainId,
@@ -56,6 +52,24 @@ import {
 } from "@/lib/metamaskWallet";
 
 import { getVaultById, updateVaultTxId } from "@/lib/vault-storage";
+import { combineSharesClient } from "@/lib/shamirClient";
+import {
+  decryptVaultPayloadClient,
+  encryptVaultPayloadClient,
+  type EncryptedVaultClient,
+} from "@/lib/clientVaultCrypto";
+import { hashSecurityAnswerClient } from "@/lib/securityQuestionsClient";
+
+type VaultPayloadForEdit = Record<string, unknown> & {
+  willDetails?: Record<string, unknown> & {
+    title?: string;
+    content?: string;
+    willType?: "one-time" | "editable";
+    documents?: Array<{ name?: string; size?: number; type?: string; content?: string }>;
+  };
+  securityQuestions?: Array<{ question: string; answer: string }>;
+  triggerRelease?: unknown;
+};
 
 export function VaultEditWizard({
   variant = "dialog",
@@ -111,6 +125,8 @@ export function VaultEditWizard({
   const [isVerifyingVault, setIsVerifyingVault] = useState(false);
   const [isVerifyingQuestions, setIsVerifyingQuestions] = useState(false);
   const [isVerifyingFractionKeys, setIsVerifyingFractionKeys] = useState(false);
+  const [decryptedVaultPayload, setDecryptedVaultPayload] = useState<VaultPayloadForEdit | null>(null);
+  const [combinedKeyForAttachments, setCombinedKeyForAttachments] = useState<Uint8Array | null>(null);
 
   // State for version tracking
   const [newerVersionAvailable, setNewerVersionAvailable] = useState(false);
@@ -166,6 +182,7 @@ export function VaultEditWizard({
     setNewerVersionAvailable(false);
     setLatestTxId(null);
     setHasPendingEdit(false);
+    setCombinedKeyForAttachments(null);
   }, []);
 
   useEffect(() => {
@@ -334,57 +351,84 @@ export function VaultEditWizard({
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
+  const base64ToBlob = (content: string, mimeType: string): Blob => {
+    const base64 = content.startsWith("data:")
+      ? (content.split(",")[1] || "")
+      : (content.includes(",") ? (content.split(",")[1] || "") : content);
+
+    if (!base64) {
+      throw new Error("Document content is not available.");
+    }
+
+    const byteArrays: Uint8Array[] = [];
+    const sliceSize = 4 * 1024 * 1024;
+
+    for (let offset = 0; offset < base64.length; offset += sliceSize) {
+      const slice = base64.slice(offset, offset + sliceSize);
+      const binary = atob(slice);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      byteArrays.push(bytes);
+    }
+
+    return new Blob(byteArrays as unknown as BlobPart[], { type: mimeType || "application/octet-stream" });
+  };
+
   const downloadDocument = async (documentIndex: number) => {
     try {
-      // Build request body with fraction keys and security answers
-      // Adapted from old-project: using fractionKeys instead of shardKeys
-      const fractionKeysArray = [
-        formState.fractionKeys.key1,
-        formState.fractionKeys.key2,
-        formState.fractionKeys.key3,
-      ];
-
-      // Need arweaveTxId for backend to find the correct data version
-      const localVault = getVaultById(formState.vaultId);
-      const arweaveTxId = localVault?.arweaveTxId;
-
-      const url = `/api/vault/${formState.vaultId}/document/${documentIndex}`;
-
-      // Use POST to avoid URL length limit issues with large keys
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          fractionKeys: fractionKeysArray,
-          securityQuestionAnswers: formState.securityQuestionAnswers,
-          arweaveTxId,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || "Failed to download document.");
+      const doc = formState.willDetails.existingDocuments[documentIndex];
+      if (!doc) {
+        throw new Error("Document not found.");
       }
+      const sourceIndex = doc.sourceIndex;
+      const storedDoc = decryptedVaultPayload?.willDetails?.documents?.[sourceIndex];
+      const storedAny = storedDoc as
+        | { content?: unknown; attachment?: { txId?: unknown; iv?: unknown; checksum?: unknown } }
+        | undefined;
 
-      // Get filename from header or use name from document
-      const contentDisposition = response.headers.get("Content-Disposition");
-      let filename = formState.willDetails.existingDocuments[documentIndex]?.name || "document";
+      let blob: Blob | null = null;
 
-      if (contentDisposition) {
-        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-        if (filenameMatch && filenameMatch[1]) {
-          filename = decodeURIComponent(filenameMatch[1].replace(/['"]/g, ""));
+      if (typeof storedAny?.content === "string" && storedAny.content.trim().length > 0) {
+        blob = base64ToBlob(storedAny.content, doc.type);
+      } else if (
+        storedAny?.attachment &&
+        typeof storedAny.attachment.txId === "string" &&
+        typeof storedAny.attachment.iv === "string"
+      ) {
+        if (!combinedKeyForAttachments) {
+          throw new Error("Unable to download: encryption key is not available.");
         }
+        const response = await fetch(`https://arweave.net/${storedAny.attachment.txId}`);
+        if (!response.ok) {
+          throw new Error("Failed to fetch attachment from blockchain storage.");
+        }
+        const cipherBuffer = await response.arrayBuffer();
+        const { decryptBytesClient } = await import("@/lib/clientVaultCrypto");
+        const plainBytes = await decryptBytesClient(
+          {
+            cipherBytes: cipherBuffer,
+            iv: storedAny.attachment.iv,
+            checksum: typeof storedAny.attachment.checksum === "string" ? storedAny.attachment.checksum : undefined,
+          },
+          combinedKeyForAttachments,
+        );
+        const plainBuffer = plainBytes.buffer.slice(
+          plainBytes.byteOffset,
+          plainBytes.byteOffset + plainBytes.byteLength,
+        ) as ArrayBuffer;
+        blob = new Blob([plainBuffer], { type: doc.type || "application/octet-stream" });
       }
 
-      // Convert response to blob and download
-      const blob = await response.blob();
+      if (!blob) {
+        throw new Error("Document content is not available.");
+      }
+
       const downloadUrl = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = downloadUrl;
-      link.download = filename;
+      link.download = doc.name || "document";
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -739,18 +783,18 @@ export function VaultEditWizard({
     setIsVerifyingFractionKeys(true);
     setStepError(null);
     try {
-      const response = await fetch("/api/vault/preview", {
+      const response = await fetch("/api/vault/claim/unlock", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
           vaultId: formState.vaultId,
-          fractionKeys: [
-            formState.fractionKeys.key1,
-            formState.fractionKeys.key2,
-            formState.fractionKeys.key3,
-          ],
+          fractionKeys: {
+            key1: formState.fractionKeys.key1,
+            key2: formState.fractionKeys.key2,
+            key3: formState.fractionKeys.key3,
+          },
           securityQuestionAnswers: formState.securityQuestionAnswers,
           arweaveTxId: getVaultById(formState.vaultId)?.arweaveTxId,
         }),
@@ -815,13 +859,27 @@ export function VaultEditWizard({
         return false;
       }
 
-      // Validate willType after decrypt succeeds
-      if (data.willDetails?.willType === "one-time") {
-        // Reset validation
+      const fractionKeysArray = [
+        formState.fractionKeys.key1,
+        formState.fractionKeys.key2,
+        formState.fractionKeys.key3,
+      ].filter((value) => value.trim() !== "");
+
+      const combinedKey = combineSharesClient(fractionKeysArray);
+      setCombinedKeyForAttachments(combinedKey);
+
+      const decrypted = (data.decryptedVault
+        ? data.decryptedVault
+        : await decryptVaultPayloadClient(data.encryptedVault as EncryptedVaultClient, combinedKey)) as VaultPayloadForEdit;
+
+      setDecryptedVaultPayload(decrypted);
+
+      const willTypeFromMetadata = data.metadata?.willType as "one-time" | "editable" | undefined;
+      const willType = willTypeFromMetadata || decrypted.willDetails?.willType;
+
+      if (willType === "one-time") {
         setIsSecurityAnswersVerified(false);
         setIsFractionKeysVerified(false);
-
-        // Go back to first step and show error
         setCurrentStep(0);
         setStepError(
           "This inheritance is set to 'One-Time' and cannot be edited. Only 'Editable' vaults can be modified.",
@@ -829,23 +887,20 @@ export function VaultEditWizard({
         return false;
       }
 
-      if (data.willDetails) {
-        setFormState((prev) => ({
-          ...prev,
-          willDetails: {
-            title: data.willDetails.title ?? "",
-            content: data.willDetails.content ?? "",
-            // Ensure documents from backend have correct structure
-            existingDocuments: (data.willDetails.documents ?? []).map((doc: { name?: string; size?: number; type?: string; content?: string }) => ({
-              name: doc.name || "",
-              size: doc.size || 0,
-              type: doc.type || "application/octet-stream",
-              content: doc.content || "", // Content must be present from backend
-            })),
-            newDocuments: prev.willDetails.newDocuments, // Preserve new documents already selected by user
-          },
-        }));
-      }
+      setFormState((prev) => ({
+        ...prev,
+        willDetails: {
+          title: decrypted.willDetails?.title ?? "",
+          content: decrypted.willDetails?.content ?? "",
+          existingDocuments: (decrypted.willDetails?.documents ?? []).map((doc, sourceIndex) => ({
+            sourceIndex,
+            name: doc.name || "",
+            size: doc.size || 0,
+            type: doc.type || "application/octet-stream",
+          })),
+          newDocuments: prev.willDetails.newDocuments,
+        },
+      }));
 
       // If successful, fraction keys and security questions are valid
       setIsSecurityAnswersVerified(true);
@@ -857,7 +912,7 @@ export function VaultEditWizard({
       setIsSecurityAnswersVerified(false);
       setIsFractionKeysVerified(false);
 
-      console.error("Failed to retrieve inheritance preview:", error);
+      console.error("Failed to retrieve inheritance content:", error);
       const message =
         error instanceof Error
           ? error.message
@@ -915,137 +970,224 @@ export function VaultEditWizard({
     setStepError(null);
 
     try {
-      // Convert new Files to base64
-      const newDocumentsWithContent = await Promise.all(
-        formState.willDetails.newDocuments.map(async (doc) => {
-          const base64Content = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => {
-              const result = reader.result as string;
-              // Remove data URL prefix (data:application/pdf;base64,)
-              const base64 = result.split(",")[1] || result;
-              resolve(base64);
-            };
-            reader.onerror = reject;
-            reader.readAsDataURL(doc);
-          });
+      const normalizeBase64 = (content: string): string => {
+        if (!content) return "";
+        if (!content.startsWith("data:")) return content;
+        const commaIndex = content.indexOf(",");
+        return commaIndex === -1 ? content : content.slice(commaIndex + 1);
+      };
 
-          return {
+      const estimateBase64Bytes = (base64: string): number => {
+        const trimmed = base64.trim();
+        if (!trimmed) return 0;
+        let padding = 0;
+        if (trimmed.endsWith("==")) padding = 2;
+        else if (trimmed.endsWith("=")) padding = 1;
+        return (trimmed.length * 3) / 4 - padding;
+      };
+
+      const readFileAsBase64 = async (file: File): Promise<string> =>
+        await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = typeof reader.result === "string" ? reader.result : "";
+            resolve(normalizeBase64(result));
+          };
+          reader.onerror = () => reject(reader.error ?? new Error("Failed to read file."));
+          reader.readAsDataURL(file);
+        });
+
+      const INLINE_DOCUMENT_MAX_BYTES = 5 * 1024 * 1024;
+
+      const fractionKeysArray = [
+        formState.fractionKeys.key1,
+        formState.fractionKeys.key2,
+        formState.fractionKeys.key3,
+      ].filter((value) => value.trim() !== "");
+
+      const combinedKey = combineSharesClient(fractionKeysArray);
+
+      const shouldUploadAttachments = formState.willDetails.newDocuments.some(
+        (doc) => doc.size > INLINE_DOCUMENT_MAX_BYTES,
+      );
+
+      const uploadEncryptedAttachment = shouldUploadAttachments
+        ? async (
+            bytes: Uint8Array,
+            tags: Record<string, string>,
+            onProgress?: (progress: number) => void,
+          ) => {
+            const { dispatchToArweave, isWalletReady, connectWanderWallet } = await import("@/lib/wanderWallet");
+            if (!(await isWalletReady())) {
+              await connectWanderWallet();
+            }
+            const docName = tags["Doc-Name"] || "attachment";
+            const result = await dispatchToArweave(bytes, formState.vaultId, tags, onProgress, (status) => {
+              setPaymentStatus(`${status} (${docName})`);
+            });
+            return result.txId;
+          }
+        : null;
+
+      const newDocumentsWithContent: Array<{
+        name: string;
+        size: number;
+        type: string;
+        content?: string;
+        attachment?: { txId: string; iv: string; checksum: string };
+      }> = [];
+
+      for (const doc of formState.willDetails.newDocuments) {
+        if (doc.size > INLINE_DOCUMENT_MAX_BYTES) {
+          if (!uploadEncryptedAttachment) {
+            throw new Error(`Attachment "${doc.name}" cannot be uploaded at this time.`);
+          }
+          setPaymentStatus(`Reading attachment: ${doc.name}`);
+          const { encryptBytesClient } = await import("@/lib/clientVaultCrypto");
+          const plainBuffer = await doc.arrayBuffer();
+          setPaymentStatus(`Encrypting attachment: ${doc.name}`);
+          const encrypted = await encryptBytesClient(plainBuffer, combinedKey);
+          let lastPct = -1;
+          const txId = await uploadEncryptedAttachment(
+            encrypted.cipherBytes,
+            {
+              "Content-Type": doc.type || "application/octet-stream",
+              Type: "att",
+              "Doc-Name": doc.name,
+              "Doc-Role": "attachment",
+            },
+            (progress) => {
+              const pct = Math.max(0, Math.min(100, Math.round(progress)));
+              if (pct !== lastPct) {
+                lastPct = pct;
+                setPaymentStatus(`Uploading attachment: ${doc.name} (${pct}%)`);
+              }
+            },
+          );
+          newDocumentsWithContent.push({
+            name: doc.name,
+            size: doc.size,
+            type: doc.type,
+            attachment: {
+              txId,
+              iv: encrypted.iv,
+              checksum: encrypted.checksum,
+            },
+          });
+        } else {
+          const base64Content = await readFileAsBase64(doc);
+          if (!base64Content) {
+            throw new Error(`Attachment "${doc.name}" has no content. Please re-upload the file.`);
+          }
+
+          const decodedSize = estimateBase64Bytes(base64Content);
+          if (!Number.isFinite(decodedSize) || decodedSize <= 0 || Math.abs(decodedSize - doc.size) > 4) {
+            throw new Error(`Attachment "${doc.name}" looks corrupted or incomplete. Please re-upload the file.`);
+          }
+
+          newDocumentsWithContent.push({
             name: doc.name,
             size: doc.size,
             type: doc.type,
             content: base64Content,
-          };
-        }),
-      );
+          });
+        }
+      }
 
-      // Download content for existing documents that don't have content
-      const existingDocumentsWithContent = await Promise.all(
-        formState.willDetails.existingDocuments.map(async (doc, index) => {
-          // If document already has content, use that content
-          if (doc.content && doc.content.trim() !== "") {
-            return {
-              name: doc.name,
-              size: doc.size,
-              type: doc.type,
-              content: doc.content,
-            };
+      const basePayload = decryptedVaultPayload;
+      if (!basePayload || typeof basePayload !== "object") {
+        throw new Error("Unable to edit: vault content is not loaded.");
+      }
+
+      const baseDocuments = basePayload.willDetails?.documents ?? [];
+      const existingDocumentsWithContent = formState.willDetails.existingDocuments.map((doc) => {
+        const stored = baseDocuments[doc.sourceIndex];
+        const storedAny = stored as
+          | { content?: unknown; attachment?: { txId?: unknown; iv?: unknown; checksum?: unknown } }
+          | undefined;
+        const content = typeof storedAny?.content === "string" ? storedAny.content : "";
+        const attachment =
+          storedAny?.attachment &&
+          typeof storedAny.attachment.txId === "string" &&
+          typeof storedAny.attachment.iv === "string"
+            ? {
+                txId: storedAny.attachment.txId,
+                iv: storedAny.attachment.iv,
+                checksum: typeof storedAny.attachment.checksum === "string" ? storedAny.attachment.checksum : "",
+              }
+            : null;
+
+        if (!content && !attachment) {
+          throw new Error(`Document content is not available for "${doc.name}".`);
+        }
+        if (content) {
+          const decodedSize = estimateBase64Bytes(content);
+          if (!Number.isFinite(decodedSize) || decodedSize <= 0 || Math.abs(decodedSize - doc.size) > 4) {
+            throw new Error(`Document "${doc.name}" looks corrupted or incomplete. Please re-upload it.`);
           }
+        }
 
-          // If no content, download from backend
-          try {
-            const fractionKeysArray = [
-              formState.fractionKeys.key1,
-              formState.fractionKeys.key2,
-              formState.fractionKeys.key3,
-            ];
+        const base = {
+          name: doc.name,
+          size: doc.size,
+          type: doc.type,
+        };
+        return content ? { ...base, content } : { ...base, attachment: { ...attachment!, checksum: attachment!.checksum } };
+      });
 
-            const params = new URLSearchParams({
-              fractionKeys: JSON.stringify(fractionKeysArray),
-              securityQuestionAnswers: JSON.stringify(formState.securityQuestionAnswers),
-            });
+      const combinedDocuments = [
+        ...existingDocumentsWithContent,
+        ...newDocumentsWithContent,
+      ];
 
-            const url = `/api/vault/${formState.vaultId}/document/${index}?${params.toString()}`;
-            const response = await fetch(url, {
-              method: "POST", // Changed to POST to match download implementation
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                fractionKeys: fractionKeysArray,
-                securityQuestionAnswers: formState.securityQuestionAnswers,
-                arweaveTxId: getVaultById(formState.vaultId)?.arweaveTxId,
-              })
-            });
+      const nextSecurityQuestions =
+        formState.isEditingSecurityQuestions && formState.editedSecurityQuestions.length >= 3
+          ? formState.editedSecurityQuestions
+          : basePayload.securityQuestions || [];
 
-            if (!response.ok) {
-              throw new Error(`Failed to download document ${doc.name}`);
-            }
+      if (nextSecurityQuestions.length < 3) {
+        throw new Error("Security questions are missing. Unable to prepare an updated vault.");
+      }
 
-            // Convert blob to base64
-            const blob = await response.blob();
-            const base64Content = await new Promise<string>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => {
-                const result = reader.result as string;
-                const base64 = result.split(",")[1] || result;
-                resolve(base64);
-              };
-              reader.onerror = reject;
-              reader.readAsDataURL(blob);
-            });
-
-            return {
-              name: doc.name,
-              size: doc.size,
-              type: doc.type,
-              content: base64Content,
-            };
-          } catch (error) {
-            console.error(`Failed to download document ${doc.name}:`, error);
-            // If download fails, send with empty content (backend will handle)
-            return {
-              name: doc.name,
-              size: doc.size,
-              type: doc.type,
-              content: "",
-            };
-          }
-        }),
-      );
-
-      // Prepare request body
-      const requestBody: Record<string, unknown> = {
-        vaultId: formState.vaultId,
+      const updatedPayload = {
+        ...basePayload,
         willDetails: {
+          ...(basePayload.willDetails || {}),
           title: formState.willDetails.title,
           content: formState.willDetails.content,
-          // Combine existing documents (with content) with new documents
-          documents: [
-            ...existingDocumentsWithContent,
-            ...newDocumentsWithContent,
-          ],
+          willType: "editable",
+          documents: combinedDocuments,
         },
-        fractionKeys: [
-          formState.fractionKeys.key1,
-          formState.fractionKeys.key2,
-          formState.fractionKeys.key3,
-        ],
-        securityQuestionAnswers: formState.securityQuestionAnswers,
-        arweaveTxId: getVaultById(formState.vaultId)?.arweaveTxId,
+        securityQuestions: nextSecurityQuestions,
       };
 
-      // Include new security questions if user enabled editing
-      if (formState.isEditingSecurityQuestions && formState.editedSecurityQuestions.length >= 3) {
-        requestBody.securityQuestions = formState.editedSecurityQuestions;
-      }
+      const securityQuestionHashes = await Promise.all(
+        nextSecurityQuestions.map(async (sq) => ({
+          question: sq.question,
+          answerHash: await hashSecurityAnswerClient(sq.answer),
+        })),
+      );
+
+      const metadata = {
+        trigger: updatedPayload.triggerRelease ?? null,
+        beneficiaryCount: 0,
+        securityQuestionHashes,
+        willType: "editable",
+        encryptionVersion: "v2-client" as const,
+      };
+
+      const encryptedVault = await encryptVaultPayloadClient(updatedPayload, combinedKey);
 
       const response = await fetch("/api/vault/edit", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify({
+          vaultId: formState.vaultId,
+          encryptedVault,
+          metadata,
+        }),
       });
 
       const data = await response.json();
@@ -1067,7 +1209,7 @@ export function VaultEditWizard({
         throw new Error(errorMessage);
       }
 
-      let txId = data.details?.arweaveTxId;
+      let txId: string | undefined;
 
       let blockchainTxHash: string | undefined;
       let blockchainChain: string | undefined;
@@ -1620,12 +1762,12 @@ export function VaultEditWizard({
                 <FileText className="mb-2 size-8 text-muted-foreground" />
                 <p className="text-sm font-medium">Click to upload documents</p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  PDF, DOC, DOCX, or TXT
+                  PDF, Office, images, video, audio, and more
                 </p>
                 <Input
                   type="file"
                   multiple
-                  accept=".pdf,.doc,.docx,.txt"
+                  accept=".pdf,.txt,.doc,.docx,.csv,.xls,.xlsx,.heic,.heiv,.hevc,.jpg,.jpeg,.png,.gif,.mp4,.mov,.avi,.m4v,.rtf,.rtfd,.html,.odt,.ai,.eps,.svg,.tiff,.psd,.fbx,.stp,.step,.igs,.iges,.stl,.3mf,.obg,.mp3,.aac,.wav,.flac,.alac,.aiff,.ogg,.m4a"
                   onChange={(event) => handleDocumentsChange(event.target.files)}
                   className="sr-only"
                 />
@@ -2170,5 +2312,3 @@ export function VaultEditWizard({
     </div>
   );
 }
-
-

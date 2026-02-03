@@ -24,10 +24,10 @@ export type EditFormState = {
     title: string;
     content: string;
     existingDocuments: Array<{
+      sourceIndex: number;
       name: string;
       size: number;
       type: string;
-      content?: string;
     }>;
     newDocuments: File[];
   };

@@ -1,12 +1,10 @@
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import {
   ExternalLink,
   Shield,
   Clock,
   CheckCircle2,
-  AlertCircle,
   Copy,
   Check,
   FileKey
@@ -22,7 +20,6 @@ import { VaultDetailDialog } from "@/components/shared/vault";
 export const VaultListTool: ToolCallMessagePartComponent<{
   reason?: string;
 }> = ({ args }) => {
-  const router = useRouter();
   const [vaults, setVaults] = useState<PendingVault[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [selectedVault, setSelectedVault] = useState<PendingVault | null>(null);
@@ -74,7 +71,7 @@ export const VaultListTool: ToolCallMessagePartComponent<{
         {vaults.length === 0 ? (
           <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed p-8 text-center text-muted-foreground">
             <Shield className="mb-3 h-10 w-10 opacity-20" />
-            <p className="font-medium">You don't have any vaults yet</p>
+            <p className="font-medium">You don&apos;t have any vaults yet</p>
             <p className="text-sm">You can create your first inheritance by asking me.</p>
           </div>
         ) : (

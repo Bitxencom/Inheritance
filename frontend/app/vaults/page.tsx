@@ -156,7 +156,7 @@ function VaultsPageContent() {
             {vaults.length === 0 ? (
               <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed p-12 text-center text-muted-foreground">
                 <Shield className="mb-4 h-12 w-12 opacity-20" />
-                <p className="text-lg font-medium">You don't have any inheritances yet</p>
+                <p className="text-lg font-medium">You don&apos;t have any inheritances yet</p>
                 <p className="text-sm">You can create your first inheritance by asking me.</p>
                 <Link href="/" className="mt-6">
                   <Button>Create New Inheritance</Button>

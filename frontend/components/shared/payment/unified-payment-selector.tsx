@@ -26,17 +26,26 @@ import {
 import WanderLogo from "@/assets/logo/wander.svg";
 
 export type PaymentMode = "wander" | "hybrid";
+export type ArweavePaymentPhase = "confirm" | "upload" | "finalize";
 
 interface UnifiedPaymentSelectorProps {
   onSubmit: (mode: PaymentMode, chainId?: ChainId) => Promise<void>;
   isSubmitting?: boolean;
   paymentStatus?: string | null;
+  paymentProgress?: number | null;
+  paymentPhase?: ArweavePaymentPhase | null;
+  isReady?: boolean;
+  blockedReason?: string | null;
 }
 
 export function UnifiedPaymentSelector({
   onSubmit,
   isSubmitting = false,
   paymentStatus = null,
+  paymentProgress = null,
+  paymentPhase = null,
+  isReady = true,
+  blockedReason = null,
 }: UnifiedPaymentSelectorProps) {
   const [selectedMode, setSelectedMode] = useState<PaymentMode>("hybrid");
   const [selectedChain, setSelectedChain] = useState<ChainId>("bsc");
@@ -49,7 +58,6 @@ export function UnifiedPaymentSelector({
   const [registrationFee, setRegistrationFee] = useState<string | null>(null);
 
   const availableChains = getAvailableChains();
-  const chainConfig = CHAIN_CONFIG[selectedChain];
   const isMetaMaskAvailable = isMetaMaskInstalled();
 
   // Check existing wallet connections on mount
@@ -118,6 +126,7 @@ export function UnifiedPaymentSelector({
   };
 
   const isProcessing = isConnecting || isSubmitting;
+  const isBlocked = !isReady;
 
   // Determine current step for hybrid mode progress
   const getHybridStep = () => {
@@ -126,6 +135,15 @@ export function UnifiedPaymentSelector({
     if (status.includes("step 2") || status.includes("contract") || status.includes("metamask") || status.includes("registering")) return 2;
     if (status.includes("step 1") || status.includes("arweave") || status.includes("wander")) return 1;
     return 0;
+  };
+
+  const getWanderStep = () => {
+    if (paymentPhase === "upload" || paymentProgress !== null) return 2;
+    if (paymentPhase === "finalize") return 3;
+    const status = (paymentStatus || "").toLowerCase();
+    if (status.includes("upload") || status.includes("chunk") || status.includes("resuming")) return 2;
+    if (status.includes("successful") || status.includes("success")) return 3;
+    return 1;
   };
 
   return (
@@ -285,10 +303,13 @@ export function UnifiedPaymentSelector({
                   <div className="flex flex-col items-center gap-1.5">
                     {chain.logo && (
                       <div className="h-5 w-5 rounded-full overflow-hidden bg-white/50 p-0.5">
-                        <img
+                        <Image
                           src={chain.logo}
                           alt={chain.shortName}
+                          width={20}
+                          height={20}
                           className="h-full w-full object-contain"
+                          unoptimized
                         />
                       </div>
                     )}
@@ -359,11 +380,86 @@ export function UnifiedPaymentSelector({
         </div>
       )}
 
+      {selectedMode === "wander" && isProcessing && paymentStatus && (
+        <div className="rounded-xl border bg-card p-4 space-y-3">
+          <p className="text-sm font-medium">Processing Arweave Upload</p>
+          <div className="flex items-center gap-3">
+            <div
+              className={cn(
+                "flex-1 flex items-center gap-3 rounded-lg p-3 transition-all",
+                getWanderStep() === 1 ? "bg-purple-100 dark:bg-purple-900/30 animate-pulse" : "bg-muted/50",
+              )}
+            >
+              <div
+                className={cn(
+                  "h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold",
+                  getWanderStep() >= 1 ? "bg-purple-500 text-white" : "bg-gray-200 text-muted-foreground border",
+                )}
+              >
+                {getWanderStep() > 1 ? <Check className="h-4 w-4" /> : "1"}
+              </div>
+              <div className="flex-1 min-w-0 -mt-1">
+                <div className="font-medium truncate">Confirm & Pay</div>
+                <div className="text-xs text-muted-foreground -mt-1">Wander</div>
+              </div>
+            </div>
+
+            <div className="text-muted-foreground">→</div>
+
+            <div
+              className={cn(
+                "flex-1 flex items-center gap-3 rounded-lg p-3 transition-all",
+                getWanderStep() === 2
+                  ? "bg-purple-100 dark:bg-purple-900/30 animate-pulse"
+                  : getWanderStep() > 2
+                    ? "bg-muted/50"
+                    : "bg-muted/50",
+              )}
+            >
+              <div
+                className={cn(
+                  "h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold",
+                  getWanderStep() === 2 ? "bg-purple-500 text-white" : "bg-gray-200 text-muted-foreground border",
+                )}
+              >
+                {getWanderStep() > 2 ? <Check className="h-4 w-4" /> : "2"}
+              </div>
+              <div className="flex-1 min-w-0 -mt-1">
+                <div className="font-medium truncate">Uploading</div>
+                <div className="text-xs text-muted-foreground -mt-1">Arweave</div>
+              </div>
+            </div>
+          </div>
+
+          {typeof paymentProgress === "number" && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>Upload progress</span>
+                <span className="font-medium">{Math.max(0, Math.min(100, Math.round(paymentProgress)))}%</span>
+              </div>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-purple-600 transition-[width] duration-200"
+                  style={{ width: `${Math.max(0, Math.min(100, paymentProgress))}%` }}
+                />
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Keep this tab open during upload, especially for large attachments.
+              </p>
+            </div>
+          )}
+
+          <p className="text-xs text-center text-muted-foreground">
+            {paymentStatus}
+          </p>
+        </div>
+      )}
+
       {/* Action Button */}
       <div className="pt-2">
         <Button
           onClick={handleProceed}
-          disabled={isProcessing}
+          disabled={isProcessing || isBlocked}
           className={cn(
             "w-full h-12 text-base font-medium",
             selectedMode === "wander"
@@ -400,10 +496,18 @@ export function UnifiedPaymentSelector({
           )}
         </Button>
 
+        {blockedReason && !isProcessing && (
+          <p className="text-xs text-center text-muted-foreground mt-3">
+            {blockedReason}
+          </p>
+        )}
+
         {/* Helper text */}
         <p className="text-xs text-center text-muted-foreground mt-3">
           {selectedMode === "wander"
-            ? "You will be prompted to sign one transaction in Wander Wallet."
+            ? isProcessing
+              ? "Large uploads can take time. Please keep this page open."
+              : "You will be prompted to sign one transaction in Wander Wallet."
             : "You will sign with Wander first, then confirm in MetaMask."}
         </p>
       </div>
