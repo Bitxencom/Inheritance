@@ -78,13 +78,13 @@ export const decryptQuestion = (encryptedData: string, vaultId: string): string 
  */
 export const encryptMetadata = (metadata: Record<string, unknown>, vaultId: string): string => {
   const key = deriveKeyFromVaultId(vaultId);
-  const iv = randomBytes(16);
-  const cipher = createCipheriv("aes-256-cbc", key, iv);
-  const encrypted = Buffer.concat([
-    cipher.update(JSON.stringify(metadata), "utf8"),
-    cipher.final(),
-  ]);
-  return Buffer.concat([iv, encrypted]).toString("base64");
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  cipher.setAAD(Buffer.from(vaultId, "utf8"));
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(metadata), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  const payload = Buffer.concat([iv, tag, encrypted]).toString("base64");
+  return `v3:${payload}`;
 };
 
 /**
@@ -92,14 +92,27 @@ export const encryptMetadata = (metadata: Record<string, unknown>, vaultId: stri
  */
 export const decryptMetadata = (encryptedData: string, vaultId: string): Record<string, unknown> => {
   const key = deriveKeyFromVaultId(vaultId);
+  if (encryptedData.startsWith("v3:")) {
+    const raw = Buffer.from(encryptedData.slice("v3:".length), "base64");
+    const iv = raw.subarray(0, 12);
+    const tag = raw.subarray(12, 28);
+    const data = raw.subarray(28);
+    const decipher = createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAAD(Buffer.from(vaultId, "utf8"));
+    decipher.setAuthTag(tag);
+    const decrypted = Buffer.concat([decipher.update(data), decipher.final()]);
+    return JSON.parse(decrypted.toString("utf8"));
+  }
+
+  if (encryptedData.startsWith("v2:")) {
+    throw new Error("Unsupported metadata encryption version.");
+  }
+
   const buffer = Buffer.from(encryptedData, "base64");
   const iv = buffer.subarray(0, 16);
   const encrypted = buffer.subarray(16);
   const decipher = createDecipheriv("aes-256-cbc", key, iv);
-  const decrypted = Buffer.concat([
-    decipher.update(encrypted),
-    decipher.final(),
-  ]);
+  const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
   return JSON.parse(decrypted.toString("utf8"));
 };
 
