@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { randomUUID } from "crypto";
 
-import { prepareVault, hashSecurityAnswer, encryptMetadata, hashSecurityQuestionAnswers, decryptMetadata } from "../services/vault-service.js";
+import { prepareVault, hashSecurityAnswer, verifySecurityAnswerHash, encryptMetadata, hashSecurityQuestionAnswers, decryptMetadata } from "../services/vault-service.js";
 import { combineShares } from "../services/crypto/shamir.js";
 import {
   decryptPayload,
@@ -373,9 +373,8 @@ vaultRouter.post("/:vaultId/unlock", async (req, res, next) => {
       if (storedHashes.length > 0) {
         const allMatch = parsed.securityQuestionAnswers.every((provided, index) => {
           if (index >= storedHashes.length) return false;
-          const hashedAnswer = hashSecurityAnswer(provided.answer);
           const storedHash = storedHashes[index].a || storedHashes[index].answerHash;
-          return storedHash === hashedAnswer;
+          return verifySecurityAnswerHash(provided.answer, storedHash);
         });
 
         if (!allMatch) {
@@ -387,7 +386,7 @@ vaultRouter.post("/:vaultId/unlock", async (req, res, next) => {
       }
     }
 
-    if (encryptionVersion === "v2-client") {
+    if (encryptionVersion === "v2-client" || encryptionVersion === "v4-client") {
       // Client-side encrypted vault: do not decrypt payload here
       return res.status(200).json({
         success: true,
@@ -696,7 +695,7 @@ vaultRouter.post("/:vaultId/verify-security-questions", async (req, res) => {
     }
 
     // Fetch vault payload from blockchain storage
-    const uploadPayload = await fetchVaultPayloadById(vaultId);
+    const uploadPayload = await fetchVaultPayloadById(vaultId, parsed.arweaveTxId);
 
     const storedHashes = (uploadPayload.metadata?.securityQuestionHashes as Array<{
       q?: string;             // Obfuscated: encrypted question
@@ -715,9 +714,6 @@ vaultRouter.post("/:vaultId/verify-security-questions", async (req, res) => {
       });
     }
 
-    // Import hash function
-    const { hashSecurityAnswer } = await import("../services/vault-service.js");
-
     // Validate each answer
     const providedAnswers = parsed.securityQuestionAnswers;
     
@@ -730,10 +726,9 @@ vaultRouter.post("/:vaultId/verify-security-questions", async (req, res) => {
         return;
       }
       
-      const hashedAnswer = hashSecurityAnswer(provided.answer);
       // Support obfuscated (a) and legacy (answerHash)
       const storedHash = storedHashes[index].a || storedHashes[index].answerHash;
-      if (storedHash !== hashedAnswer) {
+      if (!verifySecurityAnswerHash(provided.answer, storedHash)) {
         incorrectIndexes.push(index);
       } else {
         correctIndexes.push(index);

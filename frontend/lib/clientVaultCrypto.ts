@@ -1,9 +1,12 @@
 "use client";
 
+import { ml_kem768 } from "@noble/post-quantum/ml-kem";
+
 export type EncryptedVaultClient = {
   cipherText: string;
   iv: string;
   checksum: string;
+  pqcCipherText?: string;
   alg?: "AES-CBC" | "AES-GCM";
 };
 
@@ -164,6 +167,10 @@ export async function decryptVaultPayloadClient(
   encrypted: EncryptedVaultClient,
   key: Uint8Array,
 ): Promise<unknown> {
+  const effectiveKey =
+    typeof encrypted.pqcCipherText === "string" && encrypted.pqcCipherText.length > 0
+      ? ml_kem768.decapsulate(fromBase64(encrypted.pqcCipherText), key).slice(0, 32)
+      : key;
   const ivBytes = fromBase64(encrypted.iv);
   const cipherBytes = fromBase64(encrypted.cipherText);
   const cipherBuffer = toArrayBuffer(cipherBytes);
@@ -182,7 +189,7 @@ export async function decryptVaultPayloadClient(
         ? "AES-GCM"
         : "AES-CBC";
 
-  const aesKey = await importAesKey(key, inferredAlg);
+  const aesKey = await importAesKey(effectiveKey, inferredAlg);
   const iv = toArrayBuffer(ivBytes);
 
   const plainBuffer = await getCrypto().subtle.decrypt(
