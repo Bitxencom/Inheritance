@@ -11,10 +11,18 @@ export const initialEditFormState: EditFormState = {
   willDetails: {
     title: "",
     content: "",
+    existingDocuments: [],
+    newDocuments: [],
   },
   // New: Security questions editing
   editedSecurityQuestions: [],
   isEditingSecurityQuestions: false,
+  // Storage selection
+  storageType: "arweave",
+  payment: {
+    paymentMethod: "wander",
+    selectedChain: undefined,
+  },
 };
 
 export const editSteps: readonly EditWizardStep[] = [
@@ -48,6 +56,11 @@ export const editSteps: readonly EditWizardStep[] = [
     label: "Confirm Changes",
     description: "Review and confirm changes"
   },
+  {
+    key: "storageSelection",
+    label: "Storage",
+    description: "Choose where to store your updated vault"
+  },
   { 
     key: "payment", 
     label: "Payment",
@@ -59,5 +72,3 @@ export const editSteps: readonly EditWizardStep[] = [
     description: "Update successful"
   }
 ] as const;
-
-

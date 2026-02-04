@@ -13,24 +13,29 @@ export type FormState = {
     willType: "one-time" | "editable";
     title: string;
     content: string;
+    documents: File[];
   };
   securityQuestions: SecurityQuestion[];
   triggerRelease: {
     triggerType: "date" | "manual";
     triggerDate?: string;
   };
+  storageType: "arweave" | "bitxenArweave";
   payment: {
-    paymentMethod: "wander";
+    paymentMethod: "wander" | "metamask";
+    selectedChain?: string; // For Bitxen: bsc, eth, poly, base, arbitrum
   };
 };
-
 
 export type SubmissionResult = {
   vaultId: string | null;
   arweaveTxId: string | null;
+  blockchainTxHash?: string | null; // For Bitxen transactions
+  blockchainChain?: string | null; // Which chain was used
   message: string | null;
   fractionKeys: string[];
   willType?: "one-time" | "editable";
+  storageType?: "arweave" | "bitxenArweave";
   createdAt?: string;
   confirmedAt?: string;
   title?: string;
@@ -55,4 +60,3 @@ export type WizardStep = {
   label: string;
   description?: string;
 };
-

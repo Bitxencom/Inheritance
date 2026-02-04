@@ -70,7 +70,7 @@ function TopbarContent({ onRestoreClick }: { onRestoreClick: () => void }) {
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" className="gap-2" onClick={onRestoreClick}>
             <Upload className="h-4 w-4" />
-            <span className="hidden sm:inline">Quick Open</span>
+            <span className="hidden sm:inline">Quick Unlock</span>
           </Button>
           <Link href="/vaults" target="_blank" rel="noopener noreferrer">
             <Button variant="outline" size="sm" className="gap-2">

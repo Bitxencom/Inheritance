@@ -18,7 +18,7 @@ async function ensureClient(): Promise<MCPClient> {
   if (!clientPromise) {
     clientPromise = (async () => {
       // Use "node" from PATH
-      let command = "node";
+      const command = "node";
 
       // Ensure MCP server directory exists
       if (!fs.existsSync(MCP_SERVER_CWD)) {
@@ -95,4 +95,3 @@ export async function callMCPTool(name: string, args: Record<string, unknown>) {
     arguments: args,
   });
 }
-

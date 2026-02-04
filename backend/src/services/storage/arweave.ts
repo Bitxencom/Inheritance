@@ -11,6 +11,13 @@ const arweave = Arweave.init({
   protocol: "https",
 });
 
+const ARWEAVE_GATEWAYS = [
+  "https://arweave.net",
+  "https://ar-io.net",
+  "https://g8way.io",
+  "https://arweave.dev",
+];
+
 /**
  * Internal format for upload (with clear keys)
  */
@@ -95,6 +102,7 @@ export const fetchVaultPayloadById = async (
 
   let txId: string | null = null;
   let gqlError = false;
+  let gqlBlockHeight: number | null = null;
 
   // Retry logic for GraphQL query
   const maxRetries = 3;
@@ -121,12 +129,21 @@ export const fetchVaultPayloadById = async (
         const gqlJson = (await gqlResponse.json()) as {
           data?: {
             transactions?: {
-              edges?: { node?: { id?: string } }[];
+              edges?: {
+                node?: {
+                  id?: string;
+                  block?: { height?: number | null } | null;
+                };
+              }[];
             };
           };
         };
         const edges = gqlJson.data?.transactions?.edges ?? [];
         txId = edges[0]?.node?.id || null;
+        gqlBlockHeight =
+          typeof edges[0]?.node?.block?.height === "number"
+            ? edges[0]?.node?.block?.height
+            : null;
         success = true;
       } else {
         console.warn(`⚠️ Blockchain GraphQL query failed: HTTP ${gqlResponse.status}`);
@@ -148,24 +165,38 @@ export const fetchVaultPayloadById = async (
   
   // Helper to check status of a specific TxID
   const checkTxStatus = async (id: string): Promise<number> => {
-    try {
-      // We check via the data endpoint head/get request usually, 
-      // but to be sure about "Pending" (202), we can use the /tx/{id}/status endpoint or just fetch data
-      // Arweave gateway /tx/{id}/status returns { status: 200, confirmed: ... }
-      const statusResponse = await fetch(`https://arweave.net/tx/${id}/status`);
-      if (statusResponse.ok) {
-        const statusData = await statusResponse.json();
-        // status 202 = Pending, 200 = Confirmed
-        return statusData.status; 
+    let lastNon404Status: number | null = null;
+
+    for (const gateway of ARWEAVE_GATEWAYS) {
+      try {
+        const statusResponse = await fetch(`${gateway}/tx/${id}/status`, {
+          method: "GET",
+          redirect: "follow",
+        });
+
+        if (statusResponse.ok) {
+          const statusData = (await statusResponse.json().catch(() => null)) as
+            | { status?: unknown }
+            | null;
+          return typeof statusData?.status === "number" ? statusData.status : 200;
+        }
+
+        if (statusResponse.status === 202) return 202;
+        if (statusResponse.status !== 404) lastNon404Status = statusResponse.status;
+      } catch (e) {
+        continue;
       }
-      return statusResponse.status;
-    } catch (e) {
-      return 0;
     }
+
+    return lastNon404Status ?? 0;
   };
 
   // Case 1: GraphQL passed and found a TxID
   if (txId && !gqlError) {
+    if (gqlBlockHeight === null) {
+      throw new Error("Vault transaction is pending");
+    }
+
     // Check if fallbackTxId exists and is DIFFERENT from found txId
     // This implies fallbackTxId might be NEWER (pending) or OLDER. 
     // We assume if it's in local storage and different, it likely might be a pending newer version.
@@ -191,7 +222,12 @@ export const fetchVaultPayloadById = async (
     if (fallbackTxId) {
       console.log(`⚠️ Vault ID not found via GraphQL, trying fallback TxId: ${fallbackTxId}`);
       
-      // Check status of fallbackTxId
+      // If fallbackTxId starts with 0x, it's a Smart Chain transaction!
+      if (fallbackTxId.startsWith("0x")) {
+        return fetchVaultFromSmartChain(vaultId, fallbackTxId);
+      }
+
+      // Check status of fallbackTxId (Arweave)
       const status = await checkTxStatus(fallbackTxId);
       
       if (status === 202) {
@@ -203,17 +239,22 @@ export const fetchVaultPayloadById = async (
         txId = fallbackTxId;
       } else {
         // 404 or other error
-        // If GraphQL yielded an error (network issue) AND fallback failed, we should report the network issue as primary cause if possible,
-        // but here we know fallback ID is bad too.
-             throw new Error(
+        throw new Error(
           `Vault ID ${vaultId} not found on blockchain storage (and fallback ID invalid)`,
         );
       }
     } else {
       if (gqlError) {
-         // If we had a network error and no fallback, tell the user it's a specific connection error
          throw new Error("Connection to blockchain failed. Please try again.");
       }
+      
+      // FINAL FALLBACK: If we have no txId but vaultId looks like it could be on Smart Chain
+      // (This will only work if we have a way to scan logs or if vaultId IS the TxHash)
+      // Since we don't have a registry yet, we can only try if vaultId is passed as the Hash
+      if (vaultId.startsWith("0x")) {
+        return fetchVaultFromSmartChain(vaultId, vaultId);
+      }
+
       throw new Error(
         `Vault ID ${vaultId} not found on blockchain storage`,
       );
@@ -221,27 +262,103 @@ export const fetchVaultPayloadById = async (
   }
 
   // Fetch transaction data using the resolved txId
-  const dataUrl = `https://arweave.net/${txId}`;
-  const txResponse = await fetch(dataUrl, { redirect: 'follow' });
-  if (!txResponse.ok) {
-     // Double check if it's pending just in case fetching data fails (e.g. 202 Accepted for data fetch)
-      if (txResponse.status === 202) {
-         throw new Error("Vault transaction is pending");
-      }
-    throw new Error(
-      `Failed to fetch blockchain transaction data for txId=${txId}: HTTP ${txResponse.status}`,
-    );
-  }
+  const fetchWithTimeout = async (
+    url: string,
+    options: RequestInit,
+    timeoutMs: number,
+  ): Promise<Response> => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
 
-  const payloadJson = await txResponse.json();
+  const fetchTxJson = async (id: string): Promise<unknown> => {
+    const paths = [`/${id}`, `/raw/${id}`, `/tx/${id}/data`];
+    let lastNon404Status: number | null = null;
+
+    for (const gateway of ARWEAVE_GATEWAYS) {
+      for (const path of paths) {
+        const url = `${gateway}${path}`;
+        try {
+          const response = await fetchWithTimeout(
+            url,
+            {
+              method: "GET",
+              headers: {
+                Accept: "application/json, text/plain;q=0.9, */*;q=0.8",
+              },
+              redirect: "follow",
+            },
+            8000,
+          );
+
+          if (response.status === 202) {
+            throw new Error("Vault transaction is pending");
+          }
+
+          if (!response.ok) {
+            if (response.status !== 404) lastNon404Status = response.status;
+            continue;
+          }
+
+          const text = await response.text();
+          try {
+            return JSON.parse(text);
+          } catch {
+            return text;
+          }
+        } catch (error) {
+          if (error instanceof Error && error.name === "AbortError") {
+            continue;
+          }
+          if (
+            error instanceof Error &&
+            (error.message.includes("pending") || error.message.includes("Newer version"))
+          ) {
+            throw error;
+          }
+          continue;
+        }
+      }
+    }
+
+    if (lastNon404Status === null) {
+      const status = await checkTxStatus(id);
+      if (status === 202 || status === 0) {
+        throw new Error("Vault transaction is pending");
+      }
+      if (status === 200) {
+        throw new Error(
+          "Vault transaction is pending (transaction exists but data is not yet available on gateways)",
+        );
+      }
+    }
+
+    throw new Error(
+      `Failed to fetch blockchain transaction data for txId=${id}: HTTP ${lastNon404Status ?? 404}`,
+    );
+  };
+
+  const payloadJson = await fetchTxJson(txId);
 
   // Handle obfuscated format (id, v, t, m, d) - used in newer versions
-  if (payloadJson.id && payloadJson.m && payloadJson.d) {
+  if (
+    payloadJson &&
+    typeof payloadJson === "object" &&
+    "id" in payloadJson &&
+    "m" in payloadJson &&
+    "d" in payloadJson
+  ) {
     try {
+      const obfuscated = payloadJson as { id: string; m: string; d: unknown };
       return {
-        vaultId: payloadJson.id,
-        encryptedData: payloadJson.d,
-        metadata: decryptMetadata(payloadJson.m, payloadJson.id),
+        vaultId: obfuscated.id,
+        encryptedData: obfuscated.d,
+        metadata: decryptMetadata(obfuscated.m, obfuscated.id),
         latestTxId: txId, // Include the latest transaction ID
       };
     } catch (error) {
@@ -251,7 +368,12 @@ export const fetchVaultPayloadById = async (
   }
 
   // Handle legacy format (vaultId, encryptedData, metadata)
-  if (payloadJson.vaultId && payloadJson.encryptedData) {
+  if (
+    payloadJson &&
+    typeof payloadJson === "object" &&
+    "vaultId" in payloadJson &&
+    "encryptedData" in payloadJson
+  ) {
     return {
       ...payloadJson,
       latestTxId: txId, // Include the latest transaction ID
@@ -263,3 +385,58 @@ export const fetchVaultPayloadById = async (
   );
 };
 
+/**
+ * Fetch vault data from a Smart Chain (BSC, etc.) using JSON-RPC
+ * This is used as a fallback when data is not on Arweave
+ */
+async function fetchVaultFromSmartChain(
+  vaultId: string, 
+  txHash: string
+): Promise<UploadPayloadInput> {
+  console.log(`🌐 Fetching vault from Smart Chain: ${txHash}`);
+  
+  // List of RPC URLs to try (BSC as default)
+  const rpcs = ["https://bsc-dataseed.binance.org/", "https://binance.llamarpc.com"];
+  
+  for (const rpc of rpcs) {
+    try {
+      const response = await fetch(rpc, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "eth_getTransactionByHash",
+          params: [txHash],
+        }),
+      });
+
+      if (!response.ok) continue;
+
+      const json = await response.json();
+      const tx = json.result;
+
+      if (!tx || !tx.input || tx.input === "0x") continue;
+
+      // Transaction found! Parse UTF-8 from hex input
+      const hex = tx.input.startsWith("0x") ? tx.input.slice(2) : tx.input;
+      const jsonString = Buffer.from(hex, "hex").toString("utf8");
+      
+      const payload = JSON.parse(jsonString);
+
+      // Verify it's what we expect
+      if (payload.vaultId && payload.data) {
+        return {
+          vaultId: payload.vaultId,
+          encryptedData: payload.data,
+          metadata: payload.metadata || {}, // Smart Chain payload might be structured differently
+          latestTxId: txHash,
+        };
+      }
+    } catch (error) {
+      console.warn(`⚠️ Failed to fetch from RPC ${rpc}:`, error);
+    }
+  }
+
+  throw new Error(`Vault ID ${vaultId} not found on Smart Chain storage (Checked hash ${txHash})`);
+}

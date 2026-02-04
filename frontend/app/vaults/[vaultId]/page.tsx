@@ -21,6 +21,7 @@ import {
   removeVault,
   removeVaultKeys,
   getArweaveExplorerUrl,
+  getSmartChainExplorerUrl,
   checkArweaveStatus,
   type PendingVault,
 } from "@/lib/vault-storage";
@@ -148,7 +149,7 @@ export default function VaultDetailsPage({ params }: { params: Promise<{ vaultId
           <Shield className="mb-4 h-12 w-12 text-muted-foreground/50" />
           <h1 className="text-xl font-semibold">Inheritance Not Found</h1>
           <p className="mt-2 text-muted-foreground">
-            We couldn't find a inheritance with this ID in your browser's local storage.
+            We could not find an inheritance with this ID in your browser local storage.
           </p>
           <Link href="/vaults" className="mt-6">
             <Button variant="outline">
@@ -252,10 +253,21 @@ export default function VaultDetailsPage({ params }: { params: Promise<{ vaultId
                     copyable
                   />
 
-                  {/* Blockchain TX */}
+                  {/* Smart Chain Transaction ID */}
+                  {vault.blockchainTxHash && (
+                    <InfoBox
+                      label="Smart Chain Transaction ID"
+                      value={vault.blockchainTxHash}
+                      copyable
+                      copyLabel="Copy"
+                      externalUrl={getSmartChainExplorerUrl(vault.blockchainTxHash, vault.blockchainChain)}
+                    />
+                  )}
+
+                  {/* Storage Transaction ID */}
                   {vault.arweaveTxId && (
                     <InfoBox
-                      label="Transaction ID"
+                      label="Storage Transaction ID"
                       value={vault.arweaveTxId}
                       copyable
                       copyLabel="Copy"
@@ -287,7 +299,7 @@ export default function VaultDetailsPage({ params }: { params: Promise<{ vaultId
                             <div className="rounded-md border bg-red-50 py-2 px-3 dark:bg-red-950/20 dark:border-red-900/50">
                               {/* <h3 className="mb-2 text-sm font-semibold text-red-700 dark:text-red-400">Important Security Notice</h3> */}
                               <p className="text-sm text-red-600/90 dark:text-red-400/90">
-                                Important: Please ensure you have a backup of your <strong>"Inheritance ID"</strong> and <strong>"Faction Keys"</strong>.
+                                Important: Please ensure you have a backup of your <strong>Inheritance ID</strong> and <strong>Fraction Keys</strong>.
                               </p>
                             </div>
                           </DialogDescription>

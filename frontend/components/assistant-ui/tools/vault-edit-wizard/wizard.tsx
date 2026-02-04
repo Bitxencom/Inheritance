@@ -8,7 +8,10 @@ import {
   Check,
   Copy,
   ExternalLink,
-  AlertCircle
+  AlertCircle,
+  FileText,
+  X,
+  Download
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,15 +41,35 @@ import type {
   VaultEditWizardProps,
 } from "./types";
 import { editSteps, initialEditFormState } from "./constants";
-import { PaymentMethodSelector } from "@/components/shared/payment";
+import { StorageSelector, MetaMaskWalletButton, WanderWalletButton } from "@/components/shared/payment";
 import { Stepper } from "@/components/shared/stepper";
+import { connectWanderWallet } from "@/lib/wanderWallet";
 import {
-  connectWanderWallet,
-  sendArPayment,
-  WANDER_PAYMENT_CONFIG,
-} from "@/lib/wanderWallet";
+
+  type ChainId,
+  getChainConfig,
+  DEFAULT_CHAIN,
+} from "@/lib/metamaskWallet";
 
 import { getVaultById, updateVaultTxId } from "@/lib/vault-storage";
+import { combineSharesClient } from "@/lib/shamirClient";
+import {
+  decryptVaultPayloadClient,
+  encryptVaultPayloadClient,
+  type EncryptedVaultClient,
+} from "@/lib/clientVaultCrypto";
+import { hashSecurityAnswerClient } from "@/lib/securityQuestionsClient";
+
+type VaultPayloadForEdit = Record<string, unknown> & {
+  willDetails?: Record<string, unknown> & {
+    title?: string;
+    content?: string;
+    willType?: "one-time" | "editable";
+    documents?: Array<{ name?: string; size?: number; type?: string; content?: string }>;
+  };
+  securityQuestions?: Array<{ question: string; answer: string }>;
+  triggerRelease?: unknown;
+};
 
 export function VaultEditWizard({
   variant = "dialog",
@@ -89,9 +112,6 @@ export function VaultEditWizard({
     }
   }, [initialData, open]);
 
-
-
-
   const [stepError, setStepError] = useState<string | null>(null);
   const [isWarning, setIsWarning] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -105,6 +125,8 @@ export function VaultEditWizard({
   const [isVerifyingVault, setIsVerifyingVault] = useState(false);
   const [isVerifyingQuestions, setIsVerifyingQuestions] = useState(false);
   const [isVerifyingFractionKeys, setIsVerifyingFractionKeys] = useState(false);
+  const [decryptedVaultPayload, setDecryptedVaultPayload] = useState<VaultPayloadForEdit | null>(null);
+  const [combinedKeyForAttachments, setCombinedKeyForAttachments] = useState<Uint8Array | null>(null);
 
   // State for version tracking
   const [newerVersionAvailable, setNewerVersionAvailable] = useState(false);
@@ -160,6 +182,7 @@ export function VaultEditWizard({
     setNewerVersionAvailable(false);
     setLatestTxId(null);
     setHasPendingEdit(false);
+    setCombinedKeyForAttachments(null);
   }, []);
 
   useEffect(() => {
@@ -271,6 +294,153 @@ export function VaultEditWizard({
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
+  };
+
+  // Helper functions for documents
+  const handleDocumentsChange = (files: FileList | null) => {
+    if (!files) return;
+    const newFiles = Array.from(files);
+
+    // Calculate total size including existing documents and already selected new documents
+    const existingSize = formState.willDetails.existingDocuments.reduce((acc, doc) => acc + doc.size, 0);
+    const pendingNewSize = formState.willDetails.newDocuments.reduce((acc, doc) => acc + doc.size, 0);
+    const incomingSize = newFiles.reduce((acc, doc) => acc + doc.size, 0);
+
+    const totalSize = existingSize + pendingNewSize + incomingSize;
+    const MAX_SIZE = 1024 * 1024 * 1024; // 1 GB
+
+    if (totalSize > MAX_SIZE) {
+      setStepError("Total document size cannot exceed 1 GB.");
+      return;
+    }
+
+    setFormState((prev) => ({
+      ...prev,
+      willDetails: {
+        ...prev.willDetails,
+        newDocuments: [...prev.willDetails.newDocuments, ...newFiles],
+      },
+    }));
+    // Clear error if adding files was successful
+    setStepError(null);
+  };
+
+  const removeNewDocument = (index: number) => {
+    setFormState((prev) => ({
+      ...prev,
+      willDetails: {
+        ...prev.willDetails,
+        newDocuments: prev.willDetails.newDocuments.filter((_, i) => i !== index),
+      },
+    }));
+  };
+
+  const removeExistingDocument = (index: number) => {
+    setFormState((prev) => ({
+      ...prev,
+      willDetails: {
+        ...prev.willDetails,
+        existingDocuments: prev.willDetails.existingDocuments.filter((_, i) => i !== index),
+      },
+    }));
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const base64ToBlob = (content: string, mimeType: string): Blob => {
+    const base64 = content.startsWith("data:")
+      ? (content.split(",")[1] || "")
+      : (content.includes(",") ? (content.split(",")[1] || "") : content);
+
+    if (!base64) {
+      throw new Error("Document content is not available.");
+    }
+
+    const byteArrays: Uint8Array[] = [];
+    const sliceSize = 4 * 1024 * 1024;
+
+    for (let offset = 0; offset < base64.length; offset += sliceSize) {
+      const slice = base64.slice(offset, offset + sliceSize);
+      const binary = atob(slice);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      byteArrays.push(bytes);
+    }
+
+    return new Blob(byteArrays as unknown as BlobPart[], { type: mimeType || "application/octet-stream" });
+  };
+
+  const downloadDocument = async (documentIndex: number) => {
+    try {
+      const doc = formState.willDetails.existingDocuments[documentIndex];
+      if (!doc) {
+        throw new Error("Document not found.");
+      }
+      const sourceIndex = doc.sourceIndex;
+      const storedDoc = decryptedVaultPayload?.willDetails?.documents?.[sourceIndex];
+      const storedAny = storedDoc as
+        | { content?: unknown; attachment?: { txId?: unknown; iv?: unknown; checksum?: unknown } }
+        | undefined;
+
+      let blob: Blob | null = null;
+
+      if (typeof storedAny?.content === "string" && storedAny.content.trim().length > 0) {
+        blob = base64ToBlob(storedAny.content, doc.type);
+      } else if (
+        storedAny?.attachment &&
+        typeof storedAny.attachment.txId === "string" &&
+        typeof storedAny.attachment.iv === "string"
+      ) {
+        if (!combinedKeyForAttachments) {
+          throw new Error("Unable to download: encryption key is not available.");
+        }
+        const response = await fetch(`https://arweave.net/${storedAny.attachment.txId}`);
+        if (!response.ok) {
+          throw new Error("Failed to fetch attachment from blockchain storage.");
+        }
+        const cipherBuffer = await response.arrayBuffer();
+        const { decryptBytesClient } = await import("@/lib/clientVaultCrypto");
+        const plainBytes = await decryptBytesClient(
+          {
+            cipherBytes: cipherBuffer,
+            iv: storedAny.attachment.iv,
+            checksum: typeof storedAny.attachment.checksum === "string" ? storedAny.attachment.checksum : undefined,
+          },
+          combinedKeyForAttachments,
+        );
+        const plainBuffer = plainBytes.buffer.slice(
+          plainBytes.byteOffset,
+          plainBytes.byteOffset + plainBytes.byteLength,
+        ) as ArrayBuffer;
+        blob = new Blob([plainBuffer], { type: doc.type || "application/octet-stream" });
+      }
+
+      if (!blob) {
+        throw new Error("Document content is not available.");
+      }
+
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = doc.name || "document";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+    } catch (error) {
+      console.error("Failed to download document:", error);
+      const message =
+        error instanceof Error
+          ? error.message
+          : "An error occurred while downloading the document.";
+      setStepError(message);
+    }
   };
 
   // === Handlers for Editing Security Questions ===
@@ -613,18 +783,18 @@ export function VaultEditWizard({
     setIsVerifyingFractionKeys(true);
     setStepError(null);
     try {
-      const response = await fetch("/api/vault/preview", {
+      const response = await fetch("/api/vault/claim/unlock", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
           vaultId: formState.vaultId,
-          fractionKeys: [
-            formState.fractionKeys.key1,
-            formState.fractionKeys.key2,
-            formState.fractionKeys.key3,
-          ],
+          fractionKeys: {
+            key1: formState.fractionKeys.key1,
+            key2: formState.fractionKeys.key2,
+            key3: formState.fractionKeys.key3,
+          },
           securityQuestionAnswers: formState.securityQuestionAnswers,
           arweaveTxId: getVaultById(formState.vaultId)?.arweaveTxId,
         }),
@@ -689,13 +859,27 @@ export function VaultEditWizard({
         return false;
       }
 
-      // Validate willType after decrypt succeeds
-      if (data.willDetails?.willType === "one-time") {
-        // Reset validation
+      const fractionKeysArray = [
+        formState.fractionKeys.key1,
+        formState.fractionKeys.key2,
+        formState.fractionKeys.key3,
+      ].filter((value) => value.trim() !== "");
+
+      const combinedKey = combineSharesClient(fractionKeysArray);
+      setCombinedKeyForAttachments(combinedKey);
+
+      const decrypted = (data.decryptedVault
+        ? data.decryptedVault
+        : await decryptVaultPayloadClient(data.encryptedVault as EncryptedVaultClient, combinedKey)) as VaultPayloadForEdit;
+
+      setDecryptedVaultPayload(decrypted);
+
+      const willTypeFromMetadata = data.metadata?.willType as "one-time" | "editable" | undefined;
+      const willType = willTypeFromMetadata || decrypted.willDetails?.willType;
+
+      if (willType === "one-time") {
         setIsSecurityAnswersVerified(false);
         setIsFractionKeysVerified(false);
-
-        // Go back to first step and show error
         setCurrentStep(0);
         setStepError(
           "This inheritance is set to 'One-Time' and cannot be edited. Only 'Editable' vaults can be modified.",
@@ -703,15 +887,20 @@ export function VaultEditWizard({
         return false;
       }
 
-      if (data.willDetails) {
-        setFormState((prev) => ({
-          ...prev,
-          willDetails: {
-            title: data.willDetails.title ?? "",
-            content: data.willDetails.content ?? "",
-          },
-        }));
-      }
+      setFormState((prev) => ({
+        ...prev,
+        willDetails: {
+          title: decrypted.willDetails?.title ?? "",
+          content: decrypted.willDetails?.content ?? "",
+          existingDocuments: (decrypted.willDetails?.documents ?? []).map((doc, sourceIndex) => ({
+            sourceIndex,
+            name: doc.name || "",
+            size: doc.size || 0,
+            type: doc.type || "application/octet-stream",
+          })),
+          newDocuments: prev.willDetails.newDocuments,
+        },
+      }));
 
       // If successful, fraction keys and security questions are valid
       setIsSecurityAnswersVerified(true);
@@ -723,7 +912,7 @@ export function VaultEditWizard({
       setIsSecurityAnswersVerified(false);
       setIsFractionKeysVerified(false);
 
-      console.error("Failed to retrieve inheritance preview:", error);
+      console.error("Failed to retrieve inheritance content:", error);
       const message =
         error instanceof Error
           ? error.message
@@ -781,33 +970,224 @@ export function VaultEditWizard({
     setStepError(null);
 
     try {
-      // Prepare request body
-      const requestBody: Record<string, unknown> = {
-        vaultId: formState.vaultId,
-        willDetails: {
-          title: formState.willDetails.title,
-          content: formState.willDetails.content,
-        },
-        fractionKeys: [
-          formState.fractionKeys.key1,
-          formState.fractionKeys.key2,
-          formState.fractionKeys.key3,
-        ],
-        securityQuestionAnswers: formState.securityQuestionAnswers,
-        arweaveTxId: getVaultById(formState.vaultId)?.arweaveTxId,
+      const normalizeBase64 = (content: string): string => {
+        if (!content) return "";
+        if (!content.startsWith("data:")) return content;
+        const commaIndex = content.indexOf(",");
+        return commaIndex === -1 ? content : content.slice(commaIndex + 1);
       };
 
-      // Include new security questions if user enabled editing
-      if (formState.isEditingSecurityQuestions && formState.editedSecurityQuestions.length >= 3) {
-        requestBody.securityQuestions = formState.editedSecurityQuestions;
+      const estimateBase64Bytes = (base64: string): number => {
+        const trimmed = base64.trim();
+        if (!trimmed) return 0;
+        let padding = 0;
+        if (trimmed.endsWith("==")) padding = 2;
+        else if (trimmed.endsWith("=")) padding = 1;
+        return (trimmed.length * 3) / 4 - padding;
+      };
+
+      const readFileAsBase64 = async (file: File): Promise<string> =>
+        await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = typeof reader.result === "string" ? reader.result : "";
+            resolve(normalizeBase64(result));
+          };
+          reader.onerror = () => reject(reader.error ?? new Error("Failed to read file."));
+          reader.readAsDataURL(file);
+        });
+
+      const INLINE_DOCUMENT_MAX_BYTES = 5 * 1024 * 1024;
+
+      const fractionKeysArray = [
+        formState.fractionKeys.key1,
+        formState.fractionKeys.key2,
+        formState.fractionKeys.key3,
+      ].filter((value) => value.trim() !== "");
+
+      const combinedKey = combineSharesClient(fractionKeysArray);
+
+      const shouldUploadAttachments = formState.willDetails.newDocuments.some(
+        (doc) => doc.size > INLINE_DOCUMENT_MAX_BYTES,
+      );
+
+      const uploadEncryptedAttachment = shouldUploadAttachments
+        ? async (
+            bytes: Uint8Array,
+            tags: Record<string, string>,
+            onProgress?: (progress: number) => void,
+          ) => {
+            const { dispatchToArweave, isWalletReady, connectWanderWallet } = await import("@/lib/wanderWallet");
+            if (!(await isWalletReady())) {
+              await connectWanderWallet();
+            }
+            const docName = tags["Doc-Name"] || "attachment";
+            const result = await dispatchToArweave(bytes, formState.vaultId, tags, onProgress, (status) => {
+              setPaymentStatus(`${status} (${docName})`);
+            });
+            return result.txId;
+          }
+        : null;
+
+      const newDocumentsWithContent: Array<{
+        name: string;
+        size: number;
+        type: string;
+        content?: string;
+        attachment?: { txId: string; iv: string; checksum: string };
+      }> = [];
+
+      for (const doc of formState.willDetails.newDocuments) {
+        if (doc.size > INLINE_DOCUMENT_MAX_BYTES) {
+          if (!uploadEncryptedAttachment) {
+            throw new Error(`Attachment "${doc.name}" cannot be uploaded at this time.`);
+          }
+          setPaymentStatus(`Reading attachment: ${doc.name}`);
+          const { encryptBytesClient } = await import("@/lib/clientVaultCrypto");
+          const plainBuffer = await doc.arrayBuffer();
+          setPaymentStatus(`Encrypting attachment: ${doc.name}`);
+          const encrypted = await encryptBytesClient(plainBuffer, combinedKey);
+          let lastPct = -1;
+          const txId = await uploadEncryptedAttachment(
+            encrypted.cipherBytes,
+            {
+              "Content-Type": doc.type || "application/octet-stream",
+              Type: "att",
+              "Doc-Name": doc.name,
+              "Doc-Role": "attachment",
+            },
+            (progress) => {
+              const pct = Math.max(0, Math.min(100, Math.round(progress)));
+              if (pct !== lastPct) {
+                lastPct = pct;
+                setPaymentStatus(`Uploading attachment: ${doc.name} (${pct}%)`);
+              }
+            },
+          );
+          newDocumentsWithContent.push({
+            name: doc.name,
+            size: doc.size,
+            type: doc.type,
+            attachment: {
+              txId,
+              iv: encrypted.iv,
+              checksum: encrypted.checksum,
+            },
+          });
+        } else {
+          const base64Content = await readFileAsBase64(doc);
+          if (!base64Content) {
+            throw new Error(`Attachment "${doc.name}" has no content. Please re-upload the file.`);
+          }
+
+          const decodedSize = estimateBase64Bytes(base64Content);
+          if (!Number.isFinite(decodedSize) || decodedSize <= 0 || Math.abs(decodedSize - doc.size) > 4) {
+            throw new Error(`Attachment "${doc.name}" looks corrupted or incomplete. Please re-upload the file.`);
+          }
+
+          newDocumentsWithContent.push({
+            name: doc.name,
+            size: doc.size,
+            type: doc.type,
+            content: base64Content,
+          });
+        }
       }
+
+      const basePayload = decryptedVaultPayload;
+      if (!basePayload || typeof basePayload !== "object") {
+        throw new Error("Unable to edit: vault content is not loaded.");
+      }
+
+      const baseDocuments = basePayload.willDetails?.documents ?? [];
+      const existingDocumentsWithContent = formState.willDetails.existingDocuments.map((doc) => {
+        const stored = baseDocuments[doc.sourceIndex];
+        const storedAny = stored as
+          | { content?: unknown; attachment?: { txId?: unknown; iv?: unknown; checksum?: unknown } }
+          | undefined;
+        const content = typeof storedAny?.content === "string" ? storedAny.content : "";
+        const attachment =
+          storedAny?.attachment &&
+          typeof storedAny.attachment.txId === "string" &&
+          typeof storedAny.attachment.iv === "string"
+            ? {
+                txId: storedAny.attachment.txId,
+                iv: storedAny.attachment.iv,
+                checksum: typeof storedAny.attachment.checksum === "string" ? storedAny.attachment.checksum : "",
+              }
+            : null;
+
+        if (!content && !attachment) {
+          throw new Error(`Document content is not available for "${doc.name}".`);
+        }
+        if (content) {
+          const decodedSize = estimateBase64Bytes(content);
+          if (!Number.isFinite(decodedSize) || decodedSize <= 0 || Math.abs(decodedSize - doc.size) > 4) {
+            throw new Error(`Document "${doc.name}" looks corrupted or incomplete. Please re-upload it.`);
+          }
+        }
+
+        const base = {
+          name: doc.name,
+          size: doc.size,
+          type: doc.type,
+        };
+        return content ? { ...base, content } : { ...base, attachment: { ...attachment!, checksum: attachment!.checksum } };
+      });
+
+      const combinedDocuments = [
+        ...existingDocumentsWithContent,
+        ...newDocumentsWithContent,
+      ];
+
+      const nextSecurityQuestions =
+        formState.isEditingSecurityQuestions && formState.editedSecurityQuestions.length >= 3
+          ? formState.editedSecurityQuestions
+          : basePayload.securityQuestions || [];
+
+      if (nextSecurityQuestions.length < 3) {
+        throw new Error("Security questions are missing. Unable to prepare an updated vault.");
+      }
+
+      const updatedPayload = {
+        ...basePayload,
+        willDetails: {
+          ...(basePayload.willDetails || {}),
+          title: formState.willDetails.title,
+          content: formState.willDetails.content,
+          willType: "editable",
+          documents: combinedDocuments,
+        },
+        securityQuestions: nextSecurityQuestions,
+      };
+
+      const securityQuestionHashes = await Promise.all(
+        nextSecurityQuestions.map(async (sq) => ({
+          question: sq.question,
+          answerHash: await hashSecurityAnswerClient(sq.answer),
+        })),
+      );
+
+      const metadata = {
+        trigger: updatedPayload.triggerRelease ?? null,
+        beneficiaryCount: 0,
+        securityQuestionHashes,
+        willType: "editable",
+        encryptionVersion: "v2-client" as const,
+      };
+
+      const encryptedVault = await encryptVaultPayloadClient(updatedPayload, combinedKey);
 
       const response = await fetch("/api/vault/edit", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify({
+          vaultId: formState.vaultId,
+          encryptedVault,
+          metadata,
+        }),
       });
 
       const data = await response.json();
@@ -829,26 +1209,50 @@ export function VaultEditWizard({
         throw new Error(errorMessage);
       }
 
-      let txId = data.details?.arweaveTxId;
+      let txId: string | undefined;
+
+      let blockchainTxHash: string | undefined;
+      let blockchainChain: string | undefined;
 
       // Check if we need to dispatch from client (New Flow)
       if (data.shouldDispatch && data.details?.arweavePayload) {
         try {
-          // Dynamically import dispatch function (same as in Create Wizard)
-          const { dispatchToArweave } = await import("@/lib/wanderWallet");
+          if (formState.storageType === "bitxenArweave") {
+            // "bitxenArweave" option now means Hybrid (Arweave + Contract)
+            setPaymentStatus("Step 1/2: Confirm Arweave upload in Wander...");
+            const { dispatchHybrid } = await import("@/lib/metamaskWallet");
+            const selectedChain = (formState.payment.selectedChain || DEFAULT_CHAIN) as ChainId;
+            const hybridResult = await dispatchHybrid(
+              data.details.arweavePayload,
+              data.details.vaultId,
+              selectedChain
+            );
 
-          const dispatchResult = await dispatchToArweave(
-            data.details.arweavePayload,
-            data.details.vaultId
-          );
+            // Map hybrid result to what we need
+            // txId should be Arweave ID for storage
+            txId = hybridResult.arweaveTxId;
+            blockchainTxHash = hybridResult.contractTxHash;
+            blockchainChain = selectedChain;
+            setPaymentStatus(`Hybrid storage complete! Arweave + ${selectedChain.toUpperCase()}`);
+          } else {
+            // Default to Arweave/Wander
+            setPaymentStatus("Confirm transaction in Wander Wallet...");
+            const { dispatchToArweave } = await import("@/lib/wanderWallet");
 
-          txId = dispatchResult.txId;
+            const dispatchResult = await dispatchToArweave(
+              data.details.arweavePayload,
+              data.details.vaultId
+            );
+
+            txId = dispatchResult.txId;
+            setPaymentStatus("Upload successful!");
+          }
         } catch (dispatchError) {
           console.error("Failed to dispatch edit transaction:", dispatchError);
           throw new Error(
             dispatchError instanceof Error
               ? dispatchError.message
-              : "Failed to sign and upload transaction with Wander Wallet"
+              : "Failed to sign and upload transaction"
           );
         }
       }
@@ -859,13 +1263,20 @@ export function VaultEditWizard({
         message:
           data.message ||
           "New version of inheritance successfully created and stored on blockchain storage.",
-        arweaveTxId: txId ?? null,
+        arweaveTxId: formState.storageType === "arweave" ? (txId ?? null) : null,
+        blockchainTxHash,
+        blockchainChain,
+        storageType: formState.storageType,
       };
 
       // Update localStorage with the new transaction ID
       // This ensures the vault always points to the latest version
       if (txId) {
-        const updated = updateVaultTxId(formState.vaultId, txId);
+        const updated = updateVaultTxId(formState.vaultId, txId, {
+          storageType: formState.storageType,
+          blockchainTxHash: blockchainTxHash || undefined,
+          blockchainChain: blockchainChain || undefined
+        });
         if (updated) {
           console.log(`✅ Updated vault ${formState.vaultId} with new txId: ${txId}`);
         } else {
@@ -918,6 +1329,28 @@ export function VaultEditWizard({
       setPaymentStatus("Payment successful!");
     } catch (error) {
       console.error("Wander Wallet error:", error);
+      setPaymentStatus(
+        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setIsProcessingPayment(false);
+    }
+  };
+
+  const handleMetaMaskPayment = async () => {
+    try {
+      setIsProcessingPayment(true);
+      setPaymentStatus("Connecting to MetaMask...");
+
+      // MetaMask connection happens within dispatchToBitxen if needed,
+      // but we can trigger it here for better UX
+      setPaymentStatus("MetaMask ready");
+
+      await submitEdit();
+
+      setPaymentStatus("Payment successful!");
+    } catch (error) {
+      console.error("MetaMask error:", error);
       setPaymentStatus(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
@@ -1320,6 +1753,107 @@ export function VaultEditWizard({
               <FieldError message={fieldErrors["willDetails.content"]} />
             </div>
 
+            <div className="space-y-3">
+              <label className="text-sm font-medium">
+                Additional Documents (optional)
+              </label>
+
+              <label className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-border bg-muted/30 p-6 transition-colors hover:bg-muted/50">
+                <FileText className="mb-2 size-8 text-muted-foreground" />
+                <p className="text-sm font-medium">Click to upload documents</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  PDF, Office, images, video, audio, and more
+                </p>
+                <Input
+                  type="file"
+                  multiple
+                  accept=".pdf,.txt,.doc,.docx,.csv,.xls,.xlsx,.heic,.heiv,.hevc,.jpg,.jpeg,.png,.gif,.mp4,.mov,.avi,.m4v,.rtf,.rtfd,.html,.odt,.ai,.eps,.svg,.tiff,.psd,.fbx,.stp,.step,.igs,.iges,.stl,.3mf,.obg,.mp3,.aac,.wav,.flac,.alac,.aiff,.ogg,.m4a"
+                  onChange={(event) => handleDocumentsChange(event.target.files)}
+                  className="sr-only"
+                />
+              </label>
+
+              {/* Existing Documents */}
+              {formState.willDetails.existingDocuments.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 mt-4">
+                    Existing Documents
+                  </div>
+                  {formState.willDetails.existingDocuments.map((file, index) => (
+                    <div
+                      key={`existing-${index}`}
+                      className="flex items-center gap-3 rounded-md border bg-muted/50 px-3 py-2"
+                    >
+                      <div className="relative">
+                        <FileText className="size-4 shrink-0 text-muted-foreground" />
+                        <div className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-blue-500" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{file.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatFileSize(file.size)}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => downloadDocument(index)}
+                          className="shrink-0 cursor-pointer rounded-sm p-1 text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+                          aria-label="Download file"
+                          title="Download"
+                        >
+                          <Download className="size-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeExistingDocument(index)}
+                          className="shrink-0 cursor-pointer rounded-sm p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                          aria-label="Remove file"
+                          title="Remove"
+                        >
+                          <X className="size-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* New Documents */}
+              {formState.willDetails.newDocuments.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 mt-4">
+                    New Documents
+                  </div>
+                  {formState.willDetails.newDocuments.map((file, index) => (
+                    <div
+                      key={`new-${index}`}
+                      className="flex items-center gap-3 rounded-md border bg-background px-3 py-2"
+                    >
+                      <div className="relative">
+                        <FileText className="size-4 shrink-0 text-muted-foreground" />
+                        <div className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-green-500" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{file.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatFileSize(file.size)}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeNewDocument(index)}
+                        className="shrink-0 cursor-pointer rounded-sm p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                        aria-label="Remove file"
+                      >
+                        <X className="size-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <p className="mt-2 text-xs text-muted-foreground">
               These changes will be saved as a new version on blockchain storage, the old version remains archived.
             </p>
@@ -1454,17 +1988,54 @@ export function VaultEditWizard({
           </div>
         );
 
-      case "payment":
+      case "storageSelection":
         return (
-          <PaymentMethodSelector
-            selectedMethod={paymentState.paymentMethod}
-            onMethodChange={(method) =>
-              setPaymentState((prev) => ({
+          <StorageSelector
+            selectedStorage={formState.storageType}
+            selectedChain={(formState.payment.selectedChain as ChainId) || DEFAULT_CHAIN}
+            onStorageChange={(storage) => {
+              setFormState((prev) => ({
                 ...prev,
-                paymentMethod: method,
-              }))
-            }
-            onWanderPayment={handleWanderPayment}
+                storageType: storage,
+                payment: {
+                  ...prev.payment,
+                  paymentMethod: storage === "arweave" ? "wander" : "metamask",
+                },
+              }));
+            }}
+            onChainChange={(chain) => {
+              setFormState((prev) => ({
+                ...prev,
+                payment: {
+                  ...prev.payment,
+                  selectedChain: chain,
+                },
+              }));
+            }}
+          />
+        );
+
+      case "payment":
+        // Render different component based on storage type
+        if (formState.storageType === "bitxenArweave") {
+          return (
+            <MetaMaskWalletButton
+              selectedChain={(formState.payment.selectedChain as ChainId) || DEFAULT_CHAIN}
+              onClick={handleMetaMaskPayment}
+              disabled={isSubmitting || isProcessingPayment}
+              onChainChange={(chain) =>
+                setFormState((prev) => ({
+                  ...prev,
+                  payment: { ...prev.payment, selectedChain: chain },
+                }))
+              }
+            />
+          );
+        }
+
+        return (
+          <WanderWalletButton
+            onClick={handleWanderPayment}
             isSubmitting={isSubmitting}
             isProcessingPayment={isProcessingPayment}
             paymentStatus={paymentStatus}
@@ -1508,7 +2079,9 @@ export function VaultEditWizard({
                 <div className="rounded-lg border bg-card p-4 shadow-sm">
                   <div className="flex items-center justify-between mb-2">
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                      Transaction ID (New Version)
+                      {formState.storageType === "bitxenArweave"
+                        ? `Transaction Hash (${(formState.payment.selectedChain || DEFAULT_CHAIN).toUpperCase()})`
+                        : "Transaction ID (Arweave)"}
                     </p>
                     <div className="flex items-center gap-1">
                       <Button
@@ -1524,7 +2097,15 @@ export function VaultEditWizard({
                         variant="ghost"
                         size="icon"
                         className="h-6 w-6 text-xs"
-                        onClick={() => window.open(`https://viewblock.io/arweave/tx/${latestTxId}`, "_blank")}
+                        onClick={() => {
+                          if (formState.storageType === "bitxenArweave") {
+                            const chain = (formState.payment.selectedChain || DEFAULT_CHAIN) as ChainId;
+                            const config = getChainConfig(chain);
+                            window.open(`${config.blockExplorer}/tx/${latestTxId}`, "_blank");
+                          } else {
+                            window.open(`https://viewblock.io/arweave/tx/${latestTxId}`, "_blank");
+                          }
+                        }}
                       >
                         <ExternalLink className="size-3" />
                       </Button>
@@ -1731,5 +2312,3 @@ export function VaultEditWizard({
     </div>
   );
 }
-
-

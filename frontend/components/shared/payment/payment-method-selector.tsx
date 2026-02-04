@@ -102,7 +102,7 @@ export function PaymentMethodSelector({
         <div className="space-y-3 border-t pt-4">
           <div className="rounded-md bg-muted/50 p-3">
             <p className="text-sm font-medium">
-              Network Fee: ~0.0008 AR (Paid by User)
+              Network Fee varies (Paid by User)
             </p>
           </div>
           <WanderWalletButton

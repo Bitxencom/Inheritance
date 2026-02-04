@@ -1,3 +1,5 @@
+import { CHAIN_CONFIG, type ChainId } from "./metamaskWallet";
+
 /**
  * Vault Storage - localStorage utility for tracking pending vaults
  */
@@ -8,7 +10,6 @@ export type PendingVaultStatus = "pending" | "confirmed" | "error";
 
 export type PendingVault = {
   vaultId: string;
-  arweaveTxId: string;
   title: string;
   willType: "one-time" | "editable";
   status: PendingVaultStatus;
@@ -17,6 +18,10 @@ export type PendingVault = {
   fractionKeys: string[];
   triggerType?: "date" | "manual";
   triggerDate?: string;
+  storageType?: "arweave" | "bitxenArweave";
+  blockchainTxHash?: string;
+  blockchainChain?: string;
+  arweaveTxId: string;
 };
 
 /**
@@ -24,22 +29,33 @@ export type PendingVault = {
  */
 export function getPendingVaults(): PendingVault[] {
   if (typeof window === "undefined") return [];
-  
+
   try {
     const data = localStorage.getItem(STORAGE_KEY);
     if (!data) return [];
-    
+
     // Parse raw data which might contain legacy "shardKeys" or "shards"
     const parsed = JSON.parse(data);
-    
+
     // Map legacy keys to fractionKeys
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return parsed.map((vault: any) => {
-      let fractionKeys = vault.fractionKeys || vault.shardKeys || vault.shards || vault.shares || [];
-      
+      let fractionKeys =
+        vault.fractionKeys ||
+        vault.shardKeys ||
+        vault.shards ||
+        vault.shares ||
+        [];
+
       // Handle case where keys are stored as an object { shard1: "...", shard2: "..." }
-      if (fractionKeys && typeof fractionKeys === 'object' && !Array.isArray(fractionKeys)) {
-        fractionKeys = Object.values(fractionKeys).filter(k => typeof k === 'string');
+      if (
+        fractionKeys &&
+        typeof fractionKeys === "object" &&
+        !Array.isArray(fractionKeys)
+      ) {
+        fractionKeys = Object.values(fractionKeys).filter(
+          (k) => typeof k === "string",
+        );
       }
 
       return {
@@ -56,15 +72,25 @@ export function getPendingVaults(): PendingVault[] {
 /**
  * Save a new pending vault to localStorage
  */
-export function savePendingVault(vault: Omit<PendingVault, "status" | "createdAt">): PendingVault {
+export function savePendingVault(
+  vault: Omit<PendingVault, "status" | "createdAt">,
+): PendingVault {
   const vaults = getPendingVaults();
-  
+
+  // Debug log to ensure we are receiving storageType
+  console.log("💾 savePendingVault called:", {
+    id: vault.vaultId,
+    storageType: vault.storageType,
+    blockchainChain: vault.blockchainChain,
+    blockchainTxHash: vault.blockchainTxHash,
+  });
+
   const newVault: PendingVault = {
     ...vault,
     status: "pending",
     createdAt: new Date().toISOString(),
   };
-  
+
   // Check if vault already exists
   const existingIndex = vaults.findIndex((v) => v.vaultId === vault.vaultId);
   if (existingIndex >= 0) {
@@ -72,12 +98,12 @@ export function savePendingVault(vault: Omit<PendingVault, "status" | "createdAt
   } else {
     vaults.unshift(newVault); // Add to beginning
   }
-  
+
   // Keep only last 20 vaults
   const trimmedVaults = vaults.slice(0, 20);
-  
+
   saveVaultsToStorage(trimmedVaults);
-  
+
   return newVault;
 }
 
@@ -87,11 +113,15 @@ export function savePendingVault(vault: Omit<PendingVault, "status" | "createdAt
 function saveVaultsToStorage(vaults: PendingVault[]) {
   try {
     // Map back to shardKeys for storage to maintain backward compatibility
-    const vaultsToStore = vaults.map(v => {
+    const vaultsToStore = vaults.map((v) => {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { fractionKeys, ...rest } = v;
       return {
         ...rest,
+        // Explicitly ensure these fields are preserved from v (safety check)
+        storageType: v.storageType,
+        blockchainTxHash: v.blockchainTxHash,
+        blockchainChain: v.blockchainChain,
         // Store as shardKeys (legacy key preference)
         shardKeys: fractionKeys,
       };
@@ -102,8 +132,6 @@ function saveVaultsToStorage(vaults: PendingVault[]) {
     console.error("Error saving vaults to localStorage:", error);
   }
 }
-  
-
 
 /**
  * Update vault status in localStorage
@@ -111,21 +139,23 @@ function saveVaultsToStorage(vaults: PendingVault[]) {
 export function updateVaultStatus(
   vaultId: string,
   status: PendingVaultStatus,
-  confirmedAt?: string
+  confirmedAt?: string,
 ): PendingVault | null {
   const vaults = getPendingVaults();
   const index = vaults.findIndex((v) => v.vaultId === vaultId);
-  
+
   if (index < 0) return null;
-  
+
   vaults[index] = {
     ...vaults[index],
     status,
-    confirmedAt: confirmedAt || (status === "confirmed" ? new Date().toISOString() : undefined),
+    confirmedAt:
+      confirmedAt ||
+      (status === "confirmed" ? new Date().toISOString() : undefined),
   };
-  
+
   saveVaultsToStorage(vaults);
-  
+
   return vaults[index];
 }
 
@@ -134,7 +164,12 @@ export function updateVaultStatus(
  */
 export function updateVaultTxId(
   vaultId: string,
-  arweaveTxId: string
+  arweaveTxId: string,
+  updates?: {
+    storageType?: "arweave" | "bitxenArweave";
+    blockchainTxHash?: string;
+    blockchainChain?: string;
+  },
 ): boolean {
   const vaults = getPendingVaults();
   const index = vaults.findIndex((v) => v.vaultId === vaultId);
@@ -144,6 +179,14 @@ export function updateVaultTxId(
   vaults[index] = {
     ...vaults[index],
     arweaveTxId,
+    // Apply updates if provided
+    ...(updates?.storageType && { storageType: updates.storageType }),
+    ...(updates?.blockchainTxHash && {
+      blockchainTxHash: updates.blockchainTxHash,
+    }),
+    ...(updates?.blockchainChain && {
+      blockchainChain: updates.blockchainChain,
+    }),
     // Reset status to pending as it's a new transaction waiting for confirmation
     status: "pending",
     // Update timestamp to bring it to top
@@ -170,9 +213,9 @@ export function getVaultById(vaultId: string): PendingVault | null {
 export function removeVault(vaultId: string): boolean {
   const vaults = getPendingVaults();
   const filtered = vaults.filter((v) => v.vaultId !== vaultId);
-  
+
   if (filtered.length === vaults.length) return false;
-  
+
   saveVaultsToStorage(filtered);
   return true;
 }
@@ -183,15 +226,15 @@ export function removeVault(vaultId: string): boolean {
 export function removeVaultKeys(vaultId: string): boolean {
   const vaults = getPendingVaults();
   const index = vaults.findIndex((v) => v.vaultId === vaultId);
-  
+
   if (index < 0) return false;
-  
+
   // Update the vault with empty fraction keys
   vaults[index] = {
     ...vaults[index],
     fractionKeys: [],
   };
-  
+
   saveVaultsToStorage(vaults);
   return true;
 }
@@ -241,6 +284,19 @@ export async function checkArweaveStatus(txId: string): Promise<{
     console.error("Error checking blockchain storage status:", error);
     return { confirmed: false };
   }
+}
+
+/**
+ * Get smart chain explorer URL for a transaction
+ */
+export function getSmartChainExplorerUrl(
+  txId: string,
+  chainId?: string,
+): string {
+  if (!txId || !chainId) return "";
+  const config = CHAIN_CONFIG[chainId as ChainId];
+  if (!config) return "";
+  return `${config.blockExplorer}/tx/${txId}`;
 }
 
 /**

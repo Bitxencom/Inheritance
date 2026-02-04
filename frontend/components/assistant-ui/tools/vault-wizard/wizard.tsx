@@ -4,12 +4,15 @@ import { fakerID_ID as faker } from "@faker-js/faker";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { AlertMessage } from "@/components/ui/alert-message";
 import { FieldError } from "@/components/ui/field-error";
 import { ReviewSection, ReviewItem } from "@/components/ui/review-display";
+import { savePendingVault } from "@/lib/vault-storage";
 import { cn } from "@/lib/utils";
+import { FileText, X } from "lucide-react";
 
 import {
   Dialog,
@@ -18,14 +21,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { PaymentMethodSelector } from "@/components/shared/payment";
+import { UnifiedPaymentSelector, type PaymentMode } from "@/components/shared/payment";
 import { Stepper } from "@/components/shared/stepper";
-import {
-  connectWanderWallet,
-  sendArPayment,
-  WANDER_PAYMENT_CONFIG,
-} from "@/lib/wanderWallet";
-
+import type { ChainId } from "@/lib/metamaskWallet";
+import { generateVaultKey, encryptVaultPayloadClient } from "@/lib/clientVaultCrypto";
+import { splitKeyClient } from "@/lib/shamirClient";
+import { hashSecurityAnswerClient } from "@/lib/securityQuestionsClient";
 
 import type {
   FormState,
@@ -56,6 +57,10 @@ export function VaultCreationWizard({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
   const [paymentStatus, setPaymentStatus] = useState<string | null>(null);
+  const [paymentProgress, setPaymentProgress] = useState<number | null>(null);
+  const [paymentPhase, setPaymentPhase] = useState<"confirm" | "upload" | "finalize" | null>(null);
+  const vaultIdRef = useRef<string | null>(null);
+  const vaultKeyRef = useRef<Uint8Array | null>(null);
 
   useEffect(() => {
     onStepChange?.(currentStep);
@@ -101,14 +106,17 @@ export function VaultCreationWizard({
         willType: "editable",
         title: `Inheritance ${faker.company.name()}`,
         content: loremParagraphs.replace(/\n/g, "\n\n"),
+        documents: [],
       },
       securityQuestions,
       triggerRelease: {
         triggerType: "manual",
         triggerDate,
       },
+      storageType: "arweave",
       payment: {
         paymentMethod: "wander",
+        selectedChain: undefined,
       },
     });
     setCurrentStep(0);
@@ -124,6 +132,10 @@ export function VaultCreationWizard({
     setStepError(null);
     setFieldErrors({});
     setIsSubmitting(false);
+    setIsProcessingPayment(false);
+    setPaymentStatus(null);
+    vaultIdRef.current = null;
+    vaultKeyRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -150,9 +162,51 @@ export function VaultCreationWizard({
     return () => window.removeEventListener("keydown", handleHotkey);
   }, [fillWithDummyData]);
 
+  const handleDocumentsChange = (files: FileList | null) => {
+    if (!files) return;
+    const newFiles = Array.from(files);
 
 
+    // Calculate total size including existing documents and already selected new documents
+    const existingSize = formState.willDetails.documents.reduce((acc, doc) => acc + doc.size, 0);
+    const incomingSize = newFiles.reduce((acc, doc) => acc + doc.size, 0);
 
+    const totalSize = existingSize + incomingSize;
+    const MAX_SIZE = 1024 * 1024 * 1024; // 1 GB
+
+    if (totalSize > MAX_SIZE) {
+      setStepError("Total document size cannot exceed 1 GB.");
+      return;
+    }
+
+    setFormState((prev) => ({
+      ...prev,
+      willDetails: {
+        ...prev.willDetails,
+        documents: [...prev.willDetails.documents, ...newFiles],
+      },
+    }));
+    // Clear error if adding files was successful
+    setStepError(null);
+  };
+
+  const removeDocument = (index: number) => {
+    setFormState((prev) => ({
+      ...prev,
+      willDetails: {
+        ...prev.willDetails,
+        documents: prev.willDetails.documents.filter((_, i) => i !== index),
+      },
+    }));
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const isNextBlockedByAttachmentPrep = false;
 
   const handleSecurityQuestionChange = (
     index: number,
@@ -211,26 +265,6 @@ export function VaultCreationWizard({
       });
       return newErrors;
     });
-  };
-
-  const handlePaymentMethodChange = (
-    method: FormState["payment"]["paymentMethod"],
-  ) => {
-    setFormState((prev) => ({
-      ...prev,
-      payment: {
-        ...prev.payment,
-        paymentMethod: method,
-      },
-    }));
-    // Clear error when user selects payment method
-    if (fieldErrors.paymentMethod) {
-      setFieldErrors((prev) => {
-        const newErrors = { ...prev };
-        delete newErrors.paymentMethod;
-        return newErrors;
-      });
-    }
   };
 
   const handleTriggerTypeChange = (
@@ -334,130 +368,249 @@ export function VaultCreationWizard({
     }
   };
 
-  const transformPayload = async () => {
+  const transformPayload = async (params: {
+    vaultId: string;
+    vaultKey: Uint8Array;
+    onStatus?: (status: string) => void;
+  }) => {
+    const normalizeBase64 = (content: string): string => {
+      if (!content) return "";
+      if (!content.startsWith("data:")) return content;
+      const commaIndex = content.indexOf(",");
+      return commaIndex === -1 ? content : content.slice(commaIndex + 1);
+    };
 
+    const estimateBase64Bytes = (base64: string): number => {
+      const trimmed = base64.trim();
+      if (!trimmed) return 0;
+      let padding = 0;
+      if (trimmed.endsWith("==")) padding = 2;
+      else if (trimmed.endsWith("=")) padding = 1;
+      return (trimmed.length * 3) / 4 - padding;
+    };
+
+    const readFileAsBase64 = async (file: File): Promise<string> =>
+      await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = typeof reader.result === "string" ? reader.result : "";
+          resolve(normalizeBase64(result));
+        };
+        reader.onerror = () => reject(reader.error ?? new Error("Failed to read file."));
+        reader.readAsDataURL(file);
+      });
+
+    const documentsWithContent: Array<{
+      name: string;
+      size: number;
+      type: string;
+      content?: string;
+      attachment?: { txId: string; iv: string; checksum: string };
+    }> = [];
+
+    for (const doc of formState.willDetails.documents) {
+      params.onStatus?.(`Reading document: ${doc.name}`);
+      const base64Content = await readFileAsBase64(doc);
+      if (!base64Content) {
+        throw new Error(`Attachment "${doc.name}" has no content. Please re-upload the file.`);
+      }
+
+      const decodedSize = estimateBase64Bytes(base64Content);
+      if (!Number.isFinite(decodedSize) || decodedSize <= 0 || Math.abs(decodedSize - doc.size) > 4) {
+        throw new Error(`Attachment "${doc.name}" looks corrupted or incomplete. Please re-upload the file.`);
+      }
+
+      documentsWithContent.push({
+        name: doc.name,
+        size: doc.size,
+        type: doc.type,
+        content: base64Content,
+      });
+    }
 
     return {
       willDetails: {
         ...formState.willDetails,
-        ...formState.willDetails,
+        documents: documentsWithContent,
       },
       securityQuestions: formState.securityQuestions,
       triggerRelease: formState.triggerRelease,
-      // Backend only accepts paymentMethod
       payment: {
         paymentMethod: formState.payment.paymentMethod,
       },
     };
   };
 
-  const extractFractionKeys = (details: Record<string, unknown> | null | undefined) => {
-    if (!details || typeof details !== "object") {
-      console.warn("⚠️ extractFractionKeys: details is null or not an object");
-      return [];
-    }
-
-    // Priority 1: fractionKeys directly from backend (array of strings)
-    const fractionKeysArray = Array.isArray(
-      (details as { fractionKeys?: unknown }).fractionKeys,
-    )
-      ? ((details as { fractionKeys?: unknown }).fractionKeys as unknown[])
-      : null;
-
-    if (fractionKeysArray && fractionKeysArray.length > 0) {
-      const extracted = fractionKeysArray
-        .map((value) => (typeof value === "string" ? value : null))
-        .filter((key): key is string => Boolean(key))
-        .slice(0, 5);
-
-      console.log("✅ extractFractionKeys: Found fractionKeys array:", {
-        count: extracted.length,
-        firstKey: extracted[0]?.substring(0, 20) + "...",
-      });
-
-      return extracted;
-    }
-
-    // Priority 2: keys with structure { key: string, beneficiary: ... }
-    const assignedKeys = Array.isArray((details as { fractionKeyAssignments?: unknown }).fractionKeyAssignments)
-      ? ((details as { fractionKeyAssignments?: unknown }).fractionKeyAssignments as Array<{ key?: string }>)
-      : [];
-
-    if (assignedKeys.length > 0) {
-      const extracted = assignedKeys
-        .map((entry) => (typeof entry?.key === "string" ? entry.key : null))
-        .filter((key): key is string => Boolean(key))
-        .slice(0, 5);
-
-      console.log("✅ extractFractionKeys: Found fractionKeyAssignments array:", {
-        count: extracted.length,
-        firstKey: extracted[0]?.substring(0, 20) + "...",
-      });
-
-      return extracted;
-    }
-
-    console.warn("⚠️ extractFractionKeys: No fraction keys found in details:", {
-      hasFractionKeys: !!fractionKeysArray,
-      hasAssignments: assignedKeys.length > 0,
-      detailsKeys: Object.keys(details),
-    });
-
-    return [];
-  };
-
-  const submitToMCP = async () => {
+  const submitToMCP = async (overrides?: { storageType?: "arweave" | "bitxenArweave"; selectedChain?: ChainId }) => {
     setIsSubmitting(true);
     setStepError(null);
+    setPaymentProgress(null);
+    setPaymentPhase(null);
 
-    // Initial status
-    setPaymentStatus("Preparing inheritance...");
+    const effectiveStorageType = overrides?.storageType ?? formState.storageType;
+    const effectiveChain = overrides?.selectedChain ?? (formState.payment.selectedChain as ChainId | undefined);
+
+    setPaymentStatus(effectiveStorageType === "bitxenArweave" ? "Step 1/2: Preparing your vault..." : "Preparing your vault...");
 
     try {
-      // 1. Prepare inheritance logic (Backend encrypts data)
-      const payload = await transformPayload();
+      const vaultId =
+        vaultIdRef.current ??
+        (typeof globalThis.crypto?.randomUUID === "function"
+          ? globalThis.crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+      vaultIdRef.current = vaultId;
 
-      // Call prepare endpoint instead of create
-      const prepareResponse = await fetch("/api/vault/prepare", {
+      const vaultKey = vaultKeyRef.current ?? generateVaultKey();
+      vaultKeyRef.current = vaultKey;
+
+      const setStepStatus = (status: string) => {
+        if (effectiveStorageType !== "bitxenArweave") {
+          setPaymentStatus(status);
+          return;
+        }
+
+        const normalized = status.toLowerCase();
+        if (normalized.includes("step 2") || normalized.includes("contract") || normalized.includes("metamask")) {
+          setPaymentStatus(status);
+          return;
+        }
+
+        if (normalized.startsWith("step 1/2:")) {
+          setPaymentStatus(status);
+          return;
+        }
+
+        setPaymentStatus(`Step 1/2: ${status}`);
+      };
+
+      const payload = await transformPayload({
+        vaultId,
+        vaultKey,
+        onStatus: (status) => setStepStatus(status),
+      });
+
+      const encryptedVault = await encryptVaultPayloadClient(payload, vaultKey);
+
+      const fractionKeys = splitKeyClient(vaultKey);
+
+      const securityQuestionHashes = await Promise.all(
+        payload.securityQuestions.map(async (sq) => ({
+          question: sq.question,
+          answerHash: await hashSecurityAnswerClient(sq.answer),
+        })),
+      );
+
+      const metadata = {
+        trigger: payload.triggerRelease,
+        beneficiaryCount: 0,
+        securityQuestionHashes,
+        willType: payload.willDetails.willType,
+        encryptionVersion: "v2-client" as const,
+      };
+
+      const prepareResponse = await fetch("/api/vault/prepare-client", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          vaultId,
+          encryptedVault,
+          metadata,
+        }),
       });
 
       const prepareData = await prepareResponse.json();
 
-      if (!prepareResponse.ok || !prepareData.success) {
-        throw new Error(prepareData.error || prepareData.message || "We couldn't prepare the inheritance. Please try again.");
+      if (!prepareResponse.ok || !prepareData.success || !prepareData.details) {
+        throw new Error(
+          prepareData.error ||
+            prepareData.message ||
+            "We couldn't prepare the inheritance. Please try again.",
+        );
       }
 
       const { details } = prepareData;
-      const { arweavePayload, fractionKeys, fractionKeyAssignments, vaultId } = details;
+      const { arweavePayload } = details;
 
-      // 2. Dispatch to blockchain (Frontend signs & uploads)
-      // Use the appropriate wallet based on selected payment method
       let txId: string;
 
-      if (formState.payment.paymentMethod === "wander") {
-        setPaymentStatus("Confirm transaction in Wander Wallet...");
-        const { dispatchToArweave } = await import("@/lib/wanderWallet");
-        const dispatchResult = await dispatchToArweave(arweavePayload, vaultId);
+      let blockchainTxHash: string | undefined;
+      let blockchainChain: string | undefined;
+
+      if (effectiveStorageType === "arweave") {
+        setPaymentStatus("Step 1/2: Confirm transaction in Wander Wallet...");
+        setPaymentPhase("confirm");
+        setPaymentProgress(null);
+        const { dispatchToArweave, isWalletReady, connectWanderWallet } = await import("@/lib/wanderWallet");
+        if (!(await isWalletReady())) {
+          await connectWanderWallet();
+        }
+        const dispatchResult = await dispatchToArweave(
+          arweavePayload,
+          vaultId,
+          undefined,
+          (progress) => {
+            setPaymentProgress(progress);
+            if (progress >= 0 && progress < 100) setPaymentPhase("upload");
+            if (progress >= 100) setPaymentPhase("finalize");
+          },
+          (status) => {
+            setPaymentStatus(status);
+            const normalized = status.toLowerCase();
+            if (
+              normalized.includes("waiting for wallet") ||
+              normalized.includes("confirm transaction") ||
+              normalized.includes("confirm arweave") ||
+              normalized.includes("signature")
+            ) {
+              setPaymentPhase("confirm");
+              return;
+            }
+            if (
+              normalized.includes("uploading") ||
+              normalized.includes("upload chunk") ||
+              normalized.includes("resuming") ||
+              normalized.includes("preparing upload")
+            ) {
+              setPaymentPhase("upload");
+              return;
+            }
+            if (normalized.includes("upload successful") || normalized.includes("successful")) {
+              setPaymentPhase("finalize");
+            }
+          },
+        );
         txId = dispatchResult.txId;
         setPaymentStatus("Upload successful! We're saving your inheritance details...");
+      } else if (effectiveStorageType === "bitxenArweave") {
+        // Hybrid: Arweave storage + Bitxen contract registry
+        // We use the "bitxenArweave" storage type name but "hybrid" implementation under the hood
+        setPaymentStatus("Step 1/2: Confirm Arweave upload in Wander...");
+        const { dispatchHybrid } = await import("@/lib/metamaskWallet");
+        const selectedChain = (effectiveChain || "bsc") as ChainId;
+        const hybridResult = await dispatchHybrid(arweavePayload, vaultId, selectedChain, false, (status) => {
+          setPaymentStatus(status);
+        });
+
+        // Use contract tx hash for display
+        txId = hybridResult.arweaveTxId;
+        blockchainTxHash = hybridResult.contractTxHash;
+        blockchainChain = selectedChain;
+        setPaymentStatus(`Hybrid storage complete! Arweave + ${selectedChain.toUpperCase()}`);
       } else {
-        throw new Error("Invalid payment method: " + formState.payment.paymentMethod);
+        throw new Error("Invalid storage type: " + effectiveStorageType);
       }
 
-      // 3. Finalize success
       const resultData = {
         vaultId: vaultId,
         arweaveTxId: txId,
+        blockchainTxHash,
+        blockchainChain,
         message: "Your inheritance has been successfully created and stored on blockchain.",
-        fractionKeys: fractionKeyAssignments && fractionKeyAssignments.length > 0
-          ? fractionKeyAssignments.map((a: { key: string }) => a.key)
-          : (fractionKeys || []),
+        fractionKeys: fractionKeys || [],
         willType: payload.willDetails.willType,
+        storageType: effectiveStorageType,
         createdAt: new Date().toISOString(),
         title: payload.willDetails.title,
         triggerType: payload.triggerRelease.triggerType,
@@ -465,6 +618,26 @@ export function VaultCreationWizard({
       };
 
       console.log("✅ Inheritance created successfully:", resultData);
+
+      // Save to local storage for persistence
+      try {
+
+
+        savePendingVault({
+          vaultId: resultData.vaultId,
+          arweaveTxId: resultData.arweaveTxId || "",
+          title: resultData.title,
+          willType: resultData.willType as "one-time" | "editable",
+          fractionKeys: resultData.fractionKeys,
+          triggerType: resultData.triggerType as "date" | "manual" | undefined,
+          triggerDate: resultData.triggerDate,
+          storageType: resultData.storageType as "arweave" | "bitxenArweave",
+          blockchainTxHash: resultData.blockchainTxHash,
+          blockchainChain: resultData.blockchainChain
+        });
+      } catch (e) {
+        console.error("Failed to save vault to local storage:", e);
+      }
 
       onResult?.({
         status: "success",
@@ -513,21 +686,41 @@ export function VaultCreationWizard({
     setCurrentStep((prev) => Math.min(prev + 1, steps.length - 1));
   };
 
-  const handleWanderPayment = async () => {
+  const handleUnifiedPayment = async (mode: PaymentMode, chainId?: ChainId) => {
     try {
       setIsProcessingPayment(true);
-      setPaymentStatus("Connecting to your Wander Wallet...");
+      setPaymentProgress(null);
+      setPaymentPhase(null);
 
-      await connectWanderWallet();
+      // Calculate effective values immediately (don't rely on async state update)
+      const effectiveStorageType = mode === "wander" ? "arweave" : "bitxenArweave";
+      const effectiveChain = chainId;
 
-      setPaymentStatus("Wallet connected successfully! We're creating your inheritance now...");
+      // Also update form state for UI consistency (but don't depend on it for submit)
+      setFormState((prev) => ({
+        ...prev,
+        storageType: effectiveStorageType,
+        payment: {
+          paymentMethod: mode === "wander" ? "wander" : "metamask",
+          selectedChain: chainId,
+        },
+      }));
 
-      // No separate payment - fee inheritance be handled during blockchain upload
-      await handleNext();
+      if (mode === "wander") {
+        setPaymentStatus("Preparing your vault...");
+        setPaymentPhase("confirm");
+      } else {
+        setPaymentStatus("Step 1/2: Uploading to Arweave...");
+      }
 
-      // Status handled by submitToMCP
+      // Pass overrides directly to submitToMCP to avoid async state issues
+      await submitToMCP({
+        storageType: effectiveStorageType,
+        selectedChain: effectiveChain,
+      });
+
     } catch (error) {
-      console.error("Wander Wallet error:", error);
+      console.error("Payment error:", error);
       setPaymentStatus(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
@@ -651,6 +844,70 @@ export function VaultCreationWizard({
                 className={cn("w-full max-w-full resize-none overflow-hidden", fieldErrors.content ? "border-destructive" : "")}
               />
               <FieldError message={fieldErrors.content} />
+            </div>
+
+            <div className="space-y-3">
+              <label className="text-sm font-medium">
+                Additional Documents (optional)
+              </label>
+
+              {stepError && (
+                <AlertMessage
+                  message={stepError}
+                  variant="error"
+                  showIcon
+                />
+              )}
+
+              <label className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-border bg-muted/30 p-6 transition-colors hover:bg-muted/50">
+                <FileText className="mb-2 size-8 text-muted-foreground" />
+                <p className="text-sm font-medium">Click to upload documents</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  PDF, Office, images, video, audio, and more
+                </p>
+                <Input
+                  type="file"
+                  multiple
+                  accept=".pdf,.txt,.doc,.docx,.csv,.xls,.xlsx,.heic,.heiv,.hevc,.jpg,.jpeg,.png,.gif,.mp4,.mov,.avi,.m4v,.rtf,.rtfd,.html,.odt,.ai,.eps,.svg,.tiff,.psd,.fbx,.stp,.step,.igs,.iges,.stl,.3mf,.obg,.mp3,.aac,.wav,.flac,.alac,.aiff,.ogg,.m4a"
+                  onChange={(event) => handleDocumentsChange(event.target.files)}
+                  className="sr-only"
+                />
+              </label>
+
+              {formState.willDetails.documents.length > 0 && (
+                <div className="space-y-2">
+                  {formState.willDetails.documents.map((file, index) => (
+                    <div
+                      key={`${file.name}-${index}`}
+                      className="flex items-center gap-3 rounded-md border bg-background px-3 py-2"
+                    >
+                      <FileText className="size-4 shrink-0 text-muted-foreground" />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{file.name}</p>
+                        <div className="mt-0.5 flex items-center justify-start gap-2 text-xs text-muted-foreground">
+                          <span>{formatFileSize(file.size)}</span>
+                          <Badge
+                            className={cn(
+                              "shrink-0 gap-1.5 border !shadow-none",
+                              "border-emerald-200 bg-emerald-50 hover:bg-emerald-50 text-emerald-800 dark:border-emerald-800/50 dark:bg-emerald-950/40 dark:text-emerald-200",
+                            )}
+                          >
+                            <span>Encrypted</span>
+                          </Badge>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeDocument(index)}
+                        className="shrink-0 rounded-sm p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive cursor-pointer"
+                        aria-label="Remove file"
+                      >
+                        <X className="size-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -873,18 +1130,14 @@ export function VaultCreationWizard({
         );
       case "payment":
         return (
-          <PaymentMethodSelector
-            selectedMethod={formState.payment.paymentMethod as "wander"}
-            onMethodChange={(method) =>
-              setFormState((prev) => ({
-                ...prev,
-                payment: { ...prev.payment, paymentMethod: method },
-              }))
-            }
-            onWanderPayment={handleWanderPayment}
-            isSubmitting={isSubmitting}
-            isProcessingPayment={isProcessingPayment}
+          <UnifiedPaymentSelector
+            onSubmit={handleUnifiedPayment}
+            isSubmitting={isSubmitting || isProcessingPayment}
             paymentStatus={paymentStatus}
+            paymentProgress={paymentProgress}
+            paymentPhase={paymentPhase}
+            isReady={true}
+            blockedReason={null}
           />
         );
       default:
@@ -904,7 +1157,7 @@ export function VaultCreationWizard({
       )}
       {/* Hide Next button in payment step - payment is done via wallet button in PaymentMethodSelector */}
       {currentStep !== steps.length - 1 && (
-        <Button onClick={handleNext} disabled={isSubmitting}>
+        <Button onClick={handleNext} disabled={isSubmitting || isNextBlockedByAttachmentPrep}>
           Next
         </Button>
       )}

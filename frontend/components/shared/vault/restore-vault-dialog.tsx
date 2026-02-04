@@ -81,7 +81,17 @@ export function RestoreVaultDialog({
       await loadSecurityQuestions(data.vaultId);
       setStep("verification");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to parse backup file");
+      const rawMessage =
+        err instanceof Error ? err.message : "Failed to parse backup file";
+      const looksLikePath =
+        !rawMessage.includes("\n") &&
+        (rawMessage.includes("/") || rawMessage.includes("\\")) &&
+        /\.txt$/i.test(rawMessage);
+      setError(
+        looksLikePath
+          ? `Failed to read backup file "${file.name}". Please re-download the backup and try again.`
+          : rawMessage,
+      );
     } finally {
       setIsLoading(false);
       // Reset input value to allow selecting same file again if needed

@@ -12,14 +12,17 @@ export const initialFormState: FormState = {
     willType: "one-time",
     title: "",
     content: "",
+    documents: [],
   },
   securityQuestions: defaultSecurityQuestions,
   triggerRelease: {
     triggerType: "manual",
     triggerDate: undefined,
   },
+  storageType: "arweave",
   payment: {
     paymentMethod: "wander",
+    selectedChain: undefined,
   },
 };
 
@@ -46,8 +49,8 @@ export const steps: readonly WizardStep[] = [
   },
   { 
     key: "payment", 
-    label: "Payment",
-    description: "Complete payment to store vault permanently on blockchain storage."
+    label: "Storage Type",
+    description: "Choose your storage type to secure your vault on blockchain."
   },
 ] as const;
 

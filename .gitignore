@@ -59,3 +59,7 @@ logs/
 # Temp
 tmp/
 temp/
+
+# Local Dev Folder
+zzz/
+old-project/

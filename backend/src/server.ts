@@ -6,6 +6,7 @@ import { appEnv } from "./config/env.js";
 import { vaultRouter } from "./routes/vault.js";
 import { ragRouter } from "./routes/rag.js";
 import { aiQualityRouter } from "./routes/ai-quality.js";
+import { transactionRouter } from "./routes/transactions.js";
 
 const app = express();
 
@@ -25,7 +26,7 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
 }));
 
-app.use(express.json({ limit: "50mb" }));
+app.use(express.json({ limit: "2000mb" }));
 
 app.get("/health", async (_req, res) => {
   const healthStatus = {
@@ -106,6 +107,7 @@ app.get("/health", async (_req, res) => {
 app.use("/api/v1/vaults", vaultRouter);
 app.use("/api/v1/rag", ragRouter);
 app.use("/api/v1/ai-quality", aiQualityRouter);
+app.use("/api/v1/transactions", transactionRouter);
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {

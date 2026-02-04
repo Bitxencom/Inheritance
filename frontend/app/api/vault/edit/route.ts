@@ -5,23 +5,10 @@ const backendBaseUrl =
 
 export async function POST(req: Request) {
   const payload = await req.json();
-  const { vaultId, willDetails, fractionKeys, securityQuestionAnswers } = payload as {
+  const { vaultId, encryptedVault, metadata } = payload as {
     vaultId?: string;
-    willDetails?: { 
-      title?: string; 
-      content?: string;
-      documents?: Array<{
-        name: string;
-        size: number;
-        type: string;
-        content?: string;
-      }>;
-    };
-    fractionKeys?: Record<string, string>;
-    securityQuestionAnswers?: Array<{
-      question?: string;
-      answer: string;
-    }>;
+    encryptedVault?: { cipherText?: string; iv?: string; checksum?: string };
+    metadata?: Record<string, unknown>;
   };
 
   if (!vaultId) {
@@ -31,32 +18,21 @@ export async function POST(req: Request) {
     );
   }
 
-  if (!willDetails?.title || !willDetails?.content) {
+  if (!encryptedVault?.cipherText || !encryptedVault?.iv || !encryptedVault?.checksum) {
     return NextResponse.json(
       {
         success: false,
-        error: "Please provide a title and content for your vault.",
+        error: "Invalid encryptedVault. Missing cipherText, iv, or checksum.",
       },
       { status: 400 },
     );
   }
 
-  if (!fractionKeys) {
-    return NextResponse.json(
-      { success: false, error: "Fraction Keys are required." },
-      { status: 400 },
-    );
-  }
-
-  const nonEmptyFractionKeys = Object.values(fractionKeys).filter(
-    (value) => typeof value === "string" && value.trim() !== "",
-  );
-
-  if (nonEmptyFractionKeys.length < 3) {
+  if (!metadata || metadata.encryptionVersion !== "v2-client") {
     return NextResponse.json(
       {
         success: false,
-        error: "You need at least 3 Fraction Keys to authorize changes.",
+        error: "Invalid metadata. encryptionVersion must be 'v2-client'.",
       },
       { status: 400 },
     );
@@ -64,20 +40,15 @@ export async function POST(req: Request) {
 
   try {
     const response = await fetch(
-      `${backendBaseUrl}/api/v1/vaults/${vaultId}/edit`,
+      `${backendBaseUrl}/api/v1/vaults/${vaultId}/prepare-client`,
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          willDetails: {
-            title: willDetails.title,
-            content: willDetails.content,
-            documents: willDetails.documents || [],
-          },
-          fractionKeys: nonEmptyFractionKeys,
-          securityQuestionAnswers: securityQuestionAnswers || [],
+          encryptedVault,
+          metadata,
         }),
       },
     );
@@ -88,7 +59,7 @@ export async function POST(req: Request) {
       const message =
         typeof data.error === "string"
           ? data.error
-          : "Unable to save changes to the vault.";
+          : "Unable to prepare the updated vault for upload.";
       return NextResponse.json(
         { success: false, error: message },
         { status: response.status || 500 },
@@ -99,21 +70,20 @@ export async function POST(req: Request) {
       success: true,
       message:
         data.message ||
-        "Vault updated successfully.",
+        "Vault update prepared successfully.",
       details: data.details || null,
       shouldDispatch: data.shouldDispatch,
     });
   } catch (error) {
-    console.error("❌ Backend edit vault service failed:", error);
+    console.error("❌ Backend prepare-client (edit) service failed:", error);
     const message =
       error instanceof Error
         ? error.message
-        : "An error occurred while contacting the backend edit service.";
+        : "An error occurred while contacting the backend prepare-client service.";
     return NextResponse.json(
       { success: false, error: message },
       { status: 500 },
     );
   }
 }
-
 
