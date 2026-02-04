@@ -386,7 +386,7 @@ vaultRouter.post("/:vaultId/unlock", async (req, res, next) => {
       }
     }
 
-    if (encryptionVersion === "v2-client" || encryptionVersion === "v4-client") {
+    if (encryptionVersion === "v2-client") {
       // Client-side encrypted vault: do not decrypt payload here
       return res.status(200).json({
         success: true,
