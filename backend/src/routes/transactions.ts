@@ -2,11 +2,31 @@ import express, { Request, Response } from "express";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import Arweave from "arweave";
+
+import { appEnv } from "../config/env.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const transactionRouter = express.Router();
+
+const createArweaveClient = (gatewayUrl: string) => {
+  const url = new URL(gatewayUrl);
+  return Arweave.init({
+    host: url.hostname,
+    port: url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80,
+    protocol: url.protocol.replace(":", ""),
+  });
+};
+
+const b64ToBytes = (input: string): Buffer => {
+  const normalized = input.replace(/-/g, "+").replace(/_/g, "/").trim();
+  const padLen = normalized.length % 4;
+  const padded =
+    padLen === 0 ? normalized : normalized + "=".repeat(4 - padLen);
+  return Buffer.from(padded, "base64");
+};
 
 // Path to transaction log file
 const LOG_DIR = path.join(__dirname, "../../logs");
@@ -106,6 +126,100 @@ transactionRouter.post("/log", (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : "Failed to log transaction",
+    });
+  }
+});
+
+transactionRouter.post("/arweave/relay", async (req: Request, res: Response) => {
+  try {
+    const body = req.body as {
+      gatewayUrl?: unknown;
+      txRaw?: unknown;
+      dataB64?: unknown;
+    };
+
+    const gatewayUrl =
+      typeof body.gatewayUrl === "string" && body.gatewayUrl.trim().length > 0
+        ? body.gatewayUrl.trim()
+        : appEnv.arweaveGateway;
+
+    if (!body || typeof body !== "object") {
+      res.status(400).json({ success: false, error: "Invalid JSON body" });
+      return;
+    }
+
+    if (!body.txRaw || typeof body.txRaw !== "object") {
+      res.status(400).json({ success: false, error: "txRaw is required" });
+      return;
+    }
+
+    if (typeof body.dataB64 !== "string" || body.dataB64.trim().length === 0) {
+      res.status(400).json({ success: false, error: "dataB64 is required" });
+      return;
+    }
+
+    const data = b64ToBytes(body.dataB64);
+    const arweave = createArweaveClient(gatewayUrl);
+    const tx = arweave.transactions.fromRaw(body.txRaw as any);
+
+    const isValid = await arweave.transactions.verify(tx);
+    if (!isValid) {
+      res
+        .status(400)
+        .json({ success: false, error: "Invalid transaction signature" });
+      return;
+    }
+
+    if (typeof (tx as unknown as { prepareChunks?: unknown }).prepareChunks === "function") {
+      await (tx as unknown as { prepareChunks: (data: Buffer) => Promise<void> }).prepareChunks(
+        data,
+      );
+    }
+
+    const uploader = await arweave.transactions.getUploader(tx, data);
+
+    const maxChunkRetries = 8;
+    while (!(uploader as unknown as { isComplete: boolean }).isComplete) {
+      let attempt = 0;
+      while (true) {
+        try {
+          await (uploader as unknown as { uploadChunk: () => Promise<void> }).uploadChunk();
+          break;
+        } catch (e) {
+          attempt += 1;
+          if (attempt >= maxChunkRetries) throw e;
+          const backoffMs = Math.min(10_000, 500 * Math.pow(2, attempt - 1));
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        }
+      }
+    }
+
+    const lastStatus =
+      typeof (uploader as unknown as { lastResponseStatus?: unknown })
+        .lastResponseStatus === "number"
+        ? ((uploader as unknown as { lastResponseStatus: number })
+            .lastResponseStatus as number)
+        : 200;
+
+    if (lastStatus !== 200 && lastStatus !== 202) {
+      res.status(502).json({
+        success: false,
+        error: `Arweave relay failed (Status: ${lastStatus})`,
+        status: lastStatus,
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      txId: tx.id,
+      status: lastStatus,
+      gateway: gatewayUrl,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "Arweave relay failed",
     });
   }
 });

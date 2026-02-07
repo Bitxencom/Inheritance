@@ -752,73 +752,45 @@ export async function dispatchToArweave(
       await idbPutUploadRecord(baseRecord);
     } catch {
     }
+    onProgress?.(0);
+    onStatus?.("Uploading to Arweave (relay)...");
 
-    const uploader = await arweave.transactions.getUploader(txToPost, effectivePayloadBytes);
+    const relayBody = {
+      txRaw: txRawForResume ?? signedNormalized,
+      dataB64: baseRecord.payloadB64,
+    };
 
-    const maxChunkRetries = 8;
-    while (!(uploader as unknown as { isComplete: boolean }).isComplete) {
-      let attempt = 0;
-      while (true) {
-        try {
-          await (uploader as unknown as { uploadChunk: () => Promise<void> }).uploadChunk();
-          break;
-        } catch (e) {
-          attempt += 1;
-          if (attempt >= maxChunkRetries) throw e;
-          const backoffMs = Math.min(10_000, 500 * Math.pow(2, attempt - 1));
-          onStatus?.(`Upload chunk failed, retrying (${attempt}/${maxChunkRetries})...`);
-          await sleep(backoffMs);
-        }
-      }
-
-      const uploaderJson =
-        typeof (uploader as unknown as { toJSON?: unknown }).toJSON === "function"
-          ? (uploader as unknown as { toJSON: () => unknown }).toJSON()
-          : null;
-      if (uploaderJson) {
-        try {
-          await idbPutUploadRecord({
-            ...baseRecord,
-            uploaderRaw: uploaderJson,
-            updatedAt: new Date().toISOString(),
-          });
-        } catch {
-        }
-      }
-
-      const pct =
-        typeof (uploader as unknown as { pctComplete?: unknown }).pctComplete === "number"
-          ? (uploader as unknown as { pctComplete: number }).pctComplete
-          : typeof (uploader as unknown as { uploadedChunks?: unknown }).uploadedChunks === "number" &&
-              typeof (uploader as unknown as { totalChunks?: unknown }).totalChunks === "number" &&
-              (uploader as unknown as { totalChunks: number }).totalChunks > 0
-            ? ((uploader as unknown as { uploadedChunks: number }).uploadedChunks /
-                (uploader as unknown as { totalChunks: number }).totalChunks) *
-              100
-            : 0;
-      onProgress?.(Math.max(0, Math.min(100, pct)));
-    }
-
-    const lastStatus =
-      typeof (uploader as unknown as { lastResponseStatus?: unknown }).lastResponseStatus === "number"
-        ? (uploader as unknown as { lastResponseStatus: number }).lastResponseStatus
-        : 0;
-    if (lastStatus && lastStatus !== 200 && lastStatus !== 202) {
-      throw new Error(`Failed to upload transaction to blockchain storage (Status: ${lastStatus})`);
-    }
-
-    console.log('✅ Transaction uploaded successfully:', {
-      id: txToPost.id,
-      status: lastStatus || 200
+    const relayResponse = await fetch(`/api/transactions/arweave/relay`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(relayBody),
     });
+
+    const relayData = await relayResponse.json().catch(() => ({}));
+    if (!relayResponse.ok || !relayData?.success) {
+      const message =
+        typeof relayData?.error === "string"
+          ? relayData.error
+          : `Arweave relay failed (HTTP ${relayResponse.status})`;
+      throw new Error(message);
+    }
+
+    const relayedTxId =
+      typeof relayData?.txId === "string" && relayData.txId.trim().length > 0
+        ? relayData.txId.trim()
+        : txToPost.id;
+
+    onProgress?.(100);
     onStatus?.("Upload successful.");
     try {
       await idbDeleteUploadRecord(resumeKey);
     } catch {
     }
     return {
-      txId: txToPost.id,
-      type: 'BASE',
+      txId: relayedTxId,
+      type: "BASE",
     };
 
   } catch (error) {

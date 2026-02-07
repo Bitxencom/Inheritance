@@ -23,6 +23,7 @@ services:
       - ./mcp-server:/app/mcp-server
     environment:
       - NODE_ENV=development
+      - BACKEND_BASE_URL=${BACKEND_BASE_URL:-http://backend:7002}
       - PORT=7000
     # Expose port to host for direct access in development
     ports:
