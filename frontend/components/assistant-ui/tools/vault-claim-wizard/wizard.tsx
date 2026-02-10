@@ -689,6 +689,9 @@ export function VaultClaimWizard({
         if (localVaultForMigration) {
           try {
             const encryptedVaultTemplate = (data.encryptedVault as EncryptedVaultClient | undefined) ?? null;
+            if (!encryptedVaultTemplate?.pqcCipherText) {
+              throw new Error("PQC vault detected but pqcCipherText is missing. Please retry unlock and try again.");
+            }
             const encryptionKey = encryptedVaultTemplate
               ? await deriveEffectiveAesKeyClient(encryptedVaultTemplate, combinedKey)
               : combinedKey;

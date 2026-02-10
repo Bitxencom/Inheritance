@@ -148,6 +148,7 @@ export function VaultEditWizard({
   // Ref to track active fetch abort controller to prevent race conditions
   const abortControllerRef = useRef<AbortController | null>(null);
   const encryptedVaultRef = useRef<EncryptedVaultClient | null>(null);
+  const isPqcVaultRef = useRef(false);
 
   const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
@@ -868,11 +869,17 @@ export function VaultEditWizard({
       ].filter((value) => value.trim() !== "");
 
       const combinedKey = combineSharesClient(fractionKeysArray);
-      const encryptedVaultTemplate = encryptedVaultRef.current;
-      const encryptionKey = encryptedVaultTemplate
-        ? await deriveEffectiveAesKeyClient(encryptedVaultTemplate, combinedKey)
-        : combinedKey;
       const encryptedVaultForDecrypt = data.encryptedVault as EncryptedVaultClient | undefined;
+      const isPqcVault =
+        data.legacy?.isPqcEnabled === true ||
+        data.metadata?.isPqcEnabled === true ||
+        (typeof encryptedVaultForDecrypt?.pqcCipherText === "string" && encryptedVaultForDecrypt.pqcCipherText.length > 0);
+      isPqcVaultRef.current = isPqcVault;
+
+      if (isPqcVault && (!encryptedVaultForDecrypt || !encryptedVaultForDecrypt.pqcCipherText)) {
+        throw new Error("PQC vault detected but pqcCipherText is missing. Please retry unlock and try again.");
+      }
+
       if (encryptedVaultForDecrypt) {
         encryptedVaultRef.current = encryptedVaultForDecrypt;
         const attachmentKey = await deriveEffectiveAesKeyClient(encryptedVaultForDecrypt, combinedKey);
@@ -880,6 +887,10 @@ export function VaultEditWizard({
       } else {
         encryptedVaultRef.current = null;
         setCombinedKeyForAttachments(combinedKey);
+      }
+
+      if (!data.decryptedVault && !encryptedVaultForDecrypt) {
+        throw new Error("Unable to unlock vault. Encrypted payload is missing.");
       }
 
       const decrypted = (data.decryptedVault
@@ -1021,6 +1032,9 @@ export function VaultEditWizard({
 
       const combinedKey = combineSharesClient(fractionKeysArray);
       const encryptedVaultTemplate = encryptedVaultRef.current;
+      if (isPqcVaultRef.current && (!encryptedVaultTemplate || !encryptedVaultTemplate.pqcCipherText)) {
+        throw new Error("PQC vault detected but pqcCipherText is missing. Please retry unlock and try again.");
+      }
       const encryptionKey = encryptedVaultTemplate
         ? await deriveEffectiveAesKeyClient(encryptedVaultTemplate, combinedKey)
         : combinedKey;

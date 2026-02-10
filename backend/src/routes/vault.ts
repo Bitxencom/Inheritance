@@ -631,8 +631,12 @@ vaultRouter.post("/:vaultId/unlock", async (req, res, next) => {
         return res.status(200).json({
           success: true,
           message: "Access granted. Legacy vault decrypted for migration.",
+          encryptedVault,
           decryptedVault: decrypted,
-          metadata,
+          metadata: {
+            ...metadata,
+            encryptionVersion,
+          },
           legacy: {
             encryptionVersion,
             isPqcEnabled: true,
