@@ -73,9 +73,9 @@ const verifyAttemptStore = new Map<
   { count: number; windowStartedAt: number; lockedUntil?: number }
 >();
 
-const VERIFY_WINDOW_MS = 15 * 60 * 1000;
-const VERIFY_MAX_ATTEMPTS = 50;
-const VERIFY_LOCK_MS = 15 * 60 * 1000;
+const VERIFY_WINDOW_MS = 1 * 60 * 1000;
+const VERIFY_MAX_ATTEMPTS = 60;
+const VERIFY_LOCK_MS = 1 * 60 * 1000;
 
 const unlockPolicyV1 = {
   policyVersion: 1,
