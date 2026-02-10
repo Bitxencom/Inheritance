@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { randomUUID } from "crypto";
+import { createHmac, randomUUID } from "crypto";
 
 import { prepareVault, hashSecurityAnswer, verifySecurityAnswerHash, encryptMetadata, hashSecurityQuestionAnswers, decryptMetadata } from "../services/vault-service.js";
 import { combineShares } from "../services/crypto/shamir.js";
@@ -19,6 +19,7 @@ import {
   getVaultUploadCostEstimate,
   estimateUploadCost,
 } from "../services/storage/arweave.js";
+import { appEnv } from "../config/env.js";
 
 const vaultSchema = z.object({
   willDetails: z.object({
@@ -66,6 +67,136 @@ const vaultSchema = z.object({
 });
 
 export const vaultRouter = Router();
+
+const verifyAttemptStore = new Map<
+  string,
+  { count: number; windowStartedAt: number; lockedUntil?: number }
+>();
+
+const VERIFY_WINDOW_MS = 15 * 60 * 1000;
+const VERIFY_MAX_ATTEMPTS = 5;
+const VERIFY_LOCK_MS = 15 * 60 * 1000;
+
+const unlockPolicyV1 = {
+  policyVersion: 1,
+  requiredCorrect: 3,
+  minPoints: 50,
+} as const;
+
+const toBase64Url = (buffer: Buffer): string =>
+  buffer
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+
+const computeClaimNonce = (params: { vaultId: string; latestTxId: string | null | undefined }): string => {
+  const h = createHmac("sha256", appEnv.unlockPolicySecret);
+  h.update(`claimNonce:v1:${params.vaultId}:${params.latestTxId ?? ""}`, "utf8");
+  return toBase64Url(h.digest()).slice(0, 43);
+};
+
+const selectRequiredIndexes = (params: { totalQuestions: number; claimNonce: string }): number[] => {
+  const total = Math.max(0, Math.floor(params.totalQuestions));
+  const target = Math.min(3, total);
+  const scored = Array.from({ length: total }, (_, index) => {
+    const h = createHmac("sha256", appEnv.unlockPolicySecret);
+    h.update(`requiredIndexes:v1:${params.claimNonce}:${index}`, "utf8");
+    return { index, score: h.digest("hex") };
+  });
+  scored.sort((a, b) => a.score.localeCompare(b.score));
+  return scored
+    .slice(0, target)
+    .map((x) => x.index)
+    .sort((a, b) => a - b);
+};
+
+const getEntryPoints = (entry: Record<string, unknown>): { points: number | null; tier: "low" | "medium" | "high" | null } => {
+  const pointsRaw = entry.points;
+  if (typeof pointsRaw === "number" && Number.isFinite(pointsRaw)) {
+    const points = Math.floor(pointsRaw);
+    if (points === 10) return { points, tier: "low" };
+    if (points === 20) return { points, tier: "medium" };
+    if (points === 30) return { points, tier: "high" };
+  }
+
+  const tierRaw = entry.scoreTier;
+  if (typeof tierRaw === "string") {
+    const norm = tierRaw.trim().toLowerCase();
+    if (norm === "low") return { points: 10, tier: "low" };
+    if (norm === "medium") return { points: 20, tier: "medium" };
+    if (norm === "high") return { points: 30, tier: "high" };
+  }
+
+  return { points: null, tier: null };
+};
+
+const getClientIp = (req: { ip?: string; headers?: Record<string, unknown> }): string => {
+  const forwarded = req.headers?.["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim()) {
+    return forwarded.split(",")[0]?.trim() || "unknown";
+  }
+  return typeof req.ip === "string" && req.ip.trim() ? req.ip : "unknown";
+};
+
+const rateLimitVerify = (req: { ip?: string; headers?: Record<string, unknown> }, vaultId: string) => {
+  const ip = getClientIp(req);
+  const key = `${vaultId}::${ip}`;
+  const now = Date.now();
+  const existing = verifyAttemptStore.get(key);
+  if (existing?.lockedUntil && existing.lockedUntil > now) {
+    return { ok: false, retryAfterMs: existing.lockedUntil - now };
+  }
+  if (!existing || now - existing.windowStartedAt > VERIFY_WINDOW_MS) {
+    verifyAttemptStore.set(key, { count: 1, windowStartedAt: now });
+    return { ok: true as const };
+  }
+  const nextCount = existing.count + 1;
+  if (nextCount > VERIFY_MAX_ATTEMPTS) {
+    verifyAttemptStore.set(key, {
+      count: nextCount,
+      windowStartedAt: existing.windowStartedAt,
+      lockedUntil: now + VERIFY_LOCK_MS,
+    });
+    return { ok: false, retryAfterMs: VERIFY_LOCK_MS };
+  }
+  verifyAttemptStore.set(key, { ...existing, count: nextCount });
+  return { ok: true as const };
+};
+
+const getHashCandidatesForEntry = (
+  entry: Record<string, unknown>,
+): { hashes: string[]; normalizationProfile: "none" | "default" } => {
+  const hashesRaw = entry.hashes;
+  if (Array.isArray(hashesRaw)) {
+    const hashes = hashesRaw.filter((h): h is string => typeof h === "string" && h.length > 0);
+    if (hashes.length > 0) {
+      const mode = entry.mode;
+      const normalizationProfileRaw = entry.normalizationProfile;
+      const normalizationProfile =
+        normalizationProfileRaw === "none" || normalizationProfileRaw === "default"
+          ? normalizationProfileRaw
+          : mode === "exact"
+            ? "none"
+            : "default";
+      return { hashes, normalizationProfile };
+    }
+  }
+  const single = entry.a ?? entry.answerHash;
+  if (typeof single === "string" && single.length > 0) {
+    return { hashes: [single], normalizationProfile: "default" };
+  }
+  return { hashes: [], normalizationProfile: "default" };
+};
+
+const verifyAnswerAgainstEntry = (answer: string, entry: Record<string, unknown>): boolean => {
+  const { hashes, normalizationProfile } = getHashCandidatesForEntry(entry);
+  if (hashes.length === 0) return false;
+  for (const h of hashes) {
+    if (verifySecurityAnswerHash(answer, h, { normalizationProfile })) return true;
+  }
+  return false;
+};
 
 // Simple endpoint to estimate cost based on data size only
 vaultRouter.post("/estimate-cost-simple", async (req, res, next) => {
@@ -323,14 +454,18 @@ vaultRouter.post("/:vaultId/prepare-client", async (req, res, next) => {
 
 const unlockSchema = z.object({
   arweaveTxId: z.string().optional(),
+  claimNonce: z.string().optional(),
   fractionKeys: z.array(z.string().min(1)).optional().default([]),
   securityQuestionAnswers: z
     .array(
       z.object({
+        index: z.number().int().min(0).optional(),
         question: z.string().optional(),
-        answer: z.string(),
+        answer: z.string().min(1).max(256),
       }),
     )
+    .min(3)
+    .max(20)
     .optional(),
 });
 
@@ -363,24 +498,113 @@ vaultRouter.post("/:vaultId/unlock", async (req, res, next) => {
     const encryptionVersion = (metadata.encryptionVersion as string) || "v1-backend";
 
     if (parsed.securityQuestionAnswers && parsed.securityQuestionAnswers.length > 0) {
+      const limit = rateLimitVerify(req, vaultId);
+      if (!limit.ok) {
+        const seconds = Math.max(1, Math.ceil(limit.retryAfterMs / 1000));
+        res.setHeader("Retry-After", String(seconds));
+        return res.status(429).json({
+          success: false,
+          error: "Too many attempts. Please try again later.",
+        });
+      }
+
       const storedHashes = (metadata.securityQuestionHashes as Array<{
         q?: string;
         a?: string;
         question?: string;
         answerHash?: string;
+        hashes?: string[];
+        mode?: string;
+        normalizationProfile?: string;
+        profileVersion?: number;
+        scoreTier?: string;
+        points?: number;
       }>) || [];
 
       if (storedHashes.length > 0) {
-        const allMatch = parsed.securityQuestionAnswers.every((provided, index) => {
-          if (index >= storedHashes.length) return false;
-          const storedHash = storedHashes[index].a || storedHashes[index].answerHash;
-          return verifySecurityAnswerHash(provided.answer, storedHash);
+        const expectedClaimNonce = computeClaimNonce({
+          vaultId,
+          latestTxId: uploadPayload.latestTxId,
+        });
+        const requiredIndexes = selectRequiredIndexes({
+          totalQuestions: storedHashes.length,
+          claimNonce: expectedClaimNonce,
         });
 
-        if (!allMatch) {
+        const useRequiredIndexes =
+          typeof parsed.claimNonce === "string" && parsed.claimNonce.length > 0;
+        if (useRequiredIndexes && parsed.claimNonce !== expectedClaimNonce) {
+          return res.status(400).json({
+            success: false,
+            error: "Invalid claim nonce.",
+          });
+        }
+
+        const providedAnswers = parsed.securityQuestionAnswers;
+        const answersByIndex = new Map<number, string>();
+        for (let i = 0; i < providedAnswers.length; i += 1) {
+          const provided = providedAnswers[i];
+          const idx = typeof provided.index === "number" ? provided.index : i;
+          if (!answersByIndex.has(idx)) {
+            answersByIndex.set(idx, provided.answer);
+          }
+        }
+
+        const indexesToCheck = useRequiredIndexes
+          ? requiredIndexes
+          : Array.from({ length: providedAnswers.length }, (_, i) => i);
+
+        const incorrectIndexes: number[] = [];
+        const correctIndexes: number[] = [];
+
+        for (const idx of indexesToCheck) {
+          if (idx < 0 || idx >= storedHashes.length) {
+            incorrectIndexes.push(idx);
+            continue;
+          }
+          const answer = answersByIndex.get(idx);
+          if (!answer) {
+            incorrectIndexes.push(idx);
+            continue;
+          }
+          const entry = storedHashes[idx] as unknown as Record<string, unknown>;
+          if (!verifyAnswerAgainstEntry(answer, entry)) {
+            incorrectIndexes.push(idx);
+            continue;
+          }
+          correctIndexes.push(idx);
+        }
+
+        const achieved = {
+          correctCount: correctIndexes.length,
+          points: 0,
+        };
+
+        let canEnforcePoints = true;
+        for (const idx of correctIndexes) {
+          const entry = storedHashes[idx] as unknown as Record<string, unknown>;
+          const { points } = getEntryPoints(entry);
+          if (points == null) {
+            canEnforcePoints = false;
+            continue;
+          }
+          achieved.points += points;
+        }
+
+        const policy = unlockPolicyV1;
+        const meetsCorrectCount = achieved.correctCount >= policy.requiredCorrect;
+        const meetsPoints = canEnforcePoints ? achieved.points >= policy.minPoints : true;
+
+        const ok = meetsCorrectCount && meetsPoints;
+
+        if (!ok) {
           return res.status(401).json({
             success: false,
-            error: "Incorrect answers to security questions. Please try again.",
+            error: meetsCorrectCount ? "Unlock policy requirements not met." : "Incorrect answers to security questions. Please try again.",
+            incorrectIndexes,
+            unlockPolicy: policy,
+            achieved,
+            fallbackRequired: !canEnforcePoints,
           });
         }
       }
@@ -640,9 +864,18 @@ vaultRouter.post("/:vaultId/security-questions", async (req, res) => {
       });
     }
 
+    const claimNonce = computeClaimNonce({ vaultId, latestTxId: uploadPayload.latestTxId });
+    const requiredIndexes = selectRequiredIndexes({
+      totalQuestions: securityQuestions.length,
+      claimNonce,
+    });
+
     return res.status(200).json({
       success: true,
       securityQuestions,
+      requiredIndexes,
+      claimNonce,
+      unlockPolicy: unlockPolicyV1,
       willType,
       trigger: trigger || null,
       latestTxId: uploadPayload.latestTxId || null,
@@ -669,14 +902,17 @@ vaultRouter.post("/:vaultId/security-questions", async (req, res) => {
 
 // Schema for validating security question answers
 const verifySecurityQuestionsSchema = z.object({
+  claimNonce: z.string().optional(),
   securityQuestionAnswers: z
     .array(
       z.object({
-        question: z.string(),
-        answer: z.string(),
+        index: z.number().int().min(0).optional(),
+        question: z.string().optional(),
+        answer: z.string().min(1).max(256),
       }),
     )
-    .min(1, "At least one security question answer is required"),
+    .min(3, "At least 3 security question answers are required")
+    .max(20),
   arweaveTxId: z.string().optional(),
 });
 
@@ -694,14 +930,30 @@ vaultRouter.post("/:vaultId/verify-security-questions", async (req, res) => {
       });
     }
 
+    const limit = rateLimitVerify(req, vaultId);
+    if (!limit.ok) {
+      const seconds = Math.max(1, Math.ceil(limit.retryAfterMs / 1000));
+      res.setHeader("Retry-After", String(seconds));
+      return res.status(429).json({
+        success: false,
+        error: "Too many attempts. Please try again later.",
+      });
+    }
+
     // Fetch vault payload from blockchain storage
     const uploadPayload = await fetchVaultPayloadById(vaultId, parsed.arweaveTxId);
 
     const storedHashes = (uploadPayload.metadata?.securityQuestionHashes as Array<{
-      q?: string;             // Obfuscated: encrypted question
-      a?: string;             // Obfuscated: answer hash
-      question?: string;      // Legacy: plain text question
-      answerHash?: string;    // Legacy: answer hash
+      q?: string;
+      a?: string;
+      question?: string;
+      answerHash?: string;
+      hashes?: string[];
+      mode?: string;
+      normalizationProfile?: string;
+      profileVersion?: number;
+      scoreTier?: string;
+      points?: number;
     }>) || [];
 
     // If no hashes stored (old vault), treat as unsupported legacy vault
@@ -714,39 +966,100 @@ vaultRouter.post("/:vaultId/verify-security-questions", async (req, res) => {
       });
     }
 
-    // Validate each answer
-    const providedAnswers = parsed.securityQuestionAnswers;
-    
-    // Validate by order (index) and collect incorrect/correct indexes
-    const incorrectIndexes: number[] = [];
-    const correctIndexes: number[] = [];
-    providedAnswers.forEach((provided, index) => {
-      if (index >= storedHashes.length) {
-        incorrectIndexes.push(index);
-        return;
-      }
-      
-      // Support obfuscated (a) and legacy (answerHash)
-      const storedHash = storedHashes[index].a || storedHashes[index].answerHash;
-      if (!verifySecurityAnswerHash(provided.answer, storedHash)) {
-        incorrectIndexes.push(index);
-      } else {
-        correctIndexes.push(index);
-      }
+    const expectedClaimNonce = computeClaimNonce({
+      vaultId,
+      latestTxId: uploadPayload.latestTxId,
+    });
+    const requiredIndexes = selectRequiredIndexes({
+      totalQuestions: storedHashes.length,
+      claimNonce: expectedClaimNonce,
     });
 
-    if (incorrectIndexes.length > 0) {
+    const useRequiredIndexes =
+      typeof parsed.claimNonce === "string" && parsed.claimNonce.length > 0;
+
+    if (useRequiredIndexes && parsed.claimNonce !== expectedClaimNonce) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid claim nonce.",
+      });
+    }
+
+    const providedAnswers = parsed.securityQuestionAnswers;
+    const answersByIndex = new Map<number, string>();
+    for (let i = 0; i < providedAnswers.length; i += 1) {
+      const provided = providedAnswers[i];
+      const idx = typeof provided.index === "number" ? provided.index : i;
+      if (!answersByIndex.has(idx)) {
+        answersByIndex.set(idx, provided.answer);
+      }
+    }
+
+    const indexesToCheck = useRequiredIndexes
+      ? requiredIndexes
+      : Array.from({ length: providedAnswers.length }, (_, i) => i);
+
+    const incorrectIndexes: number[] = [];
+    const correctIndexes: number[] = [];
+
+    for (const idx of indexesToCheck) {
+      if (idx < 0 || idx >= storedHashes.length) {
+        incorrectIndexes.push(idx);
+        continue;
+      }
+      const answer = answersByIndex.get(idx);
+      if (!answer) {
+        incorrectIndexes.push(idx);
+        continue;
+      }
+      const entry = storedHashes[idx] as unknown as Record<string, unknown>;
+      if (!verifyAnswerAgainstEntry(answer, entry)) {
+        incorrectIndexes.push(idx);
+        continue;
+      }
+      correctIndexes.push(idx);
+    }
+
+    const achieved = {
+      correctCount: correctIndexes.length,
+      points: 0,
+    };
+
+    let canEnforcePoints = true;
+    for (const idx of correctIndexes) {
+      const entry = storedHashes[idx] as unknown as Record<string, unknown>;
+      const { points } = getEntryPoints(entry);
+      if (points == null) {
+        canEnforcePoints = false;
+        continue;
+      }
+      achieved.points += points;
+    }
+
+    const policy = unlockPolicyV1;
+    const meetsCorrectCount = achieved.correctCount >= policy.requiredCorrect;
+    const meetsPoints = canEnforcePoints ? achieved.points >= policy.minPoints : true;
+
+    const ok = meetsCorrectCount && meetsPoints;
+    if (!ok) {
       return res.status(401).json({
         success: false,
-        error: "Security question answers do not match.",
+        error: meetsCorrectCount ? "Unlock policy requirements not met." : "Security question answers do not match.",
         incorrectIndexes,
-        correctIndexes,
+        unlockPolicy: policy,
+        achieved,
+        fallbackRequired: !canEnforcePoints,
       });
     }
 
     return res.status(200).json({
       success: true,
       message: "Security question answers are valid.",
+      unlockPolicy: policy,
+      achieved,
+      requiredIndexes: useRequiredIndexes ? requiredIndexes : undefined,
+      claimNonce: useRequiredIndexes ? expectedClaimNonce : undefined,
+      fallbackRequired: !canEnforcePoints,
     });
   } catch (error) {
     if (error instanceof z.ZodError) {

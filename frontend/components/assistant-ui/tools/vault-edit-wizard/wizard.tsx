@@ -2103,7 +2103,7 @@ export function VaultEditWizard({
                             const config = getChainConfig(chain);
                             window.open(`${config.blockExplorer}/tx/${latestTxId}`, "_blank");
                           } else {
-                            window.open(`https://viewblock.io/arweave/tx/${latestTxId}`, "_blank");
+                            window.open(`/explorer/arweave/tx/${latestTxId}`, "_blank");
                           }
                         }}
                       >

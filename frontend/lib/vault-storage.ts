@@ -303,5 +303,5 @@ export function getSmartChainExplorerUrl(
  * Get Arweave explorer URL for a transaction
  */
 export function getArweaveExplorerUrl(txId: string): string {
-  return `https://viewblock.io/arweave/tx/${txId}`;
+  return `/explorer/arweave/tx/${txId}`;
 }

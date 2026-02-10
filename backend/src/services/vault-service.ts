@@ -33,7 +33,18 @@ export const hashSecurityAnswer = (answer: string): string => {
   return createHash("sha256").update(normalized).digest("hex");
 };
 
-export const verifySecurityAnswerHash = (answer: string, storedHash: string | undefined): boolean => {
+export type SecurityAnswerNormalizationProfile = "none" | "default";
+
+const normalizeSecurityAnswer = (answer: string, profile: SecurityAnswerNormalizationProfile): string => {
+  if (profile === "none") return answer;
+  return answer.normalize("NFKC").toLowerCase().trim();
+};
+
+export const verifySecurityAnswerHash = (
+  answer: string,
+  storedHash: string | undefined,
+  opts?: { normalizationProfile?: SecurityAnswerNormalizationProfile },
+): boolean => {
   if (!storedHash || storedHash.length === 0) return false;
 
   if (storedHash.startsWith("pbkdf2-sha256$")) {
@@ -44,7 +55,7 @@ export const verifySecurityAnswerHash = (answer: string, storedHash: string | un
     if (!Number.isFinite(iterations) || iterations <= 0) return false;
     if (!saltBase64 || !hashHex) return false;
 
-    const normalized = answer.normalize("NFKC").toLowerCase().trim();
+    const normalized = normalizeSecurityAnswer(answer, opts?.normalizationProfile ?? "default");
     const salt = Buffer.from(saltBase64, "base64");
     const derived = pbkdf2Sync(normalized, salt, iterations, 32, "sha256");
     const expected = Buffer.from(hashHex, "hex");
