@@ -16,6 +16,11 @@ export type EncryptedBytesClient = {
   cipherBytes: Uint8Array;
 };
 
+export type PqcKeyPairClient = {
+  publicKey: Uint8Array;
+  secretKey: Uint8Array;
+};
+
 function getCrypto(): Crypto {
   if (typeof window === "undefined" || !window.crypto || !window.crypto.subtle) {
     throw new Error("Web Crypto API is not available in this environment");
@@ -73,6 +78,33 @@ function fromBase64(data: string): Uint8Array {
   return bytes;
 }
 
+export function generatePqcKeyPairClient(): PqcKeyPairClient {
+  const keyPair = ml_kem768.keygen();
+  return {
+    publicKey: keyPair.publicKey,
+    secretKey: keyPair.secretKey,
+  };
+}
+
+export function encapsulatePqcClient(recipientPublicKey: Uint8Array): { pqcCipherText: string; sharedSecret: Uint8Array } {
+  const result = ml_kem768.encapsulate(recipientPublicKey);
+  return { pqcCipherText: toBase64(result.cipherText), sharedSecret: result.sharedSecret };
+}
+
+export async function deriveEffectiveAesKeyClient(
+  encrypted: EncryptedVaultClient,
+  keyMaterial: Uint8Array,
+): Promise<Uint8Array> {
+  if (typeof encrypted.pqcCipherText === "string" && encrypted.pqcCipherText.length > 0) {
+    return ml_kem768.decapsulate(fromBase64(encrypted.pqcCipherText), keyMaterial).slice(0, 32);
+  }
+
+  if (keyMaterial.length === 32) return keyMaterial;
+
+  const digest = await getCrypto().subtle.digest("SHA-256", toArrayBuffer(keyMaterial));
+  return new Uint8Array(digest);
+}
+
 export async function sha256Hex(data: ArrayBuffer | Uint8Array): Promise<string> {
   const buffer = data instanceof ArrayBuffer ? data : toArrayBuffer(data);
   return sha256(buffer);
@@ -83,15 +115,15 @@ export async function encryptBytesClient(
   key: Uint8Array,
 ): Promise<EncryptedBytesClient> {
   const crypto = getCrypto();
-  const aesKey = await importAesKey(key, "AES-CBC");
-  const ivBytes = new Uint8Array(16);
+  const aesKey = await importAesKey(key, "AES-GCM");
+  const ivBytes = new Uint8Array(12);
   crypto.getRandomValues(ivBytes);
   const ivBuffer = toArrayBuffer(ivBytes);
 
   const plainBuffer = plain instanceof ArrayBuffer ? plain : toArrayBuffer(plain);
 
   const cipherBuffer = await crypto.subtle.encrypt(
-    { name: "AES-CBC", iv: ivBuffer },
+    { name: "AES-GCM", iv: ivBuffer },
     aesKey,
     plainBuffer,
   );
@@ -138,8 +170,8 @@ export async function encryptVaultPayloadClient(
   key: Uint8Array,
 ): Promise<EncryptedVaultClient> {
   const crypto = getCrypto();
-  const aesKey = await importAesKey(key, "AES-CBC");
-  const ivBytes = new Uint8Array(16);
+  const aesKey = await importAesKey(key, "AES-GCM");
+  const ivBytes = new Uint8Array(12);
   crypto.getRandomValues(ivBytes);
   const ivBuffer = toArrayBuffer(ivBytes);
 
@@ -149,7 +181,7 @@ export async function encryptVaultPayloadClient(
   const plainBuffer = toArrayBuffer(plainBytes);
 
   const cipherBuffer = await crypto.subtle.encrypt(
-    { name: "AES-CBC", iv: ivBuffer },
+    { name: "AES-GCM", iv: ivBuffer },
     aesKey,
     plainBuffer,
   );
@@ -160,6 +192,7 @@ export async function encryptVaultPayloadClient(
     cipherText: toBase64(cipherBuffer),
     iv: toBase64(ivBytes),
     checksum,
+    alg: "AES-GCM",
   };
 }
 

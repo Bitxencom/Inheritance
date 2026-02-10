@@ -54,6 +54,7 @@ import {
 import { getVaultById, updateVaultTxId } from "@/lib/vault-storage";
 import { combineSharesClient } from "@/lib/shamirClient";
 import {
+  deriveEffectiveAesKeyClient,
   decryptVaultPayloadClient,
   encryptVaultPayloadClient,
   type EncryptedVaultClient,
@@ -146,6 +147,7 @@ export function VaultEditWizard({
 
   // Ref to track active fetch abort controller to prevent race conditions
   const abortControllerRef = useRef<AbortController | null>(null);
+  const encryptedVaultRef = useRef<EncryptedVaultClient | null>(null);
 
   const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
@@ -866,11 +868,23 @@ export function VaultEditWizard({
       ].filter((value) => value.trim() !== "");
 
       const combinedKey = combineSharesClient(fractionKeysArray);
-      setCombinedKeyForAttachments(combinedKey);
+      const encryptedVaultTemplate = encryptedVaultRef.current;
+      const encryptionKey = encryptedVaultTemplate
+        ? await deriveEffectiveAesKeyClient(encryptedVaultTemplate, combinedKey)
+        : combinedKey;
+      const encryptedVaultForDecrypt = data.encryptedVault as EncryptedVaultClient | undefined;
+      if (encryptedVaultForDecrypt) {
+        encryptedVaultRef.current = encryptedVaultForDecrypt;
+        const attachmentKey = await deriveEffectiveAesKeyClient(encryptedVaultForDecrypt, combinedKey);
+        setCombinedKeyForAttachments(attachmentKey);
+      } else {
+        encryptedVaultRef.current = null;
+        setCombinedKeyForAttachments(combinedKey);
+      }
 
       const decrypted = (data.decryptedVault
         ? data.decryptedVault
-        : await decryptVaultPayloadClient(data.encryptedVault as EncryptedVaultClient, combinedKey)) as VaultPayloadForEdit;
+        : await decryptVaultPayloadClient(encryptedVaultForDecrypt as EncryptedVaultClient, combinedKey)) as VaultPayloadForEdit;
 
       setDecryptedVaultPayload(decrypted);
 
@@ -1006,6 +1020,10 @@ export function VaultEditWizard({
       ].filter((value) => value.trim() !== "");
 
       const combinedKey = combineSharesClient(fractionKeysArray);
+      const encryptedVaultTemplate = encryptedVaultRef.current;
+      const encryptionKey = encryptedVaultTemplate
+        ? await deriveEffectiveAesKeyClient(encryptedVaultTemplate, combinedKey)
+        : combinedKey;
 
       const shouldUploadAttachments = formState.willDetails.newDocuments.some(
         (doc) => doc.size > INLINE_DOCUMENT_MAX_BYTES,
@@ -1046,7 +1064,7 @@ export function VaultEditWizard({
           const { encryptBytesClient } = await import("@/lib/clientVaultCrypto");
           const plainBuffer = await doc.arrayBuffer();
           setPaymentStatus(`Encrypting attachment: ${doc.name}`);
-          const encrypted = await encryptBytesClient(plainBuffer, combinedKey);
+          const encrypted = await encryptBytesClient(plainBuffer, encryptionKey);
           let lastPct = -1;
           const txId = await uploadEncryptedAttachment(
             encrypted.cipherBytes,
@@ -1176,7 +1194,10 @@ export function VaultEditWizard({
         encryptionVersion: "v2-client" as const,
       };
 
-      const encryptedVault = await encryptVaultPayloadClient(updatedPayload, combinedKey);
+      const encryptedVault = await encryptVaultPayloadClient(updatedPayload, encryptionKey);
+      if (encryptedVaultTemplate?.pqcCipherText) {
+        encryptedVault.pqcCipherText = encryptedVaultTemplate.pqcCipherText;
+      }
 
       const response = await fetch("/api/vault/edit", {
         method: "POST",

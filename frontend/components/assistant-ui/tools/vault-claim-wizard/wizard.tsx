@@ -25,6 +25,7 @@ import {
 } from "@/components/assistant-ui/tools/shared";
 import { combineSharesClient } from "@/lib/shamirClient";
 import {
+  deriveEffectiveAesKeyClient,
   decryptVaultPayloadClient,
   encryptVaultPayloadClient,
   type EncryptedVaultClient,
@@ -588,7 +589,6 @@ export function VaultClaimWizard({
       let combinedKey: Uint8Array;
       try {
         combinedKey = combineSharesClient(fractionKeysArray);
-        setCombinedKeyForAttachments(combinedKey);
       } catch {
         throw new Error("Fraction keys do not match. Make sure all 3 fraction keys are correct.");
       }
@@ -666,13 +666,17 @@ export function VaultClaimWizard({
 
       if (data.decryptedVault) {
         decrypted = data.decryptedVault as typeof decrypted;
+        setCombinedKeyForAttachments(combinedKey);
       } else {
         if (!data.encryptedVault) {
           throw new Error("Unable to unlock vault. Encrypted payload is missing.");
         }
+        const encryptedVaultForDecrypt = data.encryptedVault as EncryptedVaultClient;
+        const attachmentKey = await deriveEffectiveAesKeyClient(encryptedVaultForDecrypt, combinedKey);
+        setCombinedKeyForAttachments(attachmentKey);
         try {
           decrypted = (await decryptVaultPayloadClient(
-            data.encryptedVault as EncryptedVaultClient,
+            encryptedVaultForDecrypt,
             combinedKey,
           )) as typeof decrypted;
         } catch {
@@ -684,7 +688,14 @@ export function VaultClaimWizard({
         const localVaultForMigration = getVaultById(formState.vaultId.trim());
         if (localVaultForMigration) {
           try {
-            const encryptedVaultForUpload = await encryptVaultPayloadClient(decrypted, combinedKey);
+            const encryptedVaultTemplate = (data.encryptedVault as EncryptedVaultClient | undefined) ?? null;
+            const encryptionKey = encryptedVaultTemplate
+              ? await deriveEffectiveAesKeyClient(encryptedVaultTemplate, combinedKey)
+              : combinedKey;
+            const encryptedVaultForUpload = await encryptVaultPayloadClient(decrypted, encryptionKey);
+            if (encryptedVaultTemplate?.pqcCipherText) {
+              encryptedVaultForUpload.pqcCipherText = encryptedVaultTemplate.pqcCipherText;
+            }
 
             const metadataForUpload = {
               trigger: data.metadata?.trigger ?? null,

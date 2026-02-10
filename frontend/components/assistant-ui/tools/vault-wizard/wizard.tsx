@@ -24,7 +24,12 @@ import {
 import { UnifiedPaymentSelector, type PaymentMode } from "@/components/shared/payment";
 import { Stepper } from "@/components/shared/stepper";
 import type { ChainId } from "@/lib/metamaskWallet";
-import { generateVaultKey, encryptVaultPayloadClient } from "@/lib/clientVaultCrypto";
+import {
+  encapsulatePqcClient,
+  encryptVaultPayloadClient,
+  generatePqcKeyPairClient,
+  type PqcKeyPairClient,
+} from "@/lib/clientVaultCrypto";
 import { splitKeyClient } from "@/lib/shamirClient";
 import { hashSecurityAnswerClient } from "@/lib/securityQuestionsClient";
 
@@ -61,6 +66,8 @@ export function VaultCreationWizard({
   const [paymentPhase, setPaymentPhase] = useState<"confirm" | "upload" | "finalize" | null>(null);
   const vaultIdRef = useRef<string | null>(null);
   const vaultKeyRef = useRef<Uint8Array | null>(null);
+  const pqcKeyPairRef = useRef<PqcKeyPairClient | null>(null);
+  const pqcCipherTextRef = useRef<string | null>(null);
 
   useEffect(() => {
     onStepChange?.(currentStep);
@@ -136,6 +143,8 @@ export function VaultCreationWizard({
     setPaymentStatus(null);
     vaultIdRef.current = null;
     vaultKeyRef.current = null;
+    pqcKeyPairRef.current = null;
+    pqcCipherTextRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -460,8 +469,20 @@ export function VaultCreationWizard({
           : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
       vaultIdRef.current = vaultId;
 
-      const vaultKey = vaultKeyRef.current ?? generateVaultKey();
-      vaultKeyRef.current = vaultKey;
+      const pqcKeyPair = pqcKeyPairRef.current ?? generatePqcKeyPairClient();
+      pqcKeyPairRef.current = pqcKeyPair;
+
+      if (!vaultKeyRef.current || !pqcCipherTextRef.current) {
+        const { pqcCipherText, sharedSecret } = encapsulatePqcClient(pqcKeyPair.publicKey);
+        pqcCipherTextRef.current = pqcCipherText;
+        vaultKeyRef.current = sharedSecret.slice(0, 32);
+      }
+
+      const vaultKey = vaultKeyRef.current;
+      const pqcCipherText = pqcCipherTextRef.current;
+      if (!vaultKey || !pqcCipherText) {
+        throw new Error("Failed to prepare vault encryption keys. Please try again.");
+      }
 
       const setStepStatus = (status: string) => {
         if (effectiveStorageType !== "bitxenArweave") {
@@ -491,7 +512,10 @@ export function VaultCreationWizard({
 
       const encryptedVault = await encryptVaultPayloadClient(payload, vaultKey);
 
-      const fractionKeys = splitKeyClient(vaultKey);
+      encryptedVault.pqcCipherText = pqcCipherText;
+      encryptedVault.alg = "AES-GCM";
+
+      const fractionKeys = splitKeyClient(pqcKeyPair.secretKey);
 
       const securityQuestionHashes = await Promise.all(
         payload.securityQuestions.map(async (sq) => ({
