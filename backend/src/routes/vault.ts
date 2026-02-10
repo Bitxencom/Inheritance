@@ -74,7 +74,7 @@ const verifyAttemptStore = new Map<
 >();
 
 const VERIFY_WINDOW_MS = 15 * 60 * 1000;
-const VERIFY_MAX_ATTEMPTS = 5;
+const VERIFY_MAX_ATTEMPTS = 50;
 const VERIFY_LOCK_MS = 15 * 60 * 1000;
 
 const unlockPolicyV1 = {
