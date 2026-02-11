@@ -13,6 +13,8 @@ export const CHAIN_CONFIG = {
   // BSC Testnet - for development testing
   // Get free tBNB from: https://www.bnbchain.org/en/testnet-faucet
   // Contract verified: BITXEN token with custom registration functions
+
+  // BSC Testnet Only for Testing
   bscTestnet: {
     chainId: 97,
     chainIdHex: "0x61",
@@ -25,6 +27,7 @@ export const CHAIN_CONFIG = {
     logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/smartchain/info/logo.png",
     isTestnet: true,
   },
+
   bsc: {
     chainId: 56,
     chainIdHex: "0x38",
@@ -85,6 +88,66 @@ export const CHAIN_CONFIG = {
     logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/arbitrum/info/logo.png",
     isTestnet: false,
   },
+  optimism: {
+    chainId: 10,
+    chainIdHex: "0xa",
+    name: "Optimism",
+    shortName: "OP",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    rpcUrl: "https://mainnet.optimism.io",
+    blockExplorer: "https://optimistic.etherscan.io",
+    contractAddress: "0xE6311C46841d6953D3EBc035CDdCC2f10C9d821c",
+    logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/optimism/info/logo.png",
+    isTestnet: false,
+  },
+  linea: {
+    chainId: 59144,
+    chainIdHex: "0xe708",
+    name: "Linea",
+    shortName: "LINEA",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    rpcUrl: "https://rpc.linea.build",
+    blockExplorer: "https://lineascan.build",
+    contractAddress: "0xE6311C46841d6953D3EBc035CDdCC2f10C9d821c",
+    logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/linea/info/logo.png",
+    isTestnet: false,
+  },
+  sei: {
+    chainId: 1329,
+    chainIdHex: "0x531",
+    name: "Sei EVM",
+    shortName: "SEI",
+    nativeCurrency: { name: "Sei", symbol: "SEI", decimals: 18 },
+    rpcUrl: "https://evm-rpc.sei-apis.com",
+    blockExplorer: "https://seitrace.com",
+    contractAddress: "0xE6311C46841d6953D3EBc035CDdCC2f10C9d821c",
+    logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/sei/info/logo.png",
+    isTestnet: false,
+  },
+  avalanche: {
+    chainId: 43114,
+    chainIdHex: "0xa86a",
+    name: "Avalanche C-Chain",
+    shortName: "AVAX",
+    nativeCurrency: { name: "Avalanche", symbol: "AVAX", decimals: 18 },
+    rpcUrl: "https://api.avax.network/ext/bc/C/rpc",
+    blockExplorer: "https://snowtrace.io",
+    contractAddress: "0xE6311C46841d6953D3EBc035CDdCC2f10C9d821c",
+    logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/avalanchec/info/logo.png",
+    isTestnet: false,
+  },
+  monad: {
+    chainId: 10143,
+    chainIdHex: "0x279f",
+    name: "Monad Testnet",
+    shortName: "MONAD",
+    nativeCurrency: { name: "Monad", symbol: "MON", decimals: 18 },
+    rpcUrl: "https://testnet-rpc.monad.xyz",
+    blockExplorer: "https://testnet.monadexplorer.com",
+    contractAddress: "0xE6311C46841d6953D3EBc035CDdCC2f10C9d821c",
+    logo: "",
+    isTestnet: true,
+  },
 } as const;
 
 export type ChainId = keyof typeof CHAIN_CONFIG;
@@ -94,7 +157,11 @@ export const DEFAULT_CHAIN: ChainId = "bsc";
 
 // Get list of available chains
 export function getAvailableChains(): ChainId[] {
-  return Object.keys(CHAIN_CONFIG) as ChainId[];
+  const chains = Object.keys(CHAIN_CONFIG) as ChainId[];
+  if (process.env.NODE_ENV === "production") {
+    return chains.filter((chainId) => chainId !== "bscTestnet");
+  }
+  return chains;
 }
 
 // Get chain config by ID
