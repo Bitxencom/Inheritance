@@ -24,6 +24,49 @@ import {
 
 const randomVaultId = () => randomUUID();
 
+type FractionKeyCommitmentsV1 = {
+  scheme: "sha256";
+  version: 1;
+  byShareId: Record<string, string>;
+  createdAt?: string;
+};
+
+const sha256HexFromString = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex");
+
+const parseFractionKeyShareInfo = (value: string): { bits: number; id: number } => {
+  const trimmed = value.trim();
+  const bits = parseInt(trimmed.slice(0, 1), 36);
+  if (!Number.isFinite(bits) || bits < 3 || bits > 20) {
+    throw new Error("Invalid share: bits out of range");
+  }
+  const max = Math.pow(2, bits) - 1;
+  const idLen = max.toString(16).length;
+  const match = new RegExp(`^([a-kA-K3-9]{1})([a-fA-F0-9]{${idLen}})([a-fA-F0-9]+)$`).exec(trimmed);
+  if (!match) {
+    throw new Error("Invalid share format");
+  }
+  const id = parseInt(match[2], 16);
+  if (!Number.isFinite(id) || id < 1 || id > max) {
+    throw new Error("Invalid share: id out of range");
+  }
+  return { bits, id };
+};
+
+const buildFractionKeyCommitmentsV1 = (fractionKeys: string[]): FractionKeyCommitmentsV1 => {
+  const byShareId: Record<string, string> = {};
+  for (const key of fractionKeys) {
+    const trimmed = key.trim();
+    const info = parseFractionKeyShareInfo(trimmed);
+    byShareId[String(info.id)] = sha256HexFromString(trimmed);
+  }
+  return {
+    scheme: "sha256",
+    version: 1,
+    byShareId,
+    createdAt: new Date().toISOString(),
+  };
+};
+
 /**
  * Hash security question answer for validation without decryption
  * Uses SHA-256 with normalization (lowercase, trim)
@@ -251,10 +294,13 @@ export const prepareVault = async (
     ? hashSecurityQuestionAnswers(payload.securityQuestions, vaultId)
     : [];
 
+  const fractionKeyCommitments = buildFractionKeyCommitmentsV1(fractionKeys);
+
   const metadata = {
     trigger: payload.triggerRelease,
     beneficiaryCount: payload.beneficiaries.length,
     securityQuestionHashes,
+    fractionKeyCommitments,
     willType: payload.willDetails?.willType || "one-time",
     isPqcEnabled: usePqc,
     encryptionVersion: "v1-backend",

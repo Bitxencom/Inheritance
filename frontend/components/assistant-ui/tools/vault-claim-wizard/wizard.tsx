@@ -28,12 +28,76 @@ import {
   deriveEffectiveAesKeyClient,
   decryptVaultPayloadClient,
   encryptVaultPayloadClient,
+  sha256Hex,
   type EncryptedVaultClient,
 } from "@/lib/clientVaultCrypto";
 import { getAvailableChains, type ChainId } from "@/lib/metamaskWallet";
 
 import type { ClaimFormState, ClaimSubmissionResult, VaultClaimWizardProps } from "./types";
 import { initialClaimFormState, claimSteps } from "./constants";
+
+type FractionKeyCommitmentsV1 = {
+  scheme: "sha256";
+  version: 1;
+  byShareId: Record<string, string>;
+  createdAt?: string;
+};
+
+function parseFractionKeyShareInfo(value: string): { bits: number; id: number } {
+  const trimmed = value.trim();
+  const bits = parseInt(trimmed.slice(0, 1), 36);
+  if (!Number.isFinite(bits) || bits < 3 || bits > 20) {
+    throw new Error("Invalid share: bits out of range");
+  }
+  const max = Math.pow(2, bits) - 1;
+  const idLen = max.toString(16).length;
+  const match = new RegExp(`^([a-kA-K3-9]{1})([a-fA-F0-9]{${idLen}})([a-fA-F0-9]+)$`).exec(trimmed);
+  if (!match) {
+    throw new Error("Invalid share format");
+  }
+  const id = parseInt(match[2], 16);
+  if (!Number.isFinite(id) || id < 1 || id > max) {
+    throw new Error("Invalid share: id out of range");
+  }
+  return { bits, id };
+}
+
+async function verifyFractionKeyCommitmentsIfPresent(params: {
+  metadata: unknown;
+  fractionKeys: string[];
+}): Promise<void> {
+  const metadataAny = params.metadata as { fractionKeyCommitments?: unknown } | null | undefined;
+  const commitmentConfig = metadataAny?.fractionKeyCommitments as unknown;
+  if (!commitmentConfig || typeof commitmentConfig !== "object") return;
+
+  const configAny = commitmentConfig as Partial<FractionKeyCommitmentsV1>;
+  if (configAny.scheme !== "sha256" || configAny.version !== 1) return;
+  if (!configAny.byShareId || typeof configAny.byShareId !== "object") return;
+
+  const byShareId = configAny.byShareId as Record<string, unknown>;
+  const encoder = new TextEncoder();
+  const seenIds = new Set<number>();
+
+  for (const key of params.fractionKeys) {
+    const trimmed = key.trim();
+    const info = parseFractionKeyShareInfo(trimmed);
+    if (seenIds.has(info.id)) {
+      throw new Error("Fraction Keys must be unique. Duplicates are not allowed.");
+    }
+    seenIds.add(info.id);
+
+    const expectedRaw = byShareId[String(info.id)];
+    const expected = typeof expectedRaw === "string" ? expectedRaw.trim().toLowerCase() : "";
+    if (!expected) {
+      throw new Error("Incorrect or mismatched Fraction Keys. Make sure all keys come from the same backup.");
+    }
+
+    const actual = (await sha256Hex(encoder.encode(trimmed))).toLowerCase();
+    if (actual !== expected) {
+      throw new Error("Incorrect or mismatched Fraction Keys. Make sure all keys come from the same backup.");
+    }
+  }
+}
 
 export function VaultClaimWizard({
   variant = "dialog",
@@ -647,6 +711,19 @@ export function VaultClaimWizard({
         throw new Error(errorMessage);
       }
 
+      try {
+        await verifyFractionKeyCommitmentsIfPresent({
+          metadata: data.metadata,
+          fractionKeys: fractionKeysArray,
+        });
+      } catch (error) {
+        const fractionKeysStepIndex = claimSteps.findIndex((step) => step.key === "fractionKeys");
+        if (fractionKeysStepIndex !== -1) {
+          setCurrentStep(fractionKeysStepIndex);
+        }
+        throw error;
+      }
+
       let vaultContent: string | null = null;
       let vaultTitle: string | null = null;
 
@@ -707,6 +784,10 @@ export function VaultClaimWizard({
               securityQuestionHashes: Array.isArray(data.metadata?.securityQuestionHashes)
                 ? data.metadata.securityQuestionHashes
                 : [],
+              fractionKeyCommitments:
+                data.metadata?.fractionKeyCommitments && typeof data.metadata.fractionKeyCommitments === "object"
+                  ? data.metadata.fractionKeyCommitments
+                  : undefined,
               willType:
                 typeof data.metadata?.willType === "string"
                   ? data.metadata.willType

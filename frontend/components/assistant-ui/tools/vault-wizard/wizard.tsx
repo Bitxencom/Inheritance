@@ -46,6 +46,61 @@ const placeholderSecurityQuestions = [
   "e.g. What is our first car's brand?",
 ];
 
+type FractionKeyCommitmentsV1 = {
+  scheme: "sha256";
+  version: 1;
+  byShareId: Record<string, string>;
+  createdAt?: string;
+};
+
+function getCryptoSubtle(): SubtleCrypto {
+  if (!globalThis.crypto?.subtle) {
+    throw new Error("Web Crypto API is not available in this environment");
+  }
+  return globalThis.crypto.subtle;
+}
+
+async function sha256HexFromString(value: string): Promise<string> {
+  const hash = await getCryptoSubtle().digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function parseFractionKeyShareInfo(value: string): { bits: number; id: number } {
+  const trimmed = value.trim();
+  const bits = parseInt(trimmed.slice(0, 1), 36);
+  if (!Number.isFinite(bits) || bits < 3 || bits > 20) {
+    throw new Error("Invalid share: bits out of range");
+  }
+  const max = Math.pow(2, bits) - 1;
+  const idLen = max.toString(16).length;
+  const match = new RegExp(`^([a-kA-K3-9]{1})([a-fA-F0-9]{${idLen}})([a-fA-F0-9]+)$`).exec(trimmed);
+  if (!match) {
+    throw new Error("Invalid share format");
+  }
+  const id = parseInt(match[2], 16);
+  if (!Number.isFinite(id) || id < 1 || id > max) {
+    throw new Error("Invalid share: id out of range");
+  }
+  return { bits, id };
+}
+
+async function buildFractionKeyCommitmentsV1(fractionKeys: string[]): Promise<FractionKeyCommitmentsV1> {
+  const byShareId: Record<string, string> = {};
+  for (const key of fractionKeys) {
+    const trimmed = key.trim();
+    const info = parseFractionKeyShareInfo(trimmed);
+    byShareId[String(info.id)] = await sha256HexFromString(trimmed);
+  }
+  return {
+    scheme: "sha256",
+    version: 1,
+    byShareId,
+    createdAt: new Date().toISOString(),
+  };
+}
+
 export function VaultCreationWizard({
   variant = "dialog",
   open = true,
@@ -516,6 +571,7 @@ export function VaultCreationWizard({
       encryptedVault.alg = "AES-GCM";
 
       const fractionKeys = splitKeyClient(pqcKeyPair.secretKey);
+      const fractionKeyCommitments = await buildFractionKeyCommitmentsV1(fractionKeys);
 
       const securityQuestionHashes = await Promise.all(
         payload.securityQuestions.map(async (sq) => ({
@@ -529,6 +585,7 @@ export function VaultCreationWizard({
         beneficiaryCount: 0,
         securityQuestionHashes,
         willType: payload.willDetails.willType,
+        fractionKeyCommitments,
         encryptionVersion: "v2-client" as const,
       };
 
