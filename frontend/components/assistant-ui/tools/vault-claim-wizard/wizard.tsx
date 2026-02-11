@@ -25,11 +25,12 @@ import {
 } from "@/components/assistant-ui/tools/shared";
 import { combineSharesClient } from "@/lib/shamirClient";
 import {
+  deriveEffectiveAesKeyClient,
   decryptVaultPayloadClient,
   encryptVaultPayloadClient,
   type EncryptedVaultClient,
 } from "@/lib/clientVaultCrypto";
-import { getAvailableChains, type ChainId } from "@/lib/metamaskWallet";
+
 
 import type { ClaimFormState, ClaimSubmissionResult, VaultClaimWizardProps } from "./types";
 import { initialClaimFormState, claimSteps } from "./constants";
@@ -588,7 +589,6 @@ export function VaultClaimWizard({
       let combinedKey: Uint8Array;
       try {
         combinedKey = combineSharesClient(fractionKeysArray);
-        setCombinedKeyForAttachments(combinedKey);
       } catch {
         throw new Error("Fraction keys do not match. Make sure all 3 fraction keys are correct.");
       }
@@ -666,13 +666,20 @@ export function VaultClaimWizard({
 
       if (data.decryptedVault) {
         decrypted = data.decryptedVault as typeof decrypted;
+        // For legacy server-decrypted vaults, use raw combined key for attachments
+        setCombinedKeyForAttachments(combinedKey);
       } else {
         if (!data.encryptedVault) {
           throw new Error("Unable to unlock vault. Encrypted payload is missing.");
         }
+        const encryptedVaultData = data.encryptedVault as EncryptedVaultClient;
         try {
+          // Derive effective AES key for attachment decryption
+          const attachmentKey = await deriveEffectiveAesKeyClient(encryptedVaultData, combinedKey);
+          setCombinedKeyForAttachments(attachmentKey);
+
           decrypted = (await decryptVaultPayloadClient(
-            data.encryptedVault as EncryptedVaultClient,
+            encryptedVaultData,
             combinedKey,
           )) as typeof decrypted;
         } catch {
@@ -715,40 +722,16 @@ export function VaultClaimWizard({
             const prepareData = await prepareResponse.json().catch(() => ({}));
             if (prepareResponse.ok && prepareData?.success && prepareData?.details?.arweavePayload) {
               let nextTxId: string | null = null;
-              let blockchainTxHash: string | undefined;
-              let blockchainChain: string | undefined;
 
-              if (localVaultForMigration.storageType === "bitxenArweave") {
-                const { dispatchHybrid } = await import("@/lib/metamaskWallet");
-                const availableChains = getAvailableChains();
-                const chainCandidate = localVaultForMigration.blockchainChain;
-                const selectedChain: ChainId = availableChains.includes(chainCandidate as ChainId)
-                  ? (chainCandidate as ChainId)
-                  : "bsc";
-                const hybridResult = await dispatchHybrid(
-                  prepareData.details.arweavePayload,
-                  prepareData.details.vaultId,
-                  selectedChain,
-                  false,
-                );
-                nextTxId = hybridResult.arweaveTxId;
-                blockchainTxHash = hybridResult.contractTxHash;
-                blockchainChain = selectedChain;
-              } else {
-                const { dispatchToArweave } = await import("@/lib/wanderWallet");
-                const dispatchResult = await dispatchToArweave(
-                  prepareData.details.arweavePayload,
-                  prepareData.details.vaultId,
-                );
-                nextTxId = dispatchResult.txId;
-              }
+              const { dispatchToArweave } = await import("@/lib/wanderWallet");
+              const dispatchResult = await dispatchToArweave(
+                prepareData.details.arweavePayload,
+                prepareData.details.vaultId,
+              );
+              nextTxId = dispatchResult.txId;
 
               if (nextTxId) {
-                updateVaultTxId(formState.vaultId.trim(), nextTxId, {
-                  storageType: localVaultForMigration.storageType,
-                  blockchainTxHash,
-                  blockchainChain,
-                });
+                updateVaultTxId(formState.vaultId.trim(), nextTxId);
                 setLatestTxId(nextTxId);
               }
             }
@@ -770,9 +753,9 @@ export function VaultClaimWizard({
             ((doc as { content?: string } | undefined)?.content || "").trim().length > 0,
           hasAttachment:
             typeof (doc as { attachment?: { txId?: unknown; iv?: unknown } } | undefined)?.attachment?.txId ===
-              "string" &&
+            "string" &&
             typeof (doc as { attachment?: { txId?: unknown; iv?: unknown } } | undefined)?.attachment?.iv ===
-              "string",
+            "string",
         }))
         .filter((item) => !item.hasContent && !item.hasAttachment);
 

@@ -77,7 +77,7 @@ export function WanderWalletButton({
 
   return (
     <div className="space-y-6">
-      {/* Payment Method Selection - consistent with MetaMask */}
+      {/* Payment Method Selection */}
       <div className="space-y-3">
         <p className="text-sm font-medium">Select Payment Method</p>
         <div className="grid gap-3 grid-cols-1">

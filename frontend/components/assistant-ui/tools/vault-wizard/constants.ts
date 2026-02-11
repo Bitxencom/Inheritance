@@ -19,10 +19,8 @@ export const initialFormState: FormState = {
     triggerType: "manual",
     triggerDate: undefined,
   },
-  storageType: "arweave",
   payment: {
     paymentMethod: "wander",
-    selectedChain: undefined,
   },
 };
 
@@ -49,8 +47,7 @@ export const steps: readonly WizardStep[] = [
   },
   { 
     key: "payment", 
-    label: "Storage Type",
-    description: "Choose your storage type to secure your vault on blockchain."
+    label: "Pay & Store",
+    description: "Pay with Arweave to securely store your vault on blockchain."
   },
 ] as const;
-

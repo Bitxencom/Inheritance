@@ -51,10 +51,10 @@ function TopbarContent({ onRestoreClick }: { onRestoreClick: () => void }) {
             <BreadcrumbList>
               <BreadcrumbItem>
                 <div className="flex items-center gap-3">
-                  <a href="https://chat.bitxen.com" className="flex items-center">
+                  <a href="/" className="flex items-center">
                     <img
                       src="/logo.png"
-                      alt="Bitxen"
+                      alt="Logo"
                       className="h-8 w-auto hover:opacity-80 transition-opacity cursor-pointer"
                     />
                   </a>

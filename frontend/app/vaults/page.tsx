@@ -20,7 +20,6 @@ import { Button } from "@/components/ui/button";
 import {
   getPendingVaults,
   getArweaveExplorerUrl,
-  getSmartChainExplorerUrl,
   checkArweaveStatus,
   updateVaultStatus,
   type PendingVault,
@@ -175,11 +174,6 @@ function VaultsPageContent() {
                       <div className="space-y-4">
                         <div className="flex items-center gap-2">
                           <FileKey className="h-6 w-6 text-muted-foreground" />
-                          {vault.storageType && (
-                            <div className="shrink-0 rounded-md bg-purple-100 px-2.5 py-1 text-xs font-semibold text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">
-                              {vault.storageType === 'bitxenArweave' ? 'Bitxen Smart Contract + Arweave' : 'Arweave'}
-                            </div>
-                          )}
                           <p className="text-sm text-muted-foreground">
                             Created on {new Date(vault.createdAt).toLocaleString('en-GB', {
                               day: 'numeric', month: 'short', year: 'numeric',
@@ -234,22 +228,6 @@ function VaultsPageContent() {
                             </div>
                           )}
 
-                          {vault.blockchainTxHash && (
-                            <div className="flex flex-col gap-1">
-                              <span className="text-xs font-medium text-muted-foreground uppercase">Registry</span>
-                              <div className="flex items-center gap-2">
-                                <Link
-                                  href={getSmartChainExplorerUrl(vault.blockchainTxHash, vault.blockchainChain)}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="flex items-center gap-1 text-sm text-primary hover:underline hover:text-primary/80 transition-colors"
-                                >
-                                  Contract Transaction
-                                  <ExternalLink className="h-3 w-3" />
-                                </Link>
-                              </div>
-                            </div>
-                          )}
 
                           {vault.arweaveTxId && (
                             <div className="flex flex-col gap-1">

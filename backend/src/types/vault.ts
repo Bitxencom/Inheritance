@@ -24,7 +24,7 @@ export type VaultPayload = {
     triggerDate?: string;
   };
   payment: {
-    paymentMethod: "wander" | "metamask";
+    paymentMethod: "wander";
   };
   /** Enable PQC hybrid encryption (ML-KEM + AES) */
   enablePqc?: boolean;

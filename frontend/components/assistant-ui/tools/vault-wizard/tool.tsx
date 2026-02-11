@@ -11,7 +11,6 @@ import {
   getArweaveExplorerUrl,
   type PendingVaultStatus,
 } from "@/lib/vault-storage";
-import { getChainConfig, type ChainId } from "@/lib/metamaskWallet";
 
 type HealthStatus = {
   backend: {
@@ -427,39 +426,12 @@ Save this ID safely. You will need it to find and manage your inheritance later.
             </div>
           )}
 
-          {/* Transaction IDs */}
-
-          {/* Bitxen Contract Transaction (Hybrid Mode) */}
-          {submissionResult.storageType === 'bitxenArweave' && submissionResult.blockchainTxHash && (
-            <div className="col-span-1 sm:col-span-2 rounded-lg border bg-muted/5 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div>
-                <p className="text-sm text-muted-foreground mb-1">
-                  Smart Chain Transaction ({submissionResult.blockchainChain?.toUpperCase() || 'CHAIN'})
-                </p>
-                <p className="text-sm font-bold font-mono truncate max-w-[200px] sm:max-w-xs">
-                  {submissionResult.blockchainTxHash}
-                </p>
-              </div>
-              <a
-                href={submissionResult.blockchainChain ? `${getChainConfig(submissionResult.blockchainChain as ChainId).blockExplorer}/tx/${submissionResult.blockchainTxHash}` : '#'}
-                target="_blank"
-                rel="noreferrer"
-                className="text-sm flex items-center gap-1.5 text-primary hover:underline hover:text-primary/80 font-medium whitespace-nowrap"
-              >
-                View on Explorer
-                <ExternalLink className="h-3 w-3" />
-              </a>
-            </div>
-          )}
-
           {/* Arweave Transaction */}
           {submissionResult.arweaveTxId && (
             <div className="col-span-1 sm:col-span-2 rounded-lg border bg-muted/5 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <p className="text-sm text-muted-foreground mb-1">
-                  {submissionResult.storageType === 'bitxenArweave'
-                    ? 'Storage Transaction (Arweave)'
-                    : 'Blockchain Storage Transaction'}
+                  Blockchain Storage Transaction
                 </p>
                 <p className="text-sm font-bold font-mono truncate max-w-[200px] sm:max-w-xs">
                   {submissionResult.arweaveTxId}

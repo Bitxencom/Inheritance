@@ -36,11 +36,9 @@ export type EditFormState = {
   editedSecurityQuestions: SecurityQuestionAnswer[];
   isEditingSecurityQuestions: boolean;
 
-  // Step 6: Storage Selection
-  storageType: "arweave" | "bitxenArweave";
+  // Step 6: Payment
   payment: {
-    paymentMethod: "wander" | "metamask";
-    selectedChain?: string; // For Bitxen: bsc, eth, poly, base, arbitrum
+    paymentMethod: "wander";
   };
 };
 
@@ -49,9 +47,6 @@ export type EditSubmissionResult = {
   vaultId: string;
   message: string | null;
   arweaveTxId?: string | null;
-  blockchainTxHash?: string | null; // For Bitxen transactions
-  blockchainChain?: string | null; // Which chain was used
-  storageType?: "arweave" | "bitxenArweave";
 };
 
 export type VaultEditWizardProps = {

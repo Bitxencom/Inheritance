@@ -21,10 +21,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { UnifiedPaymentSelector, type PaymentMode } from "@/components/shared/payment";
+import { WanderWalletButton } from "@/components/shared/payment";
 import { Stepper } from "@/components/shared/stepper";
-import type { ChainId } from "@/lib/metamaskWallet";
-import { generateVaultKey, encryptVaultPayloadClient } from "@/lib/clientVaultCrypto";
+import {
+  encryptVaultPayloadClient,
+  generatePqcKeyPairClient,
+  encapsulatePqcClient,
+  type PqcKeyPairClient,
+} from "@/lib/clientVaultCrypto";
 import { splitKeyClient } from "@/lib/shamirClient";
 import { hashSecurityAnswerClient } from "@/lib/securityQuestionsClient";
 
@@ -61,6 +65,8 @@ export function VaultCreationWizard({
   const [paymentPhase, setPaymentPhase] = useState<"confirm" | "upload" | "finalize" | null>(null);
   const vaultIdRef = useRef<string | null>(null);
   const vaultKeyRef = useRef<Uint8Array | null>(null);
+  const pqcKeyPairRef = useRef<PqcKeyPairClient | null>(null);
+  const pqcCipherTextRef = useRef<string | null>(null);
 
   useEffect(() => {
     onStepChange?.(currentStep);
@@ -113,10 +119,8 @@ export function VaultCreationWizard({
         triggerType: "manual",
         triggerDate,
       },
-      storageType: "arweave",
       payment: {
         paymentMethod: "wander",
-        selectedChain: undefined,
       },
     });
     setCurrentStep(0);
@@ -136,6 +140,8 @@ export function VaultCreationWizard({
     setPaymentStatus(null);
     vaultIdRef.current = null;
     vaultKeyRef.current = null;
+    pqcKeyPairRef.current = null;
+    pqcCipherTextRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -441,16 +447,12 @@ export function VaultCreationWizard({
     };
   };
 
-  const submitToMCP = async (overrides?: { storageType?: "arweave" | "bitxenArweave"; selectedChain?: ChainId }) => {
+  const submitToMCP = async () => {
     setIsSubmitting(true);
     setStepError(null);
     setPaymentProgress(null);
     setPaymentPhase(null);
-
-    const effectiveStorageType = overrides?.storageType ?? formState.storageType;
-    const effectiveChain = overrides?.selectedChain ?? (formState.payment.selectedChain as ChainId | undefined);
-
-    setPaymentStatus(effectiveStorageType === "bitxenArweave" ? "Step 1/2: Preparing your vault..." : "Preparing your vault...");
+    setPaymentStatus("Preparing your vault...");
 
     try {
       const vaultId =
@@ -460,38 +462,37 @@ export function VaultCreationWizard({
           : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
       vaultIdRef.current = vaultId;
 
-      const vaultKey = vaultKeyRef.current ?? generateVaultKey();
-      vaultKeyRef.current = vaultKey;
+      // Generate PQC key pair (ML-KEM-768)
+      const pqcKeyPair = pqcKeyPairRef.current ?? generatePqcKeyPairClient();
+      pqcKeyPairRef.current = pqcKeyPair;
 
-      const setStepStatus = (status: string) => {
-        if (effectiveStorageType !== "bitxenArweave") {
-          setPaymentStatus(status);
-          return;
-        }
+      // Derive AES key from PQC encapsulation
+      if (!vaultKeyRef.current || !pqcCipherTextRef.current) {
+        const { pqcCipherText, sharedSecret } = encapsulatePqcClient(pqcKeyPair.publicKey);
+        pqcCipherTextRef.current = pqcCipherText;
+        vaultKeyRef.current = sharedSecret.slice(0, 32);
+      }
 
-        const normalized = status.toLowerCase();
-        if (normalized.includes("step 2") || normalized.includes("contract") || normalized.includes("metamask")) {
-          setPaymentStatus(status);
-          return;
-        }
-
-        if (normalized.startsWith("step 1/2:")) {
-          setPaymentStatus(status);
-          return;
-        }
-
-        setPaymentStatus(`Step 1/2: ${status}`);
-      };
+      const vaultKey = vaultKeyRef.current;
+      const pqcCipherText = pqcCipherTextRef.current;
+      if (!vaultKey || !pqcCipherText) {
+        throw new Error("Failed to prepare vault encryption keys. Please try again.");
+      }
 
       const payload = await transformPayload({
         vaultId,
         vaultKey,
-        onStatus: (status) => setStepStatus(status),
+        onStatus: (status) => setPaymentStatus(status),
       });
 
       const encryptedVault = await encryptVaultPayloadClient(payload, vaultKey);
 
-      const fractionKeys = splitKeyClient(vaultKey);
+      // Attach PQC ciphertext to encrypted vault
+      encryptedVault.pqcCipherText = pqcCipherText;
+      encryptedVault.alg = "AES-GCM";
+
+      // Split PQC secret key (2400 bytes) → ~4800 char fraction keys
+      const fractionKeys = splitKeyClient(pqcKeyPair.secretKey);
 
       const securityQuestionHashes = await Promise.all(
         payload.securityQuestions.map(async (sq) => ({
@@ -506,6 +507,7 @@ export function VaultCreationWizard({
         securityQuestionHashes,
         willType: payload.willDetails.willType,
         encryptionVersion: "v2-client" as const,
+        isPqcEnabled: true,
       };
 
       const prepareResponse = await fetch("/api/vault/prepare-client", {
@@ -525,92 +527,65 @@ export function VaultCreationWizard({
       if (!prepareResponse.ok || !prepareData.success || !prepareData.details) {
         throw new Error(
           prepareData.error ||
-            prepareData.message ||
-            "We couldn't prepare the inheritance. Please try again.",
+          prepareData.message ||
+          "We couldn't prepare the inheritance. Please try again.",
         );
       }
 
       const { details } = prepareData;
       const { arweavePayload } = details;
 
-      let txId: string;
-
-      let blockchainTxHash: string | undefined;
-      let blockchainChain: string | undefined;
-
-      if (effectiveStorageType === "arweave") {
-        setPaymentStatus("Step 1/2: Confirm transaction in Wander Wallet...");
-        setPaymentPhase("confirm");
-        setPaymentProgress(null);
-        const { dispatchToArweave, isWalletReady, connectWanderWallet } = await import("@/lib/wanderWallet");
-        if (!(await isWalletReady())) {
-          await connectWanderWallet();
-        }
-        const dispatchResult = await dispatchToArweave(
-          arweavePayload,
-          vaultId,
-          undefined,
-          (progress) => {
-            setPaymentProgress(progress);
-            if (progress >= 0 && progress < 100) setPaymentPhase("upload");
-            if (progress >= 100) setPaymentPhase("finalize");
-          },
-          (status) => {
-            setPaymentStatus(status);
-            const normalized = status.toLowerCase();
-            if (
-              normalized.includes("waiting for wallet") ||
-              normalized.includes("confirm transaction") ||
-              normalized.includes("confirm arweave") ||
-              normalized.includes("signature")
-            ) {
-              setPaymentPhase("confirm");
-              return;
-            }
-            if (
-              normalized.includes("uploading") ||
-              normalized.includes("upload chunk") ||
-              normalized.includes("resuming") ||
-              normalized.includes("preparing upload")
-            ) {
-              setPaymentPhase("upload");
-              return;
-            }
-            if (normalized.includes("upload successful") || normalized.includes("successful")) {
-              setPaymentPhase("finalize");
-            }
-          },
-        );
-        txId = dispatchResult.txId;
-        setPaymentStatus("Upload successful! We're saving your inheritance details...");
-      } else if (effectiveStorageType === "bitxenArweave") {
-        // Hybrid: Arweave storage + Bitxen contract registry
-        // We use the "bitxenArweave" storage type name but "hybrid" implementation under the hood
-        setPaymentStatus("Step 1/2: Confirm Arweave upload in Wander...");
-        const { dispatchHybrid } = await import("@/lib/metamaskWallet");
-        const selectedChain = (effectiveChain || "bsc") as ChainId;
-        const hybridResult = await dispatchHybrid(arweavePayload, vaultId, selectedChain, false, (status) => {
-          setPaymentStatus(status);
-        });
-
-        // Use contract tx hash for display
-        txId = hybridResult.arweaveTxId;
-        blockchainTxHash = hybridResult.contractTxHash;
-        blockchainChain = selectedChain;
-        setPaymentStatus(`Hybrid storage complete! Arweave + ${selectedChain.toUpperCase()}`);
-      } else {
-        throw new Error("Invalid storage type: " + effectiveStorageType);
+      setPaymentStatus("Confirm transaction in Wander Wallet...");
+      setPaymentPhase("confirm");
+      setPaymentProgress(null);
+      const { dispatchToArweave, isWalletReady, connectWanderWallet } = await import("@/lib/wanderWallet");
+      if (!(await isWalletReady())) {
+        await connectWanderWallet();
       }
+      const dispatchResult = await dispatchToArweave(
+        arweavePayload,
+        vaultId,
+        undefined,
+        (progress) => {
+          setPaymentProgress(progress);
+          if (progress >= 0 && progress < 100) setPaymentPhase("upload");
+          if (progress >= 100) setPaymentPhase("finalize");
+        },
+        (status) => {
+          setPaymentStatus(status);
+          const normalized = status.toLowerCase();
+          if (
+            normalized.includes("waiting for wallet") ||
+            normalized.includes("confirm transaction") ||
+            normalized.includes("confirm arweave") ||
+            normalized.includes("signature")
+          ) {
+            setPaymentPhase("confirm");
+            return;
+          }
+          if (
+            normalized.includes("uploading") ||
+            normalized.includes("upload chunk") ||
+            normalized.includes("resuming") ||
+            normalized.includes("preparing upload")
+          ) {
+            setPaymentPhase("upload");
+            return;
+          }
+          if (normalized.includes("upload successful") || normalized.includes("successful")) {
+            setPaymentPhase("finalize");
+          }
+        },
+      );
+      const txId = dispatchResult.txId;
+      setPaymentStatus("Upload successful! We're saving your inheritance details...");
 
       const resultData = {
         vaultId: vaultId,
         arweaveTxId: txId,
-        blockchainTxHash,
-        blockchainChain,
-        message: "Your inheritance has been successfully created and stored on blockchain.",
+        message: "Your inheritance has been successfully created and stored on Arweave.",
         fractionKeys: fractionKeys || [],
         willType: payload.willDetails.willType,
-        storageType: effectiveStorageType,
         createdAt: new Date().toISOString(),
         title: payload.willDetails.title,
         triggerType: payload.triggerRelease.triggerType,
@@ -621,8 +596,6 @@ export function VaultCreationWizard({
 
       // Save to local storage for persistence
       try {
-
-
         savePendingVault({
           vaultId: resultData.vaultId,
           arweaveTxId: resultData.arweaveTxId || "",
@@ -631,9 +604,6 @@ export function VaultCreationWizard({
           fractionKeys: resultData.fractionKeys,
           triggerType: resultData.triggerType as "date" | "manual" | undefined,
           triggerDate: resultData.triggerDate,
-          storageType: resultData.storageType as "arweave" | "bitxenArweave",
-          blockchainTxHash: resultData.blockchainTxHash,
-          blockchainChain: resultData.blockchainChain
         });
       } catch (e) {
         console.error("Failed to save vault to local storage:", e);
@@ -663,7 +633,6 @@ export function VaultCreationWizard({
       });
     } finally {
       setIsSubmitting(false);
-      // Don't clear payment status immediately so user sees "Success" or "Error"
     }
   };
 
@@ -686,38 +655,15 @@ export function VaultCreationWizard({
     setCurrentStep((prev) => Math.min(prev + 1, steps.length - 1));
   };
 
-  const handleUnifiedPayment = async (mode: PaymentMode, chainId?: ChainId) => {
+  const handleWanderPayment = async () => {
     try {
       setIsProcessingPayment(true);
       setPaymentProgress(null);
       setPaymentPhase(null);
+      setPaymentStatus("Preparing your vault...");
+      setPaymentPhase("confirm");
 
-      // Calculate effective values immediately (don't rely on async state update)
-      const effectiveStorageType = mode === "wander" ? "arweave" : "bitxenArweave";
-      const effectiveChain = chainId;
-
-      // Also update form state for UI consistency (but don't depend on it for submit)
-      setFormState((prev) => ({
-        ...prev,
-        storageType: effectiveStorageType,
-        payment: {
-          paymentMethod: mode === "wander" ? "wander" : "metamask",
-          selectedChain: chainId,
-        },
-      }));
-
-      if (mode === "wander") {
-        setPaymentStatus("Preparing your vault...");
-        setPaymentPhase("confirm");
-      } else {
-        setPaymentStatus("Step 1/2: Uploading to Arweave...");
-      }
-
-      // Pass overrides directly to submitToMCP to avoid async state issues
-      await submitToMCP({
-        storageType: effectiveStorageType,
-        selectedChain: effectiveChain,
-      });
+      await submitToMCP();
 
     } catch (error) {
       console.error("Payment error:", error);
@@ -1130,15 +1076,13 @@ export function VaultCreationWizard({
         );
       case "payment":
         return (
-          <UnifiedPaymentSelector
-            onSubmit={handleUnifiedPayment}
-            isSubmitting={isSubmitting || isProcessingPayment}
-            paymentStatus={paymentStatus}
-            paymentProgress={paymentProgress}
-            paymentPhase={paymentPhase}
-            isReady={true}
-            blockedReason={null}
-          />
+          <div className="space-y-4">
+            <WanderWalletButton
+              onClick={handleWanderPayment}
+              isSubmitting={isSubmitting || isProcessingPayment}
+              paymentStatus={paymentStatus}
+            />
+          </div>
         );
       default:
         return null;

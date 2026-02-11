@@ -60,7 +60,7 @@ const vaultSchema = z.object({
     triggerDate: z.string().optional(),
   }),
   payment: z.object({
-    paymentMethod: z.enum(["wander", "metamask"]),
+    paymentMethod: z.enum(["wander"]),
   }),
   enablePqc: z.boolean().optional().default(true),
 });
@@ -191,6 +191,8 @@ const clientEncryptedSchema = z.object({
     cipherText: z.string(),
     iv: z.string(),
     checksum: z.string(),
+    pqcCipherText: z.string().optional(),
+    alg: z.enum(["AES-CBC", "AES-GCM"]).optional(),
   }),
   metadata: z.object({
     trigger: z.any(),
@@ -205,6 +207,7 @@ const clientEncryptedSchema = z.object({
       }),
     ),
     willType: z.string(),
+    fractionKeyCommitments: z.any().optional(),
     isPqcEnabled: z.boolean().optional(),
     pqcPublicKey: z.any().optional(),
     encryptionVersion: z.literal("v2-client"),
@@ -216,14 +219,6 @@ vaultRouter.post("/prepare-client", async (req, res, next) => {
     const parsed = clientEncryptedSchema.parse(req.body);
 
     const vaultId = randomUUID();
-
-    if (parsed.metadata.isPqcEnabled || parsed.metadata.pqcPublicKey) {
-      return res.status(400).json({
-        success: false,
-        error:
-          "PQC is not supported in the frontend-only encryption mode. Please disable PQC and try again.",
-      });
-    }
 
     const metadata = {
       ...parsed.metadata,
@@ -274,12 +269,8 @@ vaultRouter.post("/:vaultId/prepare-client", async (req, res, next) => {
       });
     }
 
-    if (parsed.metadata.isPqcEnabled || parsed.metadata.pqcPublicKey) {
-      return res.status(400).json({
-        success: false,
-        error:
-          "PQC is not supported in the frontend-only encryption mode. Please disable PQC and try again.",
-      });
+    if (parsed.metadata.isPqcEnabled) {
+       // Allow PQC in frontend-only encryption mode now
     }
 
     const metadata = {

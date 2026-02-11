@@ -13,10 +13,10 @@ export function SiteHeader({ showVaultsButton = true }: SiteHeaderProps) {
     <header className="flex h-16 shrink-0 items-center justify-between gap-2 border-b px-4 md:px-6 bg-background">
       <div className="flex items-center justify-between gap-2 w-full max-w-[44rem] mx-auto">
         <div className="flex items-center gap-3">
-          <a href="https://chat.bitxen.com" className="flex items-center">
+          <a href="/" className="flex items-center">
             <img
               src="/logo.png"
-              alt="Bitxen"
+              alt="Logo"
               className="h-8 w-auto hover:opacity-80 transition-opacity cursor-pointer"
             />
           </a>

@@ -21,7 +21,6 @@ import {
   removeVault,
   removeVaultKeys,
   getArweaveExplorerUrl,
-  getSmartChainExplorerUrl,
   checkArweaveStatus,
   type PendingVault,
 } from "@/lib/vault-storage";
@@ -253,16 +252,7 @@ export default function VaultDetailsPage({ params }: { params: Promise<{ vaultId
                     copyable
                   />
 
-                  {/* Smart Chain Transaction ID */}
-                  {vault.blockchainTxHash && (
-                    <InfoBox
-                      label="Smart Chain Transaction ID"
-                      value={vault.blockchainTxHash}
-                      copyable
-                      copyLabel="Copy"
-                      externalUrl={getSmartChainExplorerUrl(vault.blockchainTxHash, vault.blockchainChain)}
-                    />
-                  )}
+
 
                   {/* Storage Transaction ID */}
                   {vault.arweaveTxId && (

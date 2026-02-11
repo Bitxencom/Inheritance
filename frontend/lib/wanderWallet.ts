@@ -52,7 +52,7 @@ export const WANDER_CONFIG = {
   // App info for wallet connection
   appInfo: {
     name: 'Inheritance - Digital Vault',
-    logo: 'https://chat.bitxen.com/logo.png',
+    logo: '/logo.png',
   },
   
   // Wander Connect Client ID (free tier for now)
@@ -398,7 +398,7 @@ type ArweaveUploadResumeRecord = {
   updatedAt: string;
 };
 
-const ARWEAVE_UPLOAD_DB = "bitxen_arweave_uploads";
+const ARWEAVE_UPLOAD_DB = "arweave_uploads";
 const ARWEAVE_UPLOAD_STORE = "uploads";
 const ARWEAVE_UPLOAD_DB_VERSION = 1;
 

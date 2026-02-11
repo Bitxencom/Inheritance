@@ -1,5 +1,3 @@
-import { CHAIN_CONFIG, type ChainId } from "./metamaskWallet";
-
 /**
  * Vault Storage - localStorage utility for tracking pending vaults
  */
@@ -10,6 +8,7 @@ export type PendingVaultStatus = "pending" | "confirmed" | "error";
 
 export type PendingVault = {
   vaultId: string;
+  arweaveTxId: string;
   title: string;
   willType: "one-time" | "editable";
   status: PendingVaultStatus;
@@ -18,10 +17,6 @@ export type PendingVault = {
   fractionKeys: string[];
   triggerType?: "date" | "manual";
   triggerDate?: string;
-  storageType?: "arweave" | "bitxenArweave";
-  blockchainTxHash?: string;
-  blockchainChain?: string;
-  arweaveTxId: string;
 };
 
 /**
@@ -29,7 +24,7 @@ export type PendingVault = {
  */
 export function getPendingVaults(): PendingVault[] {
   if (typeof window === "undefined") return [];
-
+  
   try {
     const data = localStorage.getItem(STORAGE_KEY);
     if (!data) return [];
@@ -77,14 +72,6 @@ export function savePendingVault(
 ): PendingVault {
   const vaults = getPendingVaults();
 
-  // Debug log to ensure we are receiving storageType
-  console.log("💾 savePendingVault called:", {
-    id: vault.vaultId,
-    storageType: vault.storageType,
-    blockchainChain: vault.blockchainChain,
-    blockchainTxHash: vault.blockchainTxHash,
-  });
-
   const newVault: PendingVault = {
     ...vault,
     status: "pending",
@@ -118,10 +105,6 @@ function saveVaultsToStorage(vaults: PendingVault[]) {
       const { fractionKeys, ...rest } = v;
       return {
         ...rest,
-        // Explicitly ensure these fields are preserved from v (safety check)
-        storageType: v.storageType,
-        blockchainTxHash: v.blockchainTxHash,
-        blockchainChain: v.blockchainChain,
         // Store as shardKeys (legacy key preference)
         shardKeys: fractionKeys,
       };
@@ -165,11 +148,6 @@ export function updateVaultStatus(
 export function updateVaultTxId(
   vaultId: string,
   arweaveTxId: string,
-  updates?: {
-    storageType?: "arweave" | "bitxenArweave";
-    blockchainTxHash?: string;
-    blockchainChain?: string;
-  },
 ): boolean {
   const vaults = getPendingVaults();
   const index = vaults.findIndex((v) => v.vaultId === vaultId);
@@ -179,14 +157,6 @@ export function updateVaultTxId(
   vaults[index] = {
     ...vaults[index],
     arweaveTxId,
-    // Apply updates if provided
-    ...(updates?.storageType && { storageType: updates.storageType }),
-    ...(updates?.blockchainTxHash && {
-      blockchainTxHash: updates.blockchainTxHash,
-    }),
-    ...(updates?.blockchainChain && {
-      blockchainChain: updates.blockchainChain,
-    }),
     // Reset status to pending as it's a new transaction waiting for confirmation
     status: "pending",
     // Update timestamp to bring it to top
@@ -284,19 +254,6 @@ export async function checkArweaveStatus(txId: string): Promise<{
     console.error("Error checking blockchain storage status:", error);
     return { confirmed: false };
   }
-}
-
-/**
- * Get smart chain explorer URL for a transaction
- */
-export function getSmartChainExplorerUrl(
-  txId: string,
-  chainId?: string,
-): string {
-  if (!txId || !chainId) return "";
-  const config = CHAIN_CONFIG[chainId as ChainId];
-  if (!config) return "";
-  return `${config.blockExplorer}/tx/${txId}`;
 }
 
 /**
