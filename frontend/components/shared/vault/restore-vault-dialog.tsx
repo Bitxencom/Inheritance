@@ -111,13 +111,31 @@ export function RestoreVaultDialog({
       body: JSON.stringify({ vaultId, arweaveTxId }),
     });
 
-    const data = await response.json();
+    type VerifyClaimResponse = {
+      success?: boolean;
+      error?: string;
+      securityQuestions?: unknown;
+    };
 
-    if (!response.ok || !data.success) {
-      throw new Error(data?.error || "Failed to load security questions. The backup might be outdated or invalid.");
+    const raw = await response.text();
+    const data: VerifyClaimResponse = (() => {
+      try {
+        return JSON.parse(raw) as VerifyClaimResponse;
+      } catch {
+        return {
+          success: false,
+          error: raw || `Non-JSON response (HTTP ${response.status})`,
+        };
+      }
+    })();
+
+    if (!response.ok || data.success !== true) {
+      const message = (typeof data.error === "string" ? data.error.trim() : "") ||
+        `Failed to load security questions (HTTP ${response.status}).`;
+      throw new Error(message || `Failed to load security questions (HTTP ${response.status}).`);
     }
 
-    if (data.securityQuestions && Array.isArray(data.securityQuestions)) {
+    if (Array.isArray(data.securityQuestions)) {
       setSecurityQuestions(
         data.securityQuestions.map((q: string) => ({ question: q, answer: "" }))
       );
@@ -247,7 +265,7 @@ export function RestoreVaultDialog({
                 <Upload className="h-10 w-10 text-muted-foreground mb-4" />
               )}
               <h3 className="text-lg font-semibold mb-1">
-                {isLoading ? "Processing..." : "Click to Upload Backup"}
+                {isLoading ? "Checking..." : "Click to Upload Backup"}
               </h3>
               <p className="text-sm text-muted-foreground">
                 Select your vault backup (.txt) file

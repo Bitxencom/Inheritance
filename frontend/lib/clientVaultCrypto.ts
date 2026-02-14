@@ -8,6 +8,7 @@ export type EncryptedVaultClient = {
   checksum: string;
   pqcCipherText?: string;
   alg?: "AES-CBC" | "AES-GCM";
+  keyMode?: "pqc" | "envelope";
 };
 
 export type EncryptedBytesClient = {
@@ -19,6 +20,15 @@ export type EncryptedBytesClient = {
 export type PqcKeyPairClient = {
   publicKey: Uint8Array;
   secretKey: Uint8Array;
+};
+
+export type WrappedKeyV1 = {
+  schema: "bitxen-wrapped-key-v1";
+  v: 1;
+  alg: "AES-GCM";
+  iv: string;
+  checksum: string;
+  cipherText: string;
 };
 
 function getCrypto(): Crypto {
@@ -165,6 +175,33 @@ export async function decryptBytesClient(
   return new Uint8Array(plainBuffer);
 }
 
+export async function wrapKeyClient(keyToWrap: Uint8Array, wrappingKey: Uint8Array): Promise<WrappedKeyV1> {
+  const wrapped = await encryptBytesClient(keyToWrap, wrappingKey);
+  return {
+    schema: "bitxen-wrapped-key-v1",
+    v: 1,
+    alg: "AES-GCM",
+    iv: wrapped.iv,
+    checksum: wrapped.checksum,
+    cipherText: toBase64(wrapped.cipherBytes),
+  };
+}
+
+export async function unwrapKeyClient(wrapped: WrappedKeyV1, wrappingKey: Uint8Array): Promise<Uint8Array> {
+  if (wrapped.schema !== "bitxen-wrapped-key-v1" || wrapped.v !== 1) {
+    throw new Error("Unsupported wrapped key format.");
+  }
+  const cipherBytes = fromBase64(wrapped.cipherText);
+  return await decryptBytesClient(
+    {
+      cipherBytes,
+      iv: wrapped.iv,
+      checksum: wrapped.checksum,
+    },
+    wrappingKey,
+  );
+}
+
 export async function encryptVaultPayloadClient(
   payload: unknown,
   key: Uint8Array,
@@ -223,6 +260,42 @@ export async function decryptVaultPayloadClient(
         : "AES-CBC";
 
   const aesKey = await importAesKey(effectiveKey, inferredAlg);
+  const iv = toArrayBuffer(ivBytes);
+
+  const plainBuffer = await getCrypto().subtle.decrypt(
+    { name: inferredAlg, iv },
+    aesKey,
+    cipherBuffer,
+  );
+
+  const decoder = new TextDecoder();
+  const json = decoder.decode(plainBuffer);
+  return JSON.parse(json) as unknown;
+}
+
+export async function decryptVaultPayloadRawKeyClient(
+  encrypted: EncryptedVaultClient,
+  key: Uint8Array,
+): Promise<unknown> {
+  const ivBytes = fromBase64(encrypted.iv);
+  const cipherBytes = fromBase64(encrypted.cipherText);
+  const cipherBuffer = toArrayBuffer(cipherBytes);
+
+  if (encrypted.checksum && encrypted.checksum.length > 0) {
+    const actual = await sha256(cipherBuffer);
+    if (actual !== encrypted.checksum) {
+      throw new Error("Vault checksum mismatch.");
+    }
+  }
+
+  const inferredAlg: "AES-CBC" | "AES-GCM" =
+    encrypted.alg === "AES-CBC" || encrypted.alg === "AES-GCM"
+      ? encrypted.alg
+      : ivBytes.length === 12
+        ? "AES-GCM"
+        : "AES-CBC";
+
+  const aesKey = await importAesKey(key, inferredAlg);
   const iv = toArrayBuffer(ivBytes);
 
   const plainBuffer = await getCrypto().subtle.decrypt(

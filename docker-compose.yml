@@ -46,6 +46,7 @@ services:
       - MCP_SERVER_CWD=/app/mcp-server
       - MCP_SERVER_ENTRY=server.js
       - PORT=${FRONTEND_PORT:-7001}
+      - EXPLORER_BASE_URL=${EXPLORER_BASE_URL:-http://localhost:3021}
     volumes:
       - ./mcp-server:/app/mcp-server
     expose:

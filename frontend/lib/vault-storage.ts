@@ -21,6 +21,8 @@ export type PendingVault = {
   storageType?: "arweave" | "bitxenArweave";
   blockchainTxHash?: string;
   blockchainChain?: string;
+  contractDataId?: string;
+  contractAddress?: string;
   arweaveTxId: string;
 };
 
@@ -83,6 +85,7 @@ export function savePendingVault(
     storageType: vault.storageType,
     blockchainChain: vault.blockchainChain,
     blockchainTxHash: vault.blockchainTxHash,
+    contractDataId: vault.contractDataId,
   });
 
   const newVault: PendingVault = {
@@ -122,6 +125,8 @@ function saveVaultsToStorage(vaults: PendingVault[]) {
         storageType: v.storageType,
         blockchainTxHash: v.blockchainTxHash,
         blockchainChain: v.blockchainChain,
+        contractDataId: v.contractDataId,
+        contractAddress: v.contractAddress,
         // Store as shardKeys (legacy key preference)
         shardKeys: fractionKeys,
       };
@@ -169,6 +174,8 @@ export function updateVaultTxId(
     storageType?: "arweave" | "bitxenArweave";
     blockchainTxHash?: string;
     blockchainChain?: string;
+    contractDataId?: string;
+    contractAddress?: string;
   },
 ): boolean {
   const vaults = getPendingVaults();
@@ -186,6 +193,12 @@ export function updateVaultTxId(
     }),
     ...(updates?.blockchainChain && {
       blockchainChain: updates.blockchainChain,
+    }),
+    ...(updates?.contractDataId && {
+      contractDataId: updates.contractDataId,
+    }),
+    ...(updates?.contractAddress && {
+      contractAddress: updates.contractAddress,
     }),
     // Reset status to pending as it's a new transaction waiting for confirmation
     status: "pending",
@@ -303,5 +316,6 @@ export function getSmartChainExplorerUrl(
  * Get Arweave explorer URL for a transaction
  */
 export function getArweaveExplorerUrl(txId: string): string {
-  return `/explorer/arweave/tx/${txId}`;
+  const baseUrl = process.env.EXPLORER_BASE_URL || "http://localhost:3021";
+  return `${baseUrl}/explorer/arweave/tx/${txId}`;
 }

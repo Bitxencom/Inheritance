@@ -324,6 +324,7 @@ const clientEncryptedSchema = z.object({
     checksum: z.string(),
     pqcCipherText: z.string().optional(),
     alg: z.enum(["AES-CBC", "AES-GCM"]).optional(),
+    keyMode: z.enum(["pqc", "envelope"]).optional(),
   }),
   metadata: z.object({
     trigger: z.any(),
@@ -340,7 +341,8 @@ const clientEncryptedSchema = z.object({
     willType: z.string(),
     isPqcEnabled: z.boolean().optional(),
     pqcPublicKey: z.any().optional(),
-    encryptionVersion: z.literal("v2-client"),
+    contractEncryptedKey: z.string().optional(),
+    encryptionVersion: z.union([z.literal("v2-client"), z.literal("v3-envelope")]),
   }),
 });
 
@@ -352,7 +354,6 @@ vaultRouter.post("/prepare-client", async (req, res, next) => {
 
     const metadata = {
       ...parsed.metadata,
-      encryptionVersion: "v2-client",
     };
 
     const arweavePayload = {
@@ -369,7 +370,7 @@ vaultRouter.post("/prepare-client", async (req, res, next) => {
       details: {
         vaultId,
         arweavePayload,
-        encryptionVersion: "v2-client",
+        encryptionVersion: metadata.encryptionVersion,
       },
     });
   } catch (error) {
@@ -401,7 +402,6 @@ vaultRouter.post("/:vaultId/prepare-client", async (req, res, next) => {
 
     const metadata = {
       ...parsed.metadata,
-      encryptionVersion: "v2-client",
     };
 
     const arweavePayload = {
@@ -482,6 +482,55 @@ vaultRouter.post("/:vaultId/unlock", async (req, res, next) => {
     }
 
     const encryptionVersion = (metadata.encryptionVersion as string) || "v1-backend";
+
+    const triggerCandidate = (metadata.trigger || (metadata as unknown as { triggerRelease?: unknown }).triggerRelease) as
+      | { triggerType?: unknown; triggerDate?: unknown }
+      | undefined;
+    if (triggerCandidate && typeof triggerCandidate === "object") {
+      const triggerType = triggerCandidate.triggerType;
+      const triggerDate = triggerCandidate.triggerDate;
+
+      if (triggerType === "date") {
+        if (typeof triggerDate !== "string" || triggerDate.trim().length === 0) {
+          return res.status(400).json({
+            success: false,
+            error:
+              "This inheritance is set to open on a specific date, but we can't verify the date. Please contact support if this persists.",
+          });
+        }
+
+        const releaseDate = new Date(triggerDate);
+        if (Number.isNaN(releaseDate.getTime())) {
+          return res.status(400).json({
+            success: false,
+            error:
+              "This inheritance is set to open on a specific date, but we can't verify the date. Please contact support if this persists.",
+          });
+        }
+
+        if (Date.now() < releaseDate.getTime()) {
+          return res.status(403).json({
+            success: false,
+            error: "This inheritance isn't ready to be opened just yet.",
+            trigger: {
+              triggerType: "date",
+              triggerDate: releaseDate.toISOString(),
+            },
+          });
+        }
+      }
+
+      if (triggerType === "death") {
+        return res.status(403).json({
+          success: false,
+          error:
+            "This inheritance requires death certificate verification before it can be opened. Please ensure the verification process is complete.",
+          trigger: {
+            triggerType: "death",
+          },
+        });
+      }
+    }
 
     if (parsed.securityQuestionAnswers && parsed.securityQuestionAnswers.length > 0) {
       const limit = rateLimitVerify(req, vaultId);
@@ -596,13 +645,15 @@ vaultRouter.post("/:vaultId/unlock", async (req, res, next) => {
       }
     }
 
-    if (encryptionVersion === "v2-client") {
-      // Client-side encrypted vault: do not decrypt payload here
+    if (encryptionVersion === "v2-client" || encryptionVersion === "v3-envelope") {
       return res.status(200).json({
         success: true,
         message: "Access granted. Encrypted vault ready for client-side decryption.",
         encryptedVault,
-        metadata,
+        metadata: {
+          ...metadata,
+          encryptionVersion,
+        },
       });
     }
 

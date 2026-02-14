@@ -45,10 +45,12 @@ import { StorageSelector, MetaMaskWalletButton, WanderWalletButton } from "@/com
 import { Stepper } from "@/components/shared/stepper";
 import { connectWanderWallet } from "@/lib/wanderWallet";
 import {
-
   type ChainId,
+  getAvailableChains,
   getChainConfig,
   DEFAULT_CHAIN,
+  readBitxenDataIdByHash,
+  readBitxenDataRecord,
 } from "@/lib/metamaskWallet";
 
 import { getVaultById, updateVaultTxId } from "@/lib/vault-storage";
@@ -56,9 +58,12 @@ import { combineSharesClient } from "@/lib/shamirClient";
 import {
   deriveEffectiveAesKeyClient,
   decryptVaultPayloadClient,
+  decryptVaultPayloadRawKeyClient,
   encryptVaultPayloadClient,
   sha256Hex,
+  unwrapKeyClient,
   type EncryptedVaultClient,
+  type WrappedKeyV1,
 } from "@/lib/clientVaultCrypto";
 import { hashSecurityAnswerClient } from "@/lib/securityQuestionsClient";
 
@@ -134,6 +139,114 @@ async function verifyFractionKeyCommitmentsIfPresent(params: {
       throw new Error("Incorrect or mismatched Fraction Keys. Make sure all keys come from the same backup.");
     }
   }
+}
+
+function parseWrappedKeyV1(value: unknown): WrappedKeyV1 {
+  if (!value || typeof value !== "object") {
+    throw new Error("Invalid encrypted key format.");
+  }
+  const v = value as Record<string, unknown>;
+  if (v["schema"] !== "bitxen-wrapped-key-v1") {
+    throw new Error("Unsupported encrypted key schema.");
+  }
+  if (v["v"] !== 1) {
+    throw new Error("Unsupported encrypted key version.");
+  }
+  if (v["alg"] !== "AES-GCM") {
+    throw new Error("Unsupported encrypted key algorithm.");
+  }
+  if (typeof v["iv"] !== "string" || typeof v["cipherText"] !== "string" || typeof v["checksum"] !== "string") {
+    throw new Error("Invalid encrypted key fields.");
+  }
+  return v as unknown as WrappedKeyV1;
+}
+
+async function findLatestArweaveDocTxIdForVault(vaultId: string): Promise<string | null> {
+  try {
+    const safeVaultId = typeof vaultId === "string" ? vaultId.trim() : "";
+    if (!safeVaultId) return null;
+
+    const response = await fetch("https://arweave.net/graphql", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: `
+          query ($vaultId: String!) {
+            transactions(
+              first: 1
+              sort: HEIGHT_DESC
+              tags: [
+                { name: "Doc-Id", values: [$vaultId] }
+                { name: "App-Name", values: ["doc-storage"] }
+                { name: "Type", values: ["doc"] }
+              ]
+            ) {
+              edges { node { id } }
+            }
+          }
+        `,
+        variables: { vaultId: safeVaultId },
+      }),
+    });
+
+    if (!response.ok) return null;
+    const data = await response.json().catch(() => ({}));
+    const id = data?.data?.transactions?.edges?.[0]?.node?.id;
+    return typeof id === "string" && id.trim().length > 0 ? id.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchArweaveText(txId: string): Promise<string> {
+  const safe = typeof txId === "string" ? txId.trim() : "";
+  if (!safe) throw new Error("Missing Arweave transaction ID.");
+  const response = await fetch(`https://arweave.net/${safe}`, {
+    method: "GET",
+    headers: { Accept: "application/json, text/plain;q=0.9, */*;q=0.8" },
+  });
+  if (response.status === 202) {
+    throw new Error("Vault transaction is pending. Please retry in a few minutes.");
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to fetch from Arweave (HTTP ${response.status}).`);
+  }
+  return response.text();
+}
+
+async function discoverBitxenEncryptedKeyForVault(vaultId: string): Promise<{
+  chainKey: ChainId;
+  contractDataId: string;
+  contractEncryptedKey: string;
+} | null> {
+  const localVault = getVaultById(vaultId);
+  const txId = typeof localVault?.arweaveTxId === "string" && localVault.arweaveTxId.trim().length > 0
+    ? localVault.arweaveTxId.trim()
+    : await findLatestArweaveDocTxIdForVault(vaultId);
+  if (!txId) return null;
+
+  const text = await fetchArweaveText(txId);
+  const bytes = new TextEncoder().encode(text);
+  const latestHash = ("0x" + (await sha256Hex(bytes))).toLowerCase();
+
+  const chains = getAvailableChains();
+  for (const chainKey of chains) {
+    for (let v = 1; v <= 30; v += 1) {
+      const id = await readBitxenDataIdByHash({
+        chainId: chainKey,
+        dataHash: latestHash,
+        version: BigInt(v),
+      }).catch(() => null);
+      if (typeof id === "string" && id.startsWith("0x") && id.length === 66 && !/^0x0{64}$/i.test(id)) {
+        const record = await readBitxenDataRecord({ chainId: chainKey, contractDataId: id }).catch(() => null);
+        if (record && typeof record.currentDataHash === "string" && record.currentDataHash.toLowerCase() === latestHash) {
+          return { chainKey, contractDataId: id, contractEncryptedKey: record.encryptedKey };
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 export function VaultEditWizard({
@@ -214,6 +327,10 @@ export function VaultEditWizard({
   const encryptedVaultRef = useRef<EncryptedVaultClient | null>(null);
   const isPqcVaultRef = useRef(false);
   const fractionKeyCommitmentsRef = useRef<unknown>(null);
+  const envelopePayloadKeyRef = useRef<Uint8Array | null>(null);
+  const hybridChainRef = useRef<ChainId | null>(null);
+  const hybridContractDataIdRef = useRef<string | null>(null);
+  const hybridContractEncryptedKeyRef = useRef<string | null>(null);
 
   const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
@@ -251,6 +368,13 @@ export function VaultEditWizard({
     setLatestTxId(null);
     setHasPendingEdit(false);
     setCombinedKeyForAttachments(null);
+    encryptedVaultRef.current = null;
+    isPqcVaultRef.current = false;
+    fractionKeyCommitmentsRef.current = null;
+    envelopePayloadKeyRef.current = null;
+    hybridChainRef.current = null;
+    hybridContractDataIdRef.current = null;
+    hybridContractEncryptedKeyRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -956,8 +1080,8 @@ export function VaultEditWizard({
 
       if (encryptedVaultForDecrypt) {
         encryptedVaultRef.current = encryptedVaultForDecrypt;
-        const attachmentKey = await deriveEffectiveAesKeyClient(encryptedVaultForDecrypt, combinedKey);
-        setCombinedKeyForAttachments(attachmentKey);
+        const vaultKey = await deriveEffectiveAesKeyClient(encryptedVaultForDecrypt, combinedKey);
+        setCombinedKeyForAttachments(vaultKey);
       } else {
         encryptedVaultRef.current = null;
         setCombinedKeyForAttachments(combinedKey);
@@ -967,9 +1091,30 @@ export function VaultEditWizard({
         throw new Error("Unable to unlock vault. Encrypted payload is missing.");
       }
 
-      const decrypted = (data.decryptedVault
-        ? data.decryptedVault
-        : await decryptVaultPayloadClient(encryptedVaultForDecrypt as EncryptedVaultClient, combinedKey)) as VaultPayloadForEdit;
+      let decrypted: VaultPayloadForEdit;
+      if (encryptedVaultForDecrypt?.keyMode === "envelope") {
+        const vaultKey = encryptedVaultForDecrypt
+          ? await deriveEffectiveAesKeyClient(encryptedVaultForDecrypt, combinedKey)
+          : combinedKey;
+        const discovered = await discoverBitxenEncryptedKeyForVault(formState.vaultId);
+        if (!discovered) {
+          throw new Error("Unable to load encrypted key from Bitxen contract.");
+        }
+        hybridChainRef.current = discovered.chainKey;
+        hybridContractDataIdRef.current = discovered.contractDataId;
+        hybridContractEncryptedKeyRef.current = discovered.contractEncryptedKey;
+        const wrappedKey = parseWrappedKeyV1(JSON.parse(discovered.contractEncryptedKey) as unknown);
+        const payloadKey = await unwrapKeyClient(wrappedKey, vaultKey);
+        envelopePayloadKeyRef.current = payloadKey;
+        decrypted = (data.decryptedVault
+          ? data.decryptedVault
+          : await decryptVaultPayloadRawKeyClient(encryptedVaultForDecrypt, payloadKey)) as VaultPayloadForEdit;
+      } else {
+        envelopePayloadKeyRef.current = null;
+        decrypted = (data.decryptedVault
+          ? data.decryptedVault
+          : await decryptVaultPayloadClient(encryptedVaultForDecrypt as EncryptedVaultClient, combinedKey)) as VaultPayloadForEdit;
+      }
 
       setDecryptedVaultPayload(decrypted);
 
@@ -1119,20 +1264,20 @@ export function VaultEditWizard({
 
       const uploadEncryptedAttachment = shouldUploadAttachments
         ? async (
-            bytes: Uint8Array,
-            tags: Record<string, string>,
-            onProgress?: (progress: number) => void,
-          ) => {
-            const { dispatchToArweave, isWalletReady, connectWanderWallet } = await import("@/lib/wanderWallet");
-            if (!(await isWalletReady())) {
-              await connectWanderWallet();
-            }
-            const docName = tags["Doc-Name"] || "attachment";
-            const result = await dispatchToArweave(bytes, formState.vaultId, tags, onProgress, (status) => {
-              setPaymentStatus(`${status} (${docName})`);
-            });
-            return result.txId;
+          bytes: Uint8Array,
+          tags: Record<string, string>,
+          onProgress?: (progress: number) => void,
+        ) => {
+          const { dispatchToArweave, isWalletReady, connectWanderWallet } = await import("@/lib/wanderWallet");
+          if (!(await isWalletReady())) {
+            await connectWanderWallet();
           }
+          const docName = tags["Doc-Name"] || "attachment";
+          const result = await dispatchToArweave(bytes, formState.vaultId, tags, onProgress, (status) => {
+            setPaymentStatus(`${status} (${docName})`);
+          });
+          return result.txId;
+        }
         : null;
 
       const newDocumentsWithContent: Array<{
@@ -1214,13 +1359,13 @@ export function VaultEditWizard({
         const content = typeof storedAny?.content === "string" ? storedAny.content : "";
         const attachment =
           storedAny?.attachment &&
-          typeof storedAny.attachment.txId === "string" &&
-          typeof storedAny.attachment.iv === "string"
+            typeof storedAny.attachment.txId === "string" &&
+            typeof storedAny.attachment.iv === "string"
             ? {
-                txId: storedAny.attachment.txId,
-                iv: storedAny.attachment.iv,
-                checksum: typeof storedAny.attachment.checksum === "string" ? storedAny.attachment.checksum : "",
-              }
+              txId: storedAny.attachment.txId,
+              iv: storedAny.attachment.iv,
+              checksum: typeof storedAny.attachment.checksum === "string" ? storedAny.attachment.checksum : "",
+            }
             : null;
 
         if (!content && !attachment) {
@@ -1274,6 +1419,12 @@ export function VaultEditWizard({
         })),
       );
 
+      const contractEncryptedKeyForMetadata =
+        typeof hybridContractEncryptedKeyRef.current === "string" &&
+        hybridContractEncryptedKeyRef.current.trim().length > 0
+          ? hybridContractEncryptedKeyRef.current
+          : undefined;
+
       const metadata = {
         trigger: updatedPayload.triggerRelease ?? null,
         beneficiaryCount: 0,
@@ -1283,12 +1434,24 @@ export function VaultEditWizard({
             ? fractionKeyCommitmentsRef.current
             : undefined,
         willType: "editable",
-        encryptionVersion: "v2-client" as const,
+        ...(contractEncryptedKeyForMetadata ? { contractEncryptedKey: contractEncryptedKeyForMetadata } : {}),
+        encryptionVersion: envelopePayloadKeyRef.current ? ("v3-envelope" as const) : ("v2-client" as const),
       };
 
-      const encryptedVault = await encryptVaultPayloadClient(updatedPayload, encryptionKey);
+      const envelopePayloadKey = envelopePayloadKeyRef.current;
+      if (encryptedVaultTemplate?.keyMode === "envelope" && !envelopePayloadKey) {
+        throw new Error("Unable to edit: envelope key is missing. Please unlock again and retry.");
+      }
+
+      const encryptedVault = await encryptVaultPayloadClient(
+        updatedPayload,
+        envelopePayloadKey ?? encryptionKey,
+      );
       if (encryptedVaultTemplate?.pqcCipherText) {
         encryptedVault.pqcCipherText = encryptedVaultTemplate.pqcCipherText;
+      }
+      if (envelopePayloadKey) {
+        encryptedVault.keyMode = "envelope";
       }
 
       const response = await fetch("/api/vault/edit", {
@@ -1334,11 +1497,98 @@ export function VaultEditWizard({
             // "bitxenArweave" option now means Hybrid (Arweave + Contract)
             setPaymentStatus("Step 1/2: Confirm Arweave upload in Wander...");
             const { dispatchHybrid } = await import("@/lib/metamaskWallet");
-            const selectedChain = (formState.payment.selectedChain || DEFAULT_CHAIN) as ChainId;
+            const requestedChain = (formState.payment.selectedChain || DEFAULT_CHAIN) as ChainId;
+            let selectedChain = requestedChain;
+            let contractDataId: string | null = null;
+            let contractAddress: string | undefined;
+
+            const localVault =
+              getVaultById(String(data.details.vaultId || "").trim()) ||
+              getVaultById(formState.vaultId);
+            if (hybridChainRef.current) {
+              selectedChain = hybridChainRef.current;
+            } else if (typeof localVault?.blockchainChain === "string" && localVault.blockchainChain.trim().length > 0) {
+              selectedChain = localVault.blockchainChain.trim() as ChainId;
+            }
+            if (hybridContractDataIdRef.current) {
+              contractDataId = hybridContractDataIdRef.current;
+            } else if (typeof localVault?.contractDataId === "string" && localVault.contractDataId.startsWith("0x")) {
+              contractDataId = localVault.contractDataId;
+            }
+            if (typeof localVault?.contractAddress === "string" && localVault.contractAddress.trim().length > 0) {
+              contractAddress = localVault.contractAddress.trim();
+            }
+
+            if (!contractDataId) {
+              try {
+                const response = await fetch("https://arweave.net/graphql", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    query: `
+                      query ($vaultId: String!) {
+                        transactions(
+                          first: 1
+                          sort: HEIGHT_DESC
+                          tags: [
+                            { name: "Doc-Id", values: [$vaultId] }
+                            { name: "App-Name", values: ["doc-storage"] }
+                            { name: "Type", values: ["bitxen-index"] }
+                          ]
+                        ) {
+                          edges { node { id } }
+                        }
+                      }
+                    `,
+                    variables: { vaultId: String(data.details.vaultId || "").trim() },
+                  }),
+                });
+
+                if (response.ok) {
+                  const gql = await response.json().catch(() => ({}));
+                  const indexTxId = gql?.data?.transactions?.edges?.[0]?.node?.id;
+                  if (typeof indexTxId === "string" && indexTxId.trim().length > 0) {
+                    const indexResponse = await fetch(`https://arweave.net/${indexTxId.trim()}`);
+                    if (indexResponse.ok) {
+                      const indexJson = (await indexResponse.json().catch(() => null)) as unknown;
+                      const indexObj =
+                        indexJson && typeof indexJson === "object"
+                          ? (indexJson as {
+                            bitxen?: {
+                              contractDataId?: unknown;
+                              chainKey?: unknown;
+                              contractAddress?: unknown;
+                            };
+                          })
+                          : null;
+
+                      const idRaw = indexObj?.bitxen?.contractDataId;
+                      if (typeof idRaw === "string" && idRaw.startsWith("0x")) {
+                        contractDataId = idRaw;
+                      }
+                      const chainKeyRaw = indexObj?.bitxen?.chainKey;
+                      if (typeof chainKeyRaw === "string" && chainKeyRaw.trim().length > 0) {
+                        selectedChain = chainKeyRaw.trim() as ChainId;
+                      }
+                      const addrRaw = indexObj?.bitxen?.contractAddress;
+                      if (typeof addrRaw === "string" && addrRaw.trim().length > 0) {
+                        contractAddress = addrRaw.trim();
+                      }
+                    }
+                  }
+                }
+              } catch {
+              }
+            }
             const hybridResult = await dispatchHybrid(
               data.details.arweavePayload,
               data.details.vaultId,
-              selectedChain
+              selectedChain,
+              {
+                isPermanent: false,
+                ...(contractDataId ? { contractDataId } : {}),
+                ...(contractAddress ? { contractAddress } : {}),
+              }
             );
 
             // Map hybrid result to what we need
@@ -1346,6 +1596,8 @@ export function VaultEditWizard({
             txId = hybridResult.arweaveTxId;
             blockchainTxHash = hybridResult.contractTxHash;
             blockchainChain = selectedChain;
+            hybridChainRef.current = selectedChain;
+            hybridContractDataIdRef.current = hybridResult.contractDataId;
             setPaymentStatus(`Hybrid storage complete! Arweave + ${selectedChain.toUpperCase()}`);
           } else {
             // Default to Arweave/Wander
@@ -1388,7 +1640,11 @@ export function VaultEditWizard({
         const updated = updateVaultTxId(formState.vaultId, txId, {
           storageType: formState.storageType,
           blockchainTxHash: blockchainTxHash || undefined,
-          blockchainChain: blockchainChain || undefined
+          blockchainChain: blockchainChain || undefined,
+          contractDataId:
+            formState.storageType === "bitxenArweave"
+              ? (hybridContractDataIdRef.current ?? undefined)
+              : undefined,
         });
         if (updated) {
           console.log(`✅ Updated vault ${formState.vaultId} with new txId: ${txId}`);
@@ -2216,7 +2472,8 @@ export function VaultEditWizard({
                             const config = getChainConfig(chain);
                             window.open(`${config.blockExplorer}/tx/${latestTxId}`, "_blank");
                           } else {
-                            window.open(`/explorer/arweave/tx/${latestTxId}`, "_blank");
+                            const explorerBaseUrl = process.env.EXPLORER_BASE_URL || "http://localhost:3021";
+                            window.open(`${explorerBaseUrl}/explorer/arweave/tx/${latestTxId}`, "_blank");
                           }
                         }}
                       >

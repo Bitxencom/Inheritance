@@ -11,10 +11,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Search, Loader2, FileText, Check, Copy, Download } from "lucide-react";
+import { Search, CircleDashed, FileText, Download } from "lucide-react";
 import { AlertMessage } from "@/components/ui/alert-message";
 import { Stepper } from "@/components/shared/stepper";
-import { getVaultById, updateVaultTxId } from "@/lib/vault-storage";
+import { getVaultById } from "@/lib/vault-storage";
 import {
   InheritanceIdField,
   SecurityQuestionsField,
@@ -27,11 +27,19 @@ import { combineSharesClient } from "@/lib/shamirClient";
 import {
   deriveEffectiveAesKeyClient,
   decryptVaultPayloadClient,
-  encryptVaultPayloadClient,
+  decryptVaultPayloadRawKeyClient,
   sha256Hex,
+  unwrapKeyClient,
+  type WrappedKeyV1,
   type EncryptedVaultClient,
 } from "@/lib/clientVaultCrypto";
-import { getAvailableChains, type ChainId } from "@/lib/metamaskWallet";
+import {
+  getAvailableChains,
+  getChainKeyFromNumericChainId,
+  readBitxenDataIdByHash,
+  readBitxenDataRecord,
+  type ChainId,
+} from "@/lib/metamaskWallet";
 
 import type { ClaimFormState, ClaimSubmissionResult, VaultClaimWizardProps } from "./types";
 import { initialClaimFormState, claimSteps } from "./constants";
@@ -42,6 +50,404 @@ type FractionKeyCommitmentsV1 = {
   byShareId: Record<string, string>;
   createdAt?: string;
 };
+
+type BitxenIndexV1 = {
+  schema?: string;
+  vaultId?: string;
+  storageType?: string;
+  bitxen?: {
+    chainId?: number;
+    chainKey?: string;
+    contractAddress?: string;
+    contractDataId?: string;
+  };
+  arweave?: {
+    contentTxId?: string;
+  };
+};
+
+type UnlockResponseLike = {
+  success?: boolean;
+  encryptedVault?: unknown;
+  decryptedVault?: unknown;
+  metadata?: unknown;
+  legacy?: unknown;
+  message?: unknown;
+  error?: unknown;
+};
+
+async function findLatestArweaveDocTxIdForVault(vaultId: string): Promise<string | null> {
+  try {
+    const safeVaultId = typeof vaultId === "string" ? vaultId.trim() : "";
+    if (!safeVaultId) return null;
+
+    const response = await fetch("https://arweave.net/graphql", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: `
+          query ($vaultId: String!) {
+            transactions(
+              first: 1
+              sort: HEIGHT_DESC
+              tags: [
+                { name: "Doc-Id", values: [$vaultId] }
+                { name: "App-Name", values: ["doc-storage"] }
+                { name: "Type", values: ["doc"] }
+              ]
+            ) {
+              edges { node { id } }
+            }
+          }
+        `,
+        variables: { vaultId: safeVaultId },
+      }),
+    });
+
+    if (!response.ok) return null;
+    const data = await response.json().catch(() => ({}));
+    const id = data?.data?.transactions?.edges?.[0]?.node?.id;
+    return typeof id === "string" && id.trim().length > 0 ? id.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchArweaveText(txId: string): Promise<string> {
+  const safe = typeof txId === "string" ? txId.trim() : "";
+  if (!safe) throw new Error("Missing Arweave transaction ID.");
+  const response = await fetch(`https://arweave.net/${safe}`, {
+    method: "GET",
+    headers: { Accept: "application/json, text/plain;q=0.9, */*;q=0.8" },
+  });
+  if (response.status === 202) {
+    throw new Error("Vault transaction is pending. Please retry in a few minutes.");
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to fetch from Arweave (HTTP ${response.status}).`);
+  }
+  return response.text();
+}
+
+function parseArweaveTxIdFromStorageURI(storageURI: string): string | null {
+  const trimmed = typeof storageURI === "string" ? storageURI.trim() : "";
+  if (trimmed.startsWith("ar://")) {
+    const id = trimmed.slice(5).trim();
+    return id.length > 0 ? id : null;
+  }
+  return null;
+}
+
+async function tryLoadHybridEncryptedVault(params: {
+  vaultId: string;
+  onProgress?: (step: string, details?: string) => void;
+}): Promise<{ encryptedVault: EncryptedVaultClient; metadata: unknown | null; contractEncryptedKey: string } | null> {
+  params.onProgress?.("🔍 Searching for vault location...");
+
+  const latestDocTxId = await findLatestArweaveDocTxIdForVault(params.vaultId);
+  if (!latestDocTxId) return null;
+
+  params.onProgress?.("📥 Downloading vault metadata...");
+  const latestText = await fetchArweaveText(latestDocTxId);
+  const latestBytes = new TextEncoder().encode(latestText);
+  const latestHash = ("0x" + (await sha256Hex(latestBytes))).toLowerCase();
+
+  params.onProgress?.("🔗 Locating vault contract...");
+  let discovered:
+    | {
+      chainKey: ChainId;
+      contractDataId: string;
+      contractAddress?: string;
+      record?: Awaited<ReturnType<typeof readBitxenDataRecord>>;
+    }
+    | null = null;
+
+  const localVault = getVaultById(params.vaultId);
+  const localChainKeyRaw = localVault?.blockchainChain;
+  const localContractDataIdRaw = localVault?.contractDataId;
+  const localContractAddressRaw = localVault?.contractAddress;
+  if (
+    typeof localChainKeyRaw === "string" &&
+    typeof localContractDataIdRaw === "string" &&
+    localContractDataIdRaw.startsWith("0x")
+  ) {
+    const record = await readBitxenDataRecord({
+      chainId: localChainKeyRaw as ChainId,
+      contractDataId: localContractDataIdRaw,
+      ...(typeof localContractAddressRaw === "string" && localContractAddressRaw.trim().length > 0
+        ? { contractAddress: localContractAddressRaw.trim() }
+        : {}),
+    }).catch(() => null);
+    if (
+      record &&
+      typeof record.currentDataHash === "string" &&
+      record.currentDataHash.toLowerCase() === latestHash
+    ) {
+      discovered = {
+        chainKey: localChainKeyRaw as ChainId,
+        contractDataId: localContractDataIdRaw,
+        contractAddress:
+          typeof localContractAddressRaw === "string" && localContractAddressRaw.trim().length > 0
+            ? localContractAddressRaw.trim()
+            : undefined,
+        record,
+      };
+      params.onProgress?.("✅ Found vault from local cache", `Chain: ${localChainKeyRaw}`);
+    }
+  }
+
+  // Priority 2: Arweave Index Fallback
+  if (!discovered) {
+    params.onProgress?.("📄 Checking Arweave index...");
+
+    const indexTxId = await (async () => {
+      try {
+        const safeVaultId = typeof params.vaultId === "string" ? params.vaultId.trim() : "";
+        if (!safeVaultId) return null;
+        const response = await fetch("https://arweave.net/graphql", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query: `
+              query ($vaultId: String!) {
+                transactions(
+                  first: 1
+                  sort: HEIGHT_DESC
+                  tags: [
+                    { name: "Doc-Id", values: [$vaultId] }
+                    { name: "App-Name", values: ["doc-storage"] }
+                    { name: "Type", values: ["bitxen-index"] }
+                  ]
+                ) {
+                  edges { node { id } }
+                }
+              }
+            `,
+            variables: { vaultId: safeVaultId },
+          }),
+        });
+        if (!response.ok) return null;
+        const data = await response.json().catch(() => ({}));
+        const id = data?.data?.transactions?.edges?.[0]?.node?.id;
+        return typeof id === "string" && id.trim().length > 0 ? id.trim() : null;
+      } catch {
+        return null;
+      }
+    })();
+
+    if (!indexTxId) return null;
+
+    const indexText = await fetchArweaveText(indexTxId);
+    const indexJson = JSON.parse(indexText) as BitxenIndexV1;
+
+    const contractDataIdRaw = indexJson?.bitxen?.contractDataId;
+    const contractDataId =
+      typeof contractDataIdRaw === "string" && contractDataIdRaw.startsWith("0x") ? contractDataIdRaw : null;
+    if (!contractDataId) return null;
+
+    const chainKeyRaw = indexJson?.bitxen?.chainKey;
+    const numericChainId = typeof indexJson?.bitxen?.chainId === "number" ? indexJson.bitxen.chainId : null;
+    const inferredChainKey = numericChainId ? getChainKeyFromNumericChainId(numericChainId) : null;
+    const chainKey =
+      typeof chainKeyRaw === "string" && chainKeyRaw.trim().length > 0
+        ? (chainKeyRaw.trim() as ChainId)
+        : inferredChainKey;
+    if (!chainKey) return null;
+
+    const contractAddressRaw = indexJson?.bitxen?.contractAddress;
+    const contractAddress =
+      typeof contractAddressRaw === "string" && /^0x[a-fA-F0-9]{40}$/.test(contractAddressRaw.trim())
+        ? contractAddressRaw.trim()
+        : undefined;
+
+    discovered = { chainKey, contractDataId, contractAddress };
+    params.onProgress?.("✅ Found vault via Arweave index", `Chain: ${chainKey}`);
+  }
+
+  // Priority 3: Hash Scanning (stop early when found)
+  if (!discovered) {
+    params.onProgress?.("🔍 Scanning blockchain for vault...", "Checking multiple chains");
+    const chains = getAvailableChains();
+    for (const chainKey of chains) {
+      for (let versionNum = 1; versionNum <= 5; versionNum += 1) {
+        const id = await readBitxenDataIdByHash({
+          chainId: chainKey,
+          dataHash: latestHash,
+          version: BigInt(versionNum),
+        }).catch(() => null);
+        if (typeof id === "string" && id.startsWith("0x") && id.length === 66 && !/^0x0{64}$/i.test(id)) {
+          const record = await readBitxenDataRecord({ chainId: chainKey, contractDataId: id }).catch(() => null);
+          if (record && typeof record.currentDataHash === "string" && record.currentDataHash.toLowerCase() === latestHash) {
+            params.onProgress?.("✅ Found vault", `Chain: ${chainKey}, Version: ${versionNum}`);
+            discovered = { chainKey, contractDataId: id, record };
+            break;
+          }
+        }
+      }
+      if (discovered) break;
+    }
+  }
+
+  const record =
+    discovered.record ??
+    (await readBitxenDataRecord({
+      chainId: discovered.chainKey,
+      contractDataId: discovered.contractDataId,
+      ...(discovered.contractAddress ? { contractAddress: discovered.contractAddress } : {}),
+    }));
+
+  params.onProgress?.("🔒 Checking release permissions...");
+  const nowSec = BigInt(Math.floor(Date.now() / 1000));
+  const releaseDate = record.releaseDate;
+  const released = record.isReleased || releaseDate === BigInt(0) || nowSec >= releaseDate;
+  if (!released) {
+    const when = new Date(Number(releaseDate) * 1000);
+    throw new Error(`This inheritance isn't ready yet. Scheduled: ${when.toLocaleString()}.`);
+  }
+
+  params.onProgress?.("📥 Downloading encrypted vault...");
+  const finalTxId = parseArweaveTxIdFromStorageURI(record.currentStorageURI);
+  if (!finalTxId) {
+    throw new Error("Invalid storageURI from contract.");
+  }
+
+  const vaultText = await fetchArweaveText(finalTxId);
+  const vaultBytes = new TextEncoder().encode(vaultText);
+  const payloadHash = await sha256Hex(vaultBytes);
+  const expectedHash = record.currentDataHash.toLowerCase();
+  const actualHash = ("0x" + payloadHash).toLowerCase();
+  if (expectedHash !== actualHash) {
+    throw new Error("Vault payload integrity check failed (hash mismatch).");
+  }
+
+  params.onProgress?.("🔓 Processing encrypted data...");
+  const payloadJson = JSON.parse(vaultText) as Record<string, unknown>;
+  const obfuscatedEncrypted = payloadJson?.d;
+  const legacyEncrypted = payloadJson?.encryptedData;
+  const encryptedVault =
+    (obfuscatedEncrypted as EncryptedVaultClient | undefined) ??
+    (legacyEncrypted as EncryptedVaultClient | undefined) ??
+    null;
+
+  if (!encryptedVault) {
+    throw new Error("Encrypted payload not found in Arweave document.");
+  }
+
+  params.onProgress?.("✅ Vault loaded successfully");
+  return { encryptedVault, metadata: null, contractEncryptedKey: record.encryptedKey };
+}
+
+async function discoverBitxenEncryptedKeyForVault(vaultId: string): Promise<{
+  chainKey: ChainId;
+  contractDataId: string;
+  contractEncryptedKey: string;
+} | null> {
+  const safeVaultId = typeof vaultId === "string" ? vaultId.trim() : "";
+  if (!safeVaultId) return null;
+
+  const localVault = getVaultById(safeVaultId);
+  const localChainKeyRaw = localVault?.blockchainChain;
+  const localContractDataIdRaw = localVault?.contractDataId;
+  const localContractAddressRaw = localVault?.contractAddress;
+
+  if (
+    typeof localChainKeyRaw === "string" &&
+    typeof localContractDataIdRaw === "string" &&
+    localContractDataIdRaw.startsWith("0x")
+  ) {
+    const record = await readBitxenDataRecord({
+      chainId: localChainKeyRaw as ChainId,
+      contractDataId: localContractDataIdRaw,
+      ...(typeof localContractAddressRaw === "string" && localContractAddressRaw.trim().length > 0
+        ? { contractAddress: localContractAddressRaw.trim() }
+        : {}),
+    }).catch(() => null);
+    if (record?.encryptedKey && typeof record.encryptedKey === "string" && record.encryptedKey.trim().length > 0) {
+      return {
+        chainKey: localChainKeyRaw as ChainId,
+        contractDataId: localContractDataIdRaw,
+        contractEncryptedKey: record.encryptedKey,
+      };
+    }
+  }
+
+  const txId =
+    typeof localVault?.arweaveTxId === "string" && localVault.arweaveTxId.trim().length > 0
+      ? localVault.arweaveTxId.trim()
+      : await findLatestArweaveDocTxIdForVault(safeVaultId);
+  if (!txId) return null;
+
+  const text = await fetchArweaveText(txId);
+  const bytes = new TextEncoder().encode(text);
+  const latestHash = ("0x" + (await sha256Hex(bytes))).toLowerCase();
+
+  const chains = getAvailableChains();
+  for (const chainKey of chains) {
+    for (let v = 1; v <= 30; v += 1) {
+      const id = await readBitxenDataIdByHash({
+        chainId: chainKey,
+        dataHash: latestHash,
+        version: BigInt(v),
+      }).catch(() => null);
+      if (typeof id === "string" && id.startsWith("0x") && id.length === 66 && !/^0x0{64}$/i.test(id)) {
+        const record = await readBitxenDataRecord({ chainId: chainKey, contractDataId: id }).catch(() => null);
+        if (
+          record &&
+          typeof record.currentDataHash === "string" &&
+          record.currentDataHash.toLowerCase() === latestHash &&
+          typeof record.encryptedKey === "string" &&
+          record.encryptedKey.trim().length > 0
+        ) {
+          return { chainKey, contractDataId: id, contractEncryptedKey: record.encryptedKey };
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractWrappedKeyRawFromMetadata(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const meta = metadata as Record<string, unknown>;
+  const envelope = meta["envelope"];
+  const envelopeEncryptedKey =
+    envelope && typeof envelope === "object"
+      ? (envelope as Record<string, unknown>)["encryptedKey"]
+      : null;
+  const candidates = [
+    meta["contractEncryptedKey"],
+    meta["encryptedKey"],
+    meta["wrappedKey"],
+    envelopeEncryptedKey,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function parseWrappedKeyV1(value: unknown): WrappedKeyV1 {
+  if (!value || typeof value !== "object") {
+    throw new Error("Invalid encrypted key format.");
+  }
+  const v = value as Record<string, unknown>;
+  if (v["schema"] !== "bitxen-wrapped-key-v1") {
+    throw new Error("Unsupported encrypted key schema.");
+  }
+  if (v["v"] !== 1) {
+    throw new Error("Unsupported encrypted key version.");
+  }
+  if (v["alg"] !== "AES-GCM") {
+    throw new Error("Unsupported encrypted key algorithm.");
+  }
+  if (typeof v["iv"] !== "string" || typeof v["cipherText"] !== "string" || typeof v["checksum"] !== "string") {
+    throw new Error("Invalid encrypted key fields.");
+  }
+  return v as unknown as WrappedKeyV1;
+}
 
 function parseFractionKeyShareInfo(value: string): { bits: number; id: number } {
   const trimmed = value.trim();
@@ -116,6 +522,8 @@ export function VaultClaimWizard({
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
+  const [unlockProgress, setUnlockProgress] = useState<string>("");
+  const [unlockStep, setUnlockStep] = useState<string>("");
   const [securityQuestions, setSecurityQuestions] = useState<string[]>([]);
   const [verificationSuccess, setVerificationSuccess] = useState(false);
   const [isSecurityAnswersVerified, setIsSecurityAnswersVerified] = useState(false);
@@ -142,6 +550,19 @@ export function VaultClaimWizard({
   const [newerVersionAvailable, setNewerVersionAvailable] = useState(false);
   const [latestTxId, setLatestTxId] = useState<string | null>(null);
   const [hasPendingEdit, setHasPendingEdit] = useState(false);
+
+  const normalizeProgressText = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return "";
+    const cleaned = trimmed.replace(/^[^\p{L}\p{N}]+/u, "").trim();
+    return cleaned.length > 0 ? cleaned : trimmed;
+  };
+
+  const cleanedUnlockProgress = normalizeProgressText(unlockProgress);
+  const cleanedUnlockStep = normalizeProgressText(unlockStep);
+  const progressTitle = cleanedUnlockProgress || "Opening Inheritance...";
+  const progressSubtitle = cleanedUnlockStep || progressTitle;
+  const showFullLoading = isSubmitting && claimSteps[currentStep].key === "unlock";
 
   // Ref to track active fetch abort controller to prevent race conditions
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -621,6 +1042,8 @@ export function VaultClaimWizard({
 
   const submitClaim = async () => {
     setIsSubmitting(true);
+    setUnlockProgress("");
+    setUnlockStep("");
     setStepError(null);
     setFieldErrors({});
 
@@ -657,13 +1080,21 @@ export function VaultClaimWizard({
         throw new Error("Fraction keys do not match. Make sure all 3 fraction keys are correct.");
       }
 
+      const normalizedVaultId = formState.vaultId.trim();
+
+      let data: UnlockResponseLike | null = null;
+      let hybridContractEncryptedKey: string | null = null;
+
+      setUnlockProgress("🔐 Contacting unlock service...");
+      setUnlockStep("Validating access and preparing encrypted vault...");
+
       const response = await fetch("/api/vault/claim/unlock", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          vaultId: formState.vaultId.trim(),
+          vaultId: normalizedVaultId,
           securityQuestionAnswers: formState.securityQuestionAnswers,
           fractionKeys: {
             key1: formState.fractionKeys.key1,
@@ -674,46 +1105,82 @@ export function VaultClaimWizard({
         }),
       });
 
-      const data = await response.json();
+      data = (await response.json().catch(() => ({}))) as UnlockResponseLike;
 
-      if (!response.ok || !data.success) {
+      if (!response.ok || !data?.success) {
         let errorMessage =
-          data?.error ||
+          (typeof data?.error === "string" ? data.error : null) ||
           "We couldn't open the inheritance. Please check that all fraction keys are correct.";
-        const errorType = detectErrorType(errorMessage);
 
         if (errorMessage.toLowerCase().includes("invalid key length")) {
           errorMessage = "One or more Fraction Keys appear to be incorrect.";
         }
 
-        if (errorType === "fractionKeys") {
-          const fractionKeysStepIndex = claimSteps.findIndex(
-            (step) => step.key === "fractionKeys",
-          );
-          if (fractionKeysStepIndex !== -1) {
-            setCurrentStep(fractionKeysStepIndex);
-            setStepError(errorMessage);
-            setIsSubmitting(false);
-            return;
-          }
-        } else if (errorType === "securityQuestions") {
-          const verificationStepIndex = claimSteps.findIndex(
-            (step) => step.key === "verification",
-          );
-          if (verificationStepIndex !== -1) {
-            setCurrentStep(verificationStepIndex);
-            setStepError(errorMessage);
-            setIsSubmitting(false);
-            return;
-          }
-        }
+        const lower = errorMessage.toLowerCase();
+        const isNotFoundOnChain =
+          lower.includes("not found on blockchain storage") ||
+          lower.includes("not found") && lower.includes("blockchain");
+        const isMissingTxId =
+          lower.includes("arweave tx") && lower.includes("missing") ||
+          lower.includes("missing arweave");
 
-        throw new Error(errorMessage);
+        if (isNotFoundOnChain || isMissingTxId) {
+          const hybrid = await tryLoadHybridEncryptedVault({
+            vaultId: normalizedVaultId,
+            onProgress: (step, details) => {
+              setUnlockProgress(step);
+              setUnlockStep(details || step);
+            },
+          });
+          if (hybrid) {
+            data = {
+              success: true,
+              encryptedVault: hybrid.encryptedVault,
+              metadata: hybrid.metadata,
+              message: "Inheritance successfully opened.",
+            };
+            hybridContractEncryptedKey = hybrid.contractEncryptedKey;
+          } else {
+            throw new Error(errorMessage);
+          }
+        } else {
+          const errorType = detectErrorType(errorMessage);
+
+          if (errorType === "fractionKeys") {
+            const fractionKeysStepIndex = claimSteps.findIndex(
+              (step) => step.key === "fractionKeys",
+            );
+            if (fractionKeysStepIndex !== -1) {
+              setCurrentStep(fractionKeysStepIndex);
+              setStepError(errorMessage);
+              setIsSubmitting(false);
+              return;
+            }
+          } else if (errorType === "securityQuestions") {
+            const verificationStepIndex = claimSteps.findIndex(
+              (step) => step.key === "verification",
+            );
+            if (verificationStepIndex !== -1) {
+              setCurrentStep(verificationStepIndex);
+              setStepError(errorMessage);
+              setIsSubmitting(false);
+              return;
+            }
+          }
+
+          throw new Error(errorMessage);
+        }
+      }
+
+      if (!data) {
+        throw new Error("Unable to unlock vault.");
       }
 
       try {
+        setUnlockProgress("🔎 Verifying fraction keys...");
+        setUnlockStep("Checking commitments and integrity...");
         await verifyFractionKeyCommitmentsIfPresent({
-          metadata: data.metadata,
+          metadata: data?.metadata,
           fractionKeys: fractionKeysArray,
         });
       } catch (error) {
@@ -742,114 +1209,58 @@ export function VaultClaimWizard({
       };
 
       if (data.decryptedVault) {
+        setUnlockProgress("✅ Vault decrypted (server)");
+        setUnlockStep("Preparing your documents...");
         decrypted = data.decryptedVault as typeof decrypted;
         setCombinedKeyForAttachments(combinedKey);
       } else {
         if (!data.encryptedVault) {
           throw new Error("Unable to unlock vault. Encrypted payload is missing.");
         }
+        setUnlockProgress("🔓 Decrypting vault (client-side)...");
+        setUnlockStep("Processing encrypted payload...");
         const encryptedVaultForDecrypt = data.encryptedVault as EncryptedVaultClient;
         const attachmentKey = await deriveEffectiveAesKeyClient(encryptedVaultForDecrypt, combinedKey);
         setCombinedKeyForAttachments(attachmentKey);
         try {
-          decrypted = (await decryptVaultPayloadClient(
-            encryptedVaultForDecrypt,
-            combinedKey,
-          )) as typeof decrypted;
-        } catch {
-          throw new Error("Fraction keys do not match. Make sure all 3 fraction keys are correct.");
-        }
-      }
-
-      if (data.decryptedVault && data.legacy?.isPqcEnabled === true) {
-        const localVaultForMigration = getVaultById(formState.vaultId.trim());
-        if (localVaultForMigration) {
-          try {
-            const encryptedVaultTemplate = (data.encryptedVault as EncryptedVaultClient | undefined) ?? null;
-            if (!encryptedVaultTemplate?.pqcCipherText) {
-              throw new Error("PQC vault detected but pqcCipherText is missing. Please retry unlock and try again.");
-            }
-            const encryptionKey = encryptedVaultTemplate
-              ? await deriveEffectiveAesKeyClient(encryptedVaultTemplate, combinedKey)
-              : combinedKey;
-            const encryptedVaultForUpload = await encryptVaultPayloadClient(decrypted, encryptionKey);
-            if (encryptedVaultTemplate?.pqcCipherText) {
-              encryptedVaultForUpload.pqcCipherText = encryptedVaultTemplate.pqcCipherText;
-            }
-
-            const metadataForUpload = {
-              trigger: data.metadata?.trigger ?? null,
-              beneficiaryCount:
-                typeof data.metadata?.beneficiaryCount === "number" ? data.metadata.beneficiaryCount : 0,
-              securityQuestionHashes: Array.isArray(data.metadata?.securityQuestionHashes)
-                ? data.metadata.securityQuestionHashes
-                : [],
-              fractionKeyCommitments:
-                data.metadata?.fractionKeyCommitments && typeof data.metadata.fractionKeyCommitments === "object"
-                  ? data.metadata.fractionKeyCommitments
-                  : undefined,
-              willType:
-                typeof data.metadata?.willType === "string"
-                  ? data.metadata.willType
-                  : (decrypted.willDetails as { willType?: string } | undefined)?.willType || "one-time",
-              encryptionVersion: "v2-client" as const,
-            };
-
-            const prepareResponse = await fetch("/api/vault/prepare-client", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                vaultId: formState.vaultId.trim(),
-                encryptedVault: encryptedVaultForUpload,
-                metadata: metadataForUpload,
-              }),
-            });
-
-            const prepareData = await prepareResponse.json().catch(() => ({}));
-            if (prepareResponse.ok && prepareData?.success && prepareData?.details?.arweavePayload) {
-              let nextTxId: string | null = null;
-              let blockchainTxHash: string | undefined;
-              let blockchainChain: string | undefined;
-
-              if (localVaultForMigration.storageType === "bitxenArweave") {
-                const { dispatchHybrid } = await import("@/lib/metamaskWallet");
-                const availableChains = getAvailableChains();
-                const chainCandidate = localVaultForMigration.blockchainChain;
-                const selectedChain: ChainId = availableChains.includes(chainCandidate as ChainId)
-                  ? (chainCandidate as ChainId)
-                  : "bsc";
-                const hybridResult = await dispatchHybrid(
-                  prepareData.details.arweavePayload,
-                  prepareData.details.vaultId,
-                  selectedChain,
-                  false,
-                );
-                nextTxId = hybridResult.arweaveTxId;
-                blockchainTxHash = hybridResult.contractTxHash;
-                blockchainChain = selectedChain;
-              } else {
-                const { dispatchToArweave } = await import("@/lib/wanderWallet");
-                const dispatchResult = await dispatchToArweave(
-                  prepareData.details.arweavePayload,
-                  prepareData.details.vaultId,
-                );
-                nextTxId = dispatchResult.txId;
-              }
-
-              if (nextTxId) {
-                updateVaultTxId(formState.vaultId.trim(), nextTxId, {
-                  storageType: localVaultForMigration.storageType,
-                  blockchainTxHash,
-                  blockchainChain,
-                });
-                setLatestTxId(nextTxId);
+          if (encryptedVaultForDecrypt.keyMode === "envelope") {
+            let wrappedKeyRaw = hybridContractEncryptedKey;
+            if (typeof wrappedKeyRaw !== "string" || wrappedKeyRaw.trim().length === 0) {
+              const discovered = await discoverBitxenEncryptedKeyForVault(normalizedVaultId);
+              if (discovered) {
+                wrappedKeyRaw = discovered.contractEncryptedKey;
               }
             }
-          } catch (error) {
-            console.error("Failed to migrate legacy PQC vault to v2-client:", error);
+            if (typeof wrappedKeyRaw !== "string" || wrappedKeyRaw.trim().length === 0) {
+              const fromMetadata = extractWrappedKeyRawFromMetadata(data.metadata);
+              if (fromMetadata) {
+                wrappedKeyRaw = fromMetadata;
+              }
+            }
+            if (typeof wrappedKeyRaw !== "string" || wrappedKeyRaw.trim().length === 0) {
+              throw new Error("Encrypted key not found (contract/metadata).");
+            }
+            const wrappedKey = parseWrappedKeyV1(JSON.parse(wrappedKeyRaw) as unknown);
+            const vaultKey = attachmentKey;
+            const payloadKey = await unwrapKeyClient(wrappedKey, vaultKey);
+            decrypted = (await decryptVaultPayloadRawKeyClient(
+              encryptedVaultForDecrypt,
+              payloadKey,
+            )) as typeof decrypted;
+          } else {
+            decrypted = (await decryptVaultPayloadClient(
+              encryptedVaultForDecrypt,
+              combinedKey,
+            )) as typeof decrypted;
           }
+        } catch (e) {
+          if (e instanceof Error) {
+            const msg = e.message.toLowerCase();
+            if (msg.includes("encrypted key") || msg.includes("unsupported encrypted key") || msg.includes("invalid encrypted key")) {
+              throw e;
+            }
+          }
+          throw new Error("Fraction keys do not match. Make sure all 3 fraction keys are correct.");
         }
       }
 
@@ -865,9 +1276,9 @@ export function VaultClaimWizard({
             ((doc as { content?: string } | undefined)?.content || "").trim().length > 0,
           hasAttachment:
             typeof (doc as { attachment?: { txId?: unknown; iv?: unknown } } | undefined)?.attachment?.txId ===
-              "string" &&
+            "string" &&
             typeof (doc as { attachment?: { txId?: unknown; iv?: unknown } } | undefined)?.attachment?.iv ===
-              "string",
+            "string",
         }))
         .filter((item) => !item.hasContent && !item.hasAttachment);
 
@@ -890,7 +1301,7 @@ export function VaultClaimWizard({
           size: doc.size,
           type: doc.type,
         })),
-        message: data.message || "Inheritance successfully opened.",
+        message: typeof data.message === "string" ? data.message : "Inheritance successfully opened.",
       };
 
       // Save result to state for display
@@ -1506,13 +1917,18 @@ ${formState.vaultContent || "No Content"}
 
   const buttonContent = (() => {
     if (isSubmitting) {
-      return "Opening Inheritance...";
+      return (
+        <div className="flex items-center gap-2">
+          <CircleDashed className="size-4 animate-spin" />
+          <span>{progressTitle}</span>
+        </div>
+      );
     }
 
     if (isVerifying || isVerifyingFractionKeys) {
       return (
         <div className="flex items-center gap-2">
-          <Loader2 className="size-4 animate-spin" />
+          <CircleDashed className="size-4 animate-spin" />
           Checking...
         </div>
       );
@@ -1549,9 +1965,14 @@ ${formState.vaultContent || "No Content"}
     }
   })();
 
-  const content = (
+  const content = showFullLoading ? (
+    <div className="flex min-h-[400px] w-full flex-col items-center justify-center gap-2 rounded-xl bg-background text-center">
+      <CircleDashed className="h-10 w-10 animate-spin text-muted-foreground" />
+      <p className="text-base font-medium">Processing...</p>
+      <p className="text-sm text-muted-foreground">{progressSubtitle}</p>
+    </div>
+  ) : (
     <div className="space-y-6">
-      {/* Progress Steps - Responsive */}
       <div className={initialData || claimSteps[currentStep].key === "success" ? "hidden" : ""}>
         <Stepper steps={claimSteps} currentStep={currentStep} />
       </div>
@@ -1580,6 +2001,21 @@ ${formState.vaultContent || "No Content"}
             The blockchain has a newer version of this inheritance (TxID: {latestTxId?.substring(0, 8)}...).
             However, your browser is still seeing the older version. This usually resolves automatically in a few minutes.
           </p>
+        </div>
+      )}
+
+      {/* Progress Indicator */}
+      {isSubmitting && unlockProgress && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm dark:border-blue-800 dark:bg-blue-950 mb-4">
+          <p className="font-medium text-blue-700 dark:text-blue-300 flex items-center gap-2">
+            <CircleDashed className="size-4 animate-spin" />
+            {progressTitle}
+          </p>
+          {cleanedUnlockStep && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {cleanedUnlockStep}
+            </p>
+          )}
         </div>
       )}
 

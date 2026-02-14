@@ -802,6 +802,37 @@ export async function dispatchToArweave(
   }
 }
 
+export async function dispatchBitxenIndexToArweave(params: {
+  vaultId: string;
+  contentTxId: string;
+  chainKey: string;
+  chainId: number;
+  contractAddress: string;
+  contractDataId: string;
+}): Promise<DispatchResult> {
+  const safeVaultId = typeof params.vaultId === "string" ? params.vaultId.trim() : "";
+  if (!safeVaultId) {
+    throw new Error("Vault ID is required");
+  }
+
+  const doc = {
+    schema: "bitxen-index-v1",
+    vaultId: safeVaultId,
+    storageType: "bitxenArweave",
+    bitxen: {
+      chainId: params.chainId,
+      chainKey: params.chainKey,
+      contractAddress: params.contractAddress,
+      contractDataId: params.contractDataId,
+    },
+    arweave: {
+      contentTxId: params.contentTxId,
+    },
+  };
+
+  return dispatchToArweave(doc, safeVaultId, { Type: "bitxen-index" });
+}
+
 /**
  * Check transaction status from Arweave
  */

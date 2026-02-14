@@ -26,8 +26,10 @@ import { Stepper } from "@/components/shared/stepper";
 import type { ChainId } from "@/lib/metamaskWallet";
 import {
   encapsulatePqcClient,
+  generateVaultKey,
   encryptVaultPayloadClient,
   generatePqcKeyPairClient,
+  wrapKeyClient,
   type PqcKeyPairClient,
 } from "@/lib/clientVaultCrypto";
 import { splitKeyClient } from "@/lib/shamirClient";
@@ -565,10 +567,14 @@ export function VaultCreationWizard({
         onStatus: (status) => setStepStatus(status),
       });
 
-      const encryptedVault = await encryptVaultPayloadClient(payload, vaultKey);
-
+      const payloadKey = generateVaultKey();
+      const encryptedVault = await encryptVaultPayloadClient(payload, payloadKey);
       encryptedVault.pqcCipherText = pqcCipherText;
       encryptedVault.alg = "AES-GCM";
+      encryptedVault.keyMode = "envelope";
+
+      const wrappedKey = await wrapKeyClient(payloadKey, vaultKey);
+      const contractEncryptedKey = JSON.stringify(wrappedKey);
 
       const fractionKeys = splitKeyClient(pqcKeyPair.secretKey);
       const fractionKeyCommitments = await buildFractionKeyCommitmentsV1(fractionKeys);
@@ -586,7 +592,8 @@ export function VaultCreationWizard({
         securityQuestionHashes,
         willType: payload.willDetails.willType,
         fractionKeyCommitments,
-        encryptionVersion: "v2-client" as const,
+        contractEncryptedKey,
+        encryptionVersion: "v3-envelope" as const,
       };
 
       const prepareResponse = await fetch("/api/vault/prepare-client", {
@@ -606,8 +613,8 @@ export function VaultCreationWizard({
       if (!prepareResponse.ok || !prepareData.success || !prepareData.details) {
         throw new Error(
           prepareData.error ||
-            prepareData.message ||
-            "We couldn't prepare the inheritance. Please try again.",
+          prepareData.message ||
+          "We couldn't prepare the inheritance. Please try again.",
         );
       }
 
@@ -618,6 +625,7 @@ export function VaultCreationWizard({
 
       let blockchainTxHash: string | undefined;
       let blockchainChain: string | undefined;
+      let contractDataId: string | undefined;
 
       if (effectiveStorageType === "arweave") {
         setPaymentStatus("Step 1/2: Confirm transaction in Wander Wallet...");
@@ -667,17 +675,32 @@ export function VaultCreationWizard({
       } else if (effectiveStorageType === "bitxenArweave") {
         // Hybrid: Arweave storage + Bitxen contract registry
         // We use the "bitxenArweave" storage type name but "hybrid" implementation under the hood
-        setPaymentStatus("Step 1/2: Confirm Arweave upload in Wander...");
+        setPaymentStatus("Confirm Arweave upload in Wander...");
         const { dispatchHybrid } = await import("@/lib/metamaskWallet");
         const selectedChain = (effectiveChain || "bsc") as ChainId;
-        const hybridResult = await dispatchHybrid(arweavePayload, vaultId, selectedChain, false, (status) => {
-          setPaymentStatus(status);
+        const isPermanent = payload.willDetails.willType === "one-time";
+        const triggerMs =
+          payload.triggerRelease.triggerType === "date" && payload.triggerRelease.triggerDate
+            ? Date.parse(payload.triggerRelease.triggerDate)
+            : NaN;
+        const releaseDate = Number.isFinite(triggerMs)
+          ? BigInt(Math.floor(triggerMs / 1000))
+          : BigInt(0);
+
+        const hybridResult = await dispatchHybrid(arweavePayload, vaultId, selectedChain, {
+          isPermanent,
+          releaseDate,
+          encryptedKey: contractEncryptedKey,
+          onProgress: (status) => {
+            setPaymentStatus(status);
+          },
         });
 
         // Use contract tx hash for display
         txId = hybridResult.arweaveTxId;
         blockchainTxHash = hybridResult.contractTxHash;
         blockchainChain = selectedChain;
+        contractDataId = hybridResult.contractDataId;
         setPaymentStatus(`Hybrid storage complete! Arweave + ${selectedChain.toUpperCase()}`);
       } else {
         throw new Error("Invalid storage type: " + effectiveStorageType);
@@ -688,6 +711,7 @@ export function VaultCreationWizard({
         arweaveTxId: txId,
         blockchainTxHash,
         blockchainChain,
+        contractDataId,
         message: "Your inheritance has been successfully created and stored on blockchain.",
         fractionKeys: fractionKeys || [],
         willType: payload.willDetails.willType,
@@ -714,7 +738,10 @@ export function VaultCreationWizard({
           triggerDate: resultData.triggerDate,
           storageType: resultData.storageType as "arweave" | "bitxenArweave",
           blockchainTxHash: resultData.blockchainTxHash,
-          blockchainChain: resultData.blockchainChain
+          blockchainChain: resultData.blockchainChain,
+          contractDataId: typeof (resultData as { contractDataId?: unknown }).contractDataId === "string"
+            ? ((resultData as { contractDataId?: string }).contractDataId as string)
+            : undefined,
         });
       } catch (e) {
         console.error("Failed to save vault to local storage:", e);
