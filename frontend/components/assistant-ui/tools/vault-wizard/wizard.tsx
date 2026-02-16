@@ -608,7 +608,28 @@ export function VaultCreationWizard({
         }),
       });
 
-      const prepareData = await prepareResponse.json();
+      const prepareRaw = await prepareResponse.text();
+      type PrepareClientResponse = {
+        success?: boolean;
+        error?: string;
+        message?: string;
+        details?: {
+          vaultId?: string;
+          arweavePayload?: unknown;
+          encryptionVersion?: string;
+        } | null;
+      };
+
+      const prepareData: PrepareClientResponse = (() => {
+        try {
+          return JSON.parse(prepareRaw) as PrepareClientResponse;
+        } catch {
+          return {
+            success: false,
+            error: prepareRaw || `Non-JSON response (HTTP ${prepareResponse.status}).`,
+          };
+        }
+      })();
 
       if (!prepareResponse.ok || !prepareData.success || !prepareData.details) {
         throw new Error(
@@ -618,7 +639,7 @@ export function VaultCreationWizard({
         );
       }
 
-      const { details } = prepareData;
+      const details = prepareData.details as NonNullable<PrepareClientResponse["details"]>;
       const { arweavePayload } = details;
 
       let txId: string;
