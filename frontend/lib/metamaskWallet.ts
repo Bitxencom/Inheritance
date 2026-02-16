@@ -201,9 +201,10 @@ export const DEFAULT_CHAIN: ChainId = "bsc";
 // Get list of available chains
 export function getAvailableChains(): ChainId[] {
   const chains = Object.keys(CHAIN_CONFIG) as ChainId[];
-  if (process.env.NODE_ENV === "production") {
-    return chains.filter((chainId) => chainId !== "bscTestnet");
-  }
+  // Temporary disable
+  // if (process.env.NODE_ENV === "production") {
+  //   return chains.filter((chainId) => chainId !== "bscTestnet");
+  // }
   return chains;
 }
 
