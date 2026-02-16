@@ -5,6 +5,7 @@ import Image from "next/image";
 import { Loader2, Check, Globe, Link2, Coins, Zap, Shield } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import {
   connectMetaMask,
@@ -146,8 +147,87 @@ export function UnifiedPaymentSelector({
     return 1;
   };
 
+  const normalizedStatus = (paymentStatus || "").toLowerCase();
+
+  const isArweaveConfirming =
+    normalizedStatus.includes("waiting for wallet") ||
+    normalizedStatus.includes("wallet signature") ||
+    normalizedStatus.includes("signature") ||
+    normalizedStatus.includes("confirm transaction") ||
+    normalizedStatus.includes("confirm in wander") ||
+    normalizedStatus.includes("confirm arweave") ||
+    normalizedStatus.includes("wallet confirmation") ||
+    normalizedStatus.includes("preparing arweave transaction") ||
+    normalizedStatus.includes("preparing upload");
+
+  const isArweaveUploadDialogOpen =
+    isProcessing &&
+    Boolean(paymentStatus) &&
+    ((selectedMode === "wander" &&
+      !isArweaveConfirming &&
+      (paymentPhase === "upload" ||
+        (typeof paymentProgress === "number" && paymentProgress >= 0 && paymentProgress < 100) ||
+        normalizedStatus.includes("uploading to arweave") ||
+        normalizedStatus.includes("uploading to arweave (relay)") ||
+        normalizedStatus.includes("upload chunk") ||
+        normalizedStatus.includes("resuming arweave upload"))) ||
+      (selectedMode === "hybrid" &&
+        !isArweaveConfirming &&
+        normalizedStatus.includes("step 1/2:") &&
+        (normalizedStatus.includes("uploading to arweave") ||
+          normalizedStatus.includes("uploading to arweave (relay)") ||
+          normalizedStatus.includes("upload chunk") ||
+          normalizedStatus.includes("resuming arweave upload"))));
+
+  useEffect(() => {
+    if (!isArweaveUploadDialogOpen) return;
+
+    const handler = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", handler);
+    return () => {
+      window.removeEventListener("beforeunload", handler);
+    };
+  }, [isArweaveUploadDialogOpen]);
+
   return (
     <div className="space-y-6">
+      <Dialog open={isArweaveUploadDialogOpen} onOpenChange={() => {}}>
+        <DialogContent showCloseButton={false} className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Loader2 className="h-5 w-5 animate-spin" />
+              Uploading to Blockchain Storage
+            </DialogTitle>
+            <DialogDescription>
+              Your data is being uploaded to Blockchain Storage. Please keep this tab open until it finishes.
+            </DialogDescription>
+          </DialogHeader>
+          {paymentStatus && (
+            <p className="text-sm text-muted-foreground text-center">
+              {paymentStatus}
+            </p>
+          )}
+          {typeof paymentProgress === "number" && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>Upload progress</span>
+                <span className="font-medium">{Math.max(0, Math.min(100, Math.round(paymentProgress)))}%</span>
+              </div>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-purple-600 transition-[width] duration-200"
+                  style={{ width: `${Math.max(0, Math.min(100, paymentProgress))}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       {/* Storage Type Selection */}
       <div className="space-y-3">
         <p className="text-sm font-medium mt-3">Choose Your Storage Type</p>

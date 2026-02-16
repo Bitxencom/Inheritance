@@ -977,7 +977,16 @@ export async function dispatchHybrid(
     await connectWanderWallet();
   }
 
-  const arweaveResult = await dispatchToArweave(arweavePayload, vaultId);
+  if (onProgress) onProgress("Step 1/2: Confirm in Wander (Arweave)...");
+  const arweaveResult = await dispatchToArweave(
+    arweavePayload,
+    vaultId,
+    undefined,
+    undefined,
+    (status) => {
+      if (onProgress) onProgress(`Step 1/2: ${status}`);
+    },
+  );
   const arweaveTxId = arweaveResult.txId;
 
   console.log(`✅ Arweave upload complete: ${arweaveTxId}`);
