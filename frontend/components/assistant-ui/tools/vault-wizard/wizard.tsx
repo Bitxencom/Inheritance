@@ -29,6 +29,7 @@ import {
   generateVaultKey,
   encryptVaultPayloadClient,
   generatePqcKeyPairClient,
+  prepareArweavePayloadClient,
   wrapKeyClient,
   type PqcKeyPairClient,
 } from "@/lib/clientVaultCrypto";
@@ -596,51 +597,11 @@ export function VaultCreationWizard({
         encryptionVersion: "v3-envelope" as const,
       };
 
-      const prepareResponse = await fetch("/api/vault/prepare-client", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          vaultId,
-          encryptedVault,
-          metadata,
-        }),
+      const arweavePayload = await prepareArweavePayloadClient({
+        vaultId,
+        encryptedVault,
+        metadata,
       });
-
-      const prepareRaw = await prepareResponse.text();
-      type PrepareClientResponse = {
-        success?: boolean;
-        error?: string;
-        message?: string;
-        details?: {
-          vaultId?: string;
-          arweavePayload?: unknown;
-          encryptionVersion?: string;
-        } | null;
-      };
-
-      const prepareData: PrepareClientResponse = (() => {
-        try {
-          return JSON.parse(prepareRaw) as PrepareClientResponse;
-        } catch {
-          return {
-            success: false,
-            error: prepareRaw || `Non-JSON response (HTTP ${prepareResponse.status}).`,
-          };
-        }
-      })();
-
-      if (!prepareResponse.ok || !prepareData.success || !prepareData.details) {
-        throw new Error(
-          prepareData.error ||
-          prepareData.message ||
-          "We couldn't prepare the inheritance. Please try again.",
-        );
-      }
-
-      const details = prepareData.details as NonNullable<PrepareClientResponse["details"]>;
-      const { arweavePayload } = details;
 
       let txId: string;
 

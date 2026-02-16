@@ -60,6 +60,7 @@ import {
   decryptVaultPayloadClient,
   decryptVaultPayloadRawKeyClient,
   encryptVaultPayloadClient,
+  prepareArweavePayloadClient,
   sha256Hex,
   unwrapKeyClient,
   type EncryptedVaultClient,
@@ -1349,6 +1350,13 @@ export function VaultEditWizard({
       if (!basePayload || typeof basePayload !== "object") {
         throw new Error("Unable to edit: vault content is not loaded.");
       }
+      if (basePayload.willDetails?.willType === "one-time") {
+        const errorMessage = "This inheritance cannot be edited because it is one-time (permanent).";
+        setCurrentStep(0);
+        setStepError(errorMessage);
+        setIsSubmitting(false);
+        return;
+      }
 
       const baseDocuments = basePayload.willDetails?.documents ?? [];
       const existingDocumentsWithContent = formState.willDetails.existingDocuments.map((doc) => {
@@ -1454,36 +1462,21 @@ export function VaultEditWizard({
         encryptedVault.keyMode = "envelope";
       }
 
-      const response = await fetch("/api/vault/edit", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          vaultId: formState.vaultId,
-          encryptedVault,
-          metadata,
-        }),
+      const arweavePayload = await prepareArweavePayloadClient({
+        vaultId: formState.vaultId,
+        encryptedVault,
+        metadata,
       });
 
-      const data = await response.json();
-
-      if (!response.ok || !data.success) {
-        const errorMessage =
-          data?.error ||
-          "We couldn't update the inheritance. Please check that all details are correct.";
-
-        // If error 403, inheritance cannot be edited (willType === "one-time")
-        if (response.status === 403) {
-          // Go back to first step and show clear error
-          setCurrentStep(0);
-          setStepError(errorMessage);
-          setIsSubmitting(false);
-          return;
-        }
-
-        throw new Error(errorMessage);
-      }
+      const data = {
+        success: true,
+        shouldDispatch: true,
+        message: "Vault ready for upload.",
+        details: {
+          vaultId: formState.vaultId,
+          arweavePayload,
+        },
+      };
 
       let txId: string | undefined;
 

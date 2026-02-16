@@ -31,6 +31,14 @@ export type WrappedKeyV1 = {
   cipherText: string;
 };
 
+export type ObfuscatedArweavePayloadClient = {
+  id: string;
+  v: 1;
+  t: "d";
+  m: string;
+  d: EncryptedVaultClient;
+};
+
 function getCrypto(): Crypto {
   if (typeof window === "undefined" || !window.crypto || !window.crypto.subtle) {
     throw new Error("Web Crypto API is not available in this environment");
@@ -86,6 +94,75 @@ function fromBase64(data: string): Uint8Array {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
+}
+
+async function deriveKeyFromVaultIdClient(vaultId: string): Promise<Uint8Array> {
+  const crypto = getCrypto();
+  const salt = new TextEncoder().encode("wishlist-ai-security-questions-v1");
+  const baseKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(vaultId), "PBKDF2", false, [
+    "deriveBits",
+  ]);
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      salt,
+      iterations: 100000,
+      hash: "SHA-256",
+    },
+    baseKey,
+    256,
+  );
+  return new Uint8Array(derivedBits);
+}
+
+export async function encryptMetadataClient(metadata: Record<string, unknown>, vaultId: string): Promise<string> {
+  const crypto = getCrypto();
+  const keyBytes = await deriveKeyFromVaultIdClient(vaultId);
+  const key = await importAesKey(keyBytes, "AES-GCM");
+
+  const ivBytes = new Uint8Array(12);
+  crypto.getRandomValues(ivBytes);
+
+  const aad = new TextEncoder().encode(vaultId);
+  const plain = new TextEncoder().encode(JSON.stringify(metadata));
+
+  const encryptedBuffer = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: ivBytes, additionalData: aad },
+    key,
+    plain,
+  );
+
+  const encryptedBytes = new Uint8Array(encryptedBuffer);
+  const tagLength = 16;
+  if (encryptedBytes.length < tagLength) {
+    throw new Error("Invalid AES-GCM ciphertext.");
+  }
+  const cipherText = encryptedBytes.subarray(0, encryptedBytes.length - tagLength);
+  const tag = encryptedBytes.subarray(encryptedBytes.length - tagLength);
+
+  const payload = new Uint8Array(ivBytes.length + tag.length + cipherText.length);
+  payload.set(ivBytes, 0);
+  payload.set(tag, ivBytes.length);
+  payload.set(cipherText, ivBytes.length + tag.length);
+
+  return `v3:${toBase64(payload)}`;
+}
+
+export async function prepareArweavePayloadClient(params: {
+  vaultId: string;
+  encryptedVault: EncryptedVaultClient;
+  metadata: Record<string, unknown>;
+}): Promise<ObfuscatedArweavePayloadClient> {
+  const vaultId = String(params.vaultId || "").trim();
+  if (!vaultId) throw new Error("Vault ID is required.");
+  const m = await encryptMetadataClient(params.metadata, vaultId);
+  return {
+    id: vaultId,
+    v: 1,
+    t: "d",
+    m,
+    d: params.encryptedVault,
+  };
 }
 
 export function generatePqcKeyPairClient(): PqcKeyPairClient {
