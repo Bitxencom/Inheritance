@@ -206,11 +206,11 @@ export function UnifiedPaymentSelector({
               Your data is being uploaded to Blockchain Storage. Please keep this tab open until it finishes.
             </DialogDescription>
           </DialogHeader>
-          {paymentStatus && (
+          {/* {paymentStatus && (
             <p className="text-sm text-muted-foreground text-center">
               {paymentStatus}
             </p>
-          )}
+          )} */}
           {typeof paymentProgress === "number" && (
             <div className="space-y-2">
               <div className="flex items-center justify-between text-xs text-muted-foreground">
