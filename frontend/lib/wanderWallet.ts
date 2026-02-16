@@ -387,6 +387,65 @@ const arweave = Arweave.init({
   protocol: 'https',
 });
 
+async function postJsonWithUploadProgress<T>(params: {
+  url: string;
+  body: unknown;
+  onProgress?: (progress: number) => void;
+}): Promise<{ ok: boolean; status: number; data: T }> {
+  if (typeof XMLHttpRequest === "undefined") {
+    const response = await fetch(params.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(params.body),
+    });
+    const data = (await response.json().catch(() => ({}))) as T;
+    return { ok: response.ok, status: response.status, data };
+  }
+
+  return await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", params.url, true);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.responseType = "text";
+
+    const report = (value: number) => {
+      const clamped = Math.max(0, Math.min(99.9, value));
+      params.onProgress?.(clamped);
+    };
+
+    if (xhr.upload) {
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable || event.total <= 0) return;
+        report((event.loaded / event.total) * 100);
+      };
+    }
+
+    xhr.onerror = () => reject(new Error("Network error while uploading."));
+    xhr.onabort = () => reject(new Error("Upload was aborted."));
+    xhr.onload = () => {
+      const status = xhr.status;
+      const ok = status >= 200 && status < 300;
+      const rawText = typeof xhr.responseText === "string" ? xhr.responseText : "";
+      let data: T;
+      try {
+        data = (rawText ? JSON.parse(rawText) : {}) as T;
+      } catch {
+        data = {} as T;
+      }
+      params.onProgress?.(100);
+      resolve({ ok, status, data });
+    };
+
+    try {
+      xhr.send(JSON.stringify(params.body));
+    } catch (e) {
+      reject(e instanceof Error ? e : new Error("Failed to start upload."));
+    }
+  });
+}
+
 type ArweaveUploadResumeRecord = {
   key: string;
   vaultId?: string;
@@ -752,37 +811,150 @@ export async function dispatchToArweave(
       await idbPutUploadRecord(baseRecord);
     } catch {
     }
-    onProgress?.(0);
     onStatus?.("Uploading to Arweave (relay)...");
+    onProgress?.(0);
 
     const relayBody = {
       txRaw: txRawForResume ?? signedNormalized,
       dataB64: baseRecord.payloadB64,
     };
 
-    const relayResponse = await fetch(`/api/transactions/arweave/relay`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
+    if (typeof EventSource === "undefined") {
+      const relayResponse = await postJsonWithUploadProgress<{
+        success?: unknown;
+        error?: unknown;
+        txId?: unknown;
+      }>({ url: `/api/transactions/arweave/relay`, body: relayBody, onProgress });
+
+      const relayData = relayResponse.data;
+      if (!relayResponse.ok || !relayData?.success) {
+        const message =
+          typeof relayData?.error === "string"
+            ? relayData.error
+            : `Arweave relay failed (HTTP ${relayResponse.status})`;
+        throw new Error(message);
+      }
+
+      const relayedTxId =
+        typeof relayData?.txId === "string" && relayData.txId.trim().length > 0
+          ? relayData.txId.trim()
+          : txToPost.id;
+
+      onStatus?.("Upload successful.");
+      try {
+        await idbDeleteUploadRecord(resumeKey);
+      } catch {
+      }
+      return {
+        txId: relayedTxId,
+        type: "BASE",
+      };
+    }
+
+    let clientPct = 0;
+    let serverPct = 0;
+    const emitCombinedProgress = (forceComplete = false) => {
+      if (!onProgress) return;
+      if (forceComplete) {
+        onProgress(100);
+        return;
+      }
+      const combined = clientPct * 0.2 + serverPct * 0.8;
+      onProgress(Math.max(0, Math.min(99.9, combined)));
+    };
+
+    const startResponse = await postJsonWithUploadProgress<{
+      success?: unknown;
+      error?: unknown;
+      jobId?: unknown;
+    }>({
+      url: `/api/transactions/arweave/relay/start`,
+      body: relayBody,
+      onProgress: (pct) => {
+        clientPct = pct;
+        emitCombinedProgress();
       },
-      body: JSON.stringify(relayBody),
     });
 
-    const relayData = await relayResponse.json().catch(() => ({}));
-    if (!relayResponse.ok || !relayData?.success) {
+    const startData = startResponse.data;
+    if (!startResponse.ok || !startData?.success) {
       const message =
-        typeof relayData?.error === "string"
-          ? relayData.error
-          : `Arweave relay failed (HTTP ${relayResponse.status})`;
+        typeof startData?.error === "string"
+          ? startData.error
+          : `Arweave relay start failed (HTTP ${startResponse.status})`;
       throw new Error(message);
     }
 
-    const relayedTxId =
-      typeof relayData?.txId === "string" && relayData.txId.trim().length > 0
-        ? relayData.txId.trim()
-        : txToPost.id;
+    const jobId = typeof startData?.jobId === "string" ? startData.jobId.trim() : "";
+    if (!jobId) {
+      throw new Error("Arweave relay start failed: missing jobId");
+    }
 
-    onProgress?.(100);
+    const relayedTxId = await new Promise<string>((resolve, reject) => {
+      const es = new EventSource(`/api/transactions/arweave/relay/${encodeURIComponent(jobId)}/events`);
+
+      const finalize = (err?: Error, txId?: string) => {
+        try {
+          es.close();
+        } catch {
+        }
+        if (err) reject(err);
+        else resolve(txId || txToPost.id);
+      };
+
+      const handlePayload = (raw: string) => {
+        try {
+          const payload = JSON.parse(raw) as {
+            progress?: unknown;
+            status?: unknown;
+            txId?: unknown;
+            error?: unknown;
+          };
+          if (typeof payload.status === "string") onStatus?.(payload.status);
+          if (typeof payload.progress === "number") {
+            serverPct = payload.progress;
+            emitCombinedProgress();
+          }
+          return payload;
+        } catch {
+          return null;
+        }
+      };
+
+      es.addEventListener("progress", (event) => {
+        const raw = (event as MessageEvent).data;
+        if (typeof raw !== "string") return;
+        handlePayload(raw);
+      });
+
+      es.addEventListener("complete", (event) => {
+        const raw = (event as MessageEvent).data;
+        if (typeof raw !== "string") {
+          emitCombinedProgress(true);
+          finalize(undefined, txToPost.id);
+          return;
+        }
+        const payload = handlePayload(raw);
+        emitCombinedProgress(true);
+        const txId = payload && typeof payload.txId === "string" ? payload.txId : txToPost.id;
+        finalize(undefined, txId);
+      });
+
+      es.addEventListener("error", (event) => {
+        const raw = (event as MessageEvent).data;
+        if (typeof raw !== "string") {
+          finalize(new Error("Arweave relay connection failed."));
+          return;
+        }
+        const payload = handlePayload(raw);
+        const message =
+          payload && typeof payload.error === "string"
+            ? payload.error
+            : "Arweave relay failed";
+        finalize(new Error(message));
+      });
+    });
+
     onStatus?.("Upload successful.");
     try {
       await idbDeleteUploadRecord(resumeKey);

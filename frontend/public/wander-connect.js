@@ -94,11 +94,6 @@
       host: "arweave.dev",
       port: 443,
       protocol: "https"
-    },
-    {
-      host: "g8way.io",
-      port: 443,
-      protocol: "https"
     }
   ];
   var xr = Br[0];

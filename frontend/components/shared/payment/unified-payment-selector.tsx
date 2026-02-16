@@ -215,7 +215,7 @@ export function UnifiedPaymentSelector({
             <div className="space-y-2">
               <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span>Upload progress</span>
-                <span className="font-medium">{Math.max(0, Math.min(100, Math.round(paymentProgress)))}%</span>
+                <span className="font-medium">{Math.max(0, Math.min(100, Math.floor(paymentProgress)))}%</span>
               </div>
               <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
                 <div
@@ -515,7 +515,7 @@ export function UnifiedPaymentSelector({
             <div className="space-y-2">
               <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span>Upload progress</span>
-                <span className="font-medium">{Math.max(0, Math.min(100, Math.round(paymentProgress)))}%</span>
+                <span className="font-medium">{Math.max(0, Math.min(100, Math.floor(paymentProgress)))}%</span>
               </div>
               <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
                 <div

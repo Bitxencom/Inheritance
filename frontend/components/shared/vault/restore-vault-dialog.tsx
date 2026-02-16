@@ -44,6 +44,7 @@ export function RestoreVaultDialog({
   const [fieldErrors, setFieldErrors] = useState<Record<number, string>>({});
   const [validIndexes, setValidIndexes] = useState<number[]>([]);
   const [isVerified, setIsVerified] = useState(false);
+  const [vaultType, setVaultType] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -56,6 +57,7 @@ export function RestoreVaultDialog({
     setFieldErrors({});
     setValidIndexes([]);
     setIsVerified(false);
+    setVaultType(null);
   };
 
   const handleOpenChange = (newOpen: boolean) => {
@@ -115,6 +117,7 @@ export function RestoreVaultDialog({
       success?: boolean;
       error?: string;
       securityQuestions?: unknown;
+      willType?: string;
     };
 
     const raw = await response.text();
@@ -133,6 +136,10 @@ export function RestoreVaultDialog({
       const message = (typeof data.error === "string" ? data.error.trim() : "") ||
         `Failed to load security questions (HTTP ${response.status}).`;
       throw new Error(message || `Failed to load security questions (HTTP ${response.status}).`);
+    }
+
+    if (data.willType) {
+      setVaultType(data.willType);
     }
 
     if (Array.isArray(data.securityQuestions)) {
@@ -217,7 +224,13 @@ export function RestoreVaultDialog({
 
       setIsVerified(true);
       setValidIndexes(securityQuestions.map((_, i) => i)); // All correct
-      setStep("action");
+
+      if (vaultType === "one-time") {
+        onOpenVault(backupData, securityQuestions);
+        handleOpenChange(false);
+      } else {
+        setStep("action");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Verification failed");
     } finally {

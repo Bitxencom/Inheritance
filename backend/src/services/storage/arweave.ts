@@ -14,7 +14,6 @@ const arweave = Arweave.init({
 const ARWEAVE_GATEWAYS = [
   "https://arweave.net",
   "https://ar-io.net",
-  "https://g8way.io",
   "https://arweave.dev",
 ];
 

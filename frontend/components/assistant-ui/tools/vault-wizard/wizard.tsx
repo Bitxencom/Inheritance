@@ -673,8 +673,24 @@ export function VaultCreationWizard({
           isPermanent,
           releaseDate,
           encryptedKey: contractEncryptedKey,
+          onUploadProgress: (progress) => {
+            setPaymentProgress(progress);
+            if (progress >= 0 && progress < 100) setPaymentPhase("upload");
+            if (progress >= 100) setPaymentPhase("finalize");
+          },
           onProgress: (status) => {
             setPaymentStatus(status);
+            const normalized = status.toLowerCase();
+            if (
+              normalized.includes("waiting for wallet") ||
+              normalized.includes("confirm transaction") ||
+              normalized.includes("confirm arweave") ||
+              normalized.includes("confirm in wander") ||
+              normalized.includes("signature")
+            ) {
+              setPaymentPhase("confirm");
+              return;
+            }
           },
         });
 

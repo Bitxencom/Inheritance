@@ -363,6 +363,7 @@ export type HybridDispatchOptions = {
   releaseDate?: bigint;
   encryptedKey?: string;
   onProgress?: (status: string) => void;
+  onUploadProgress?: (progress: number) => void;
   contractDataId?: string;
   contractAddress?: string;
 };
@@ -958,6 +959,7 @@ export async function dispatchHybrid(
   const releaseDate = typeof options.releaseDate === "bigint" ? options.releaseDate : BigInt(0);
   const encryptedKey = typeof options.encryptedKey === "string" ? options.encryptedKey : "";
   const onProgress = options.onProgress;
+  const onUploadProgress = options.onUploadProgress;
   const existingContractDataId =
     typeof options.contractDataId === "string" && options.contractDataId.startsWith("0x")
       ? options.contractDataId
@@ -982,7 +984,9 @@ export async function dispatchHybrid(
     arweavePayload,
     vaultId,
     undefined,
-    undefined,
+    (progress) => {
+      onUploadProgress?.(progress);
+    },
     (status) => {
       if (onProgress) onProgress(`Step 1/2: ${status}`);
     },
