@@ -699,10 +699,14 @@ export function VaultCreationWizard({
           const now = new Date();
           const todayStr = now.toISOString().split("T")[0];
           const isToday = payload.triggerRelease.triggerDate === todayStr;
-          // If today, set to end of day to ensure it's in the future.
-          // If future date, set to start of day so it opens as soon as day starts.
-          const timeSuffix = isToday ? "T23:59:59Z" : "T00:00:00Z";
-          triggerMs = Date.parse(payload.triggerRelease.triggerDate + timeSuffix);
+
+          if (isToday) {
+            // Sejak pengguna memilih hari ini, tambahkan 5 menit dari waktu saat ini.
+            triggerMs = now.getTime() + (5 * 60 * 1000);
+          } else {
+            // Jika memilih tanggal di masa depan, atur waktu ke 00:00:00 UTC pada hari tersebut.
+            triggerMs = Date.parse(payload.triggerRelease.triggerDate + "T00:00:00Z");
+          }
         }
         const releaseDate = Number.isFinite(triggerMs)
           ? BigInt(Math.floor(triggerMs / 1000))
