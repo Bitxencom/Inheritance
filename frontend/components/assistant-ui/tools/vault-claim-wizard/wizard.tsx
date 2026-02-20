@@ -1722,7 +1722,14 @@ export function VaultClaimWizard({
         if (!record.isReleased) {
           if (typeof record.releaseDate === "bigint" && record.releaseDate > BigInt(0)) {
             const releaseDateMs = Number(record.releaseDate) * 1000;
-            const releaseText = Number.isFinite(releaseDateMs) ? new Date(releaseDateMs).toLocaleString() : null;
+            const releaseText = Number.isFinite(releaseDateMs) ? new Date(releaseDateMs).toLocaleString('en-US', { 
+              hour12: true,
+              hour: '2-digit',
+              minute: '2-digit',
+              day: 'numeric',
+              month: 'short',
+              year: 'numeric'
+            }).replace(',', '') : null;
             throw new Error(
               `This inheritance is not released yet. Release date: ${releaseText ?? record.releaseDate.toString()}.`,
             );

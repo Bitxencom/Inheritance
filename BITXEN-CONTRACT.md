@@ -3,7 +3,8 @@ BITXEN Contract
 ## Mainnet Contracts
 
 BNB
-0x42936dAEC40CAC532b032eE8119c3f86548c19B4
+Bitxen: 0xfCE73A806c3B1400a7672049D56e16E5b9bfFA2A
+BitxenGovernor: 0x6dd2E9B49ECBcC5b556da44D812C857Bf2a068bB
 
 ETH
 0xa5e79731386f70ac4165cd9beb63a4876097ad8a
@@ -37,9 +38,9 @@ OLD - 19 Feb 2026 (releaseEntropy)
 https://testnet.bscscan.com/address/0x61031Ef4F474C4a02aF85D5EC210c830Cdc81D19
 
 NEW - 19 Feb 2026 (Bitxen Governance)
-Bitxen: 0xE157bf1FFe263BF8115d94ebCFe6e27e69a4011E
-BitxenGovernor: 0x0a8c69742dD248820A019E3606c3F6740a7b5311
-https://testnet.bscscan.com/address/0xE157bf1FFe263BF8115d94ebCFe6e27e69a4011E
+Bitxen: 0xeFe3D5d233Df4764826Cba9edfF8c0032E78e06C
+BitxenGovernor: 0x8F94e79c07ff47E16C316B5b184B72C8109AaEAC
+https://testnet.bscscan.com/address/0xeFe3D5d233Df4764826Cba9edfF8c0032E78e06C
 
 ## Get Test Tokens
 

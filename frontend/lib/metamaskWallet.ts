@@ -34,8 +34,8 @@ export const CHAIN_CONFIG = {
     ],
     rpcUrl: "https://data-seed-prebsc-2-s1.bnbchain.org:8545/",
     blockExplorer: "https://testnet.bscscan.com",
-    contractAddress: "0xE157bf1FFe263BF8115d94ebCFe6e27e69a4011E",
-    governorAddress: "0x0a8c69742dD248820A019E3606c3F6740a7b5311",
+    contractAddress: "0xeFe3D5d233Df4764826Cba9edfF8c0032E78e06C",
+    governorAddress: "0x8F94e79c07ff47E16C316B5b184B72C8109AaEAC",
     logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/smartchain/info/logo.png",
     isTestnet: true,
   },
@@ -60,7 +60,8 @@ export const CHAIN_CONFIG = {
     ],
     rpcUrl: "https://bsc-dataseed.binance.org/",
     blockExplorer: "https://bscscan.com",
-    contractAddress: "0x42936dAEC40CAC532b032eE8119c3f86548c19B4",
+    contractAddress: "0xfCE73A806c3B1400a7672049D56e16E5b9bfFA2A",
+    governorAddress: "0x6dd2E9B49ECBcC5b556da44D812C857Bf2a068bB",
     logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/smartchain/info/logo.png",
     isTestnet: false,
   },
@@ -197,7 +198,7 @@ type ChainConfig = ChainConfigBase | ChainConfigWithFallbacks;
 export type ChainId = keyof typeof CHAIN_CONFIG;
 
 // Default chain for Bitxen
-export const DEFAULT_CHAIN: ChainId = "bsc";
+export const DEFAULT_CHAIN: ChainId = "bscTestnet";
 
 // Get list of available chains
 export function getAvailableChains(): ChainId[] {
@@ -450,7 +451,7 @@ const BITXEN_ABI = {
 export function encodeRegisterData(
   dataHash: string,
   storageURI: string,
-  provider: number,
+  provider: string,
   fileSize: bigint,
   contentType: string,
   fileName: string,
@@ -490,7 +491,7 @@ export function encodeRegisterData(
   // Static fields: dataHash, provider, fileSize, isPermanent, releaseDate, commitment, secret
   // Dynamic fields: storageURI, contentType, fileName
 
-  const encodedProvider = provider.toString(16).padStart(64, "0");
+  const encodedProvider = encodeBytes32(provider);
   const encodedFileSize = fileSize.toString(16).padStart(64, "0");
   const encodedIsPermanent = (isPermanent ? 1 : 0)
     .toString(16)
@@ -603,7 +604,7 @@ export function encodeUpdateData(
   dataId: string,
   newDataHash: string,
   newStorageURI: string,
-  newProvider: number,
+  newProvider: string,
   newFileSize: bigint,
 ): string {
   const selector = abiSelector("updateData(bytes32,bytes32,string,bytes32,uint256)");
@@ -621,7 +622,7 @@ export function encodeUpdateData(
     encodeBytes32(dataId) +
     encodeBytes32(newDataHash) +
     encodeUint256(stringOffsetBytes) +
-    (newProvider.toString(16).padStart(64, "0")) + // encode as bytes32 (left-padded for consistency)
+    encodeBytes32(newProvider) +
     encodeUint256(newFileSize);
 
   const tail = encodeUint256(uriLen) + uriPaddedHex;
@@ -753,7 +754,7 @@ type BitxenDataRecordRead = {
   owner: string;
   currentDataHash: string;
   currentStorageURI: string;
-  currentProvider: number;
+  currentProvider: number | string;
   createdAt: bigint;
   lastUpdatedAt: bigint;
   fileSize: bigint;
@@ -988,7 +989,7 @@ export async function readBitxenDataRecord(params: {
         owner: decoded[0] as string,
         currentDataHash: decoded[1] as string,
         currentStorageURI: decoded[2] as string,
-        currentProvider: Number(BigInt(decoded[3] as string)),
+        currentProvider: decoded[3] as string, // was decoded as bytes32
         createdAt: decoded[4] as bigint,
         lastUpdatedAt: decoded[5] as bigint,
         commitment: decoded[6] as string,
@@ -1094,7 +1095,7 @@ export async function readBitxenDataRecord(params: {
     owner: mapped.owner as string,
     currentDataHash: mapped.currentDataHash as string,
     currentStorageURI: mapped.currentStorageURI as string,
-    currentProvider: mapped.currentProvider as number,
+    currentProvider: mapped.currentProvider as string | number,
     createdAt: mapped.createdAt as bigint,
     lastUpdatedAt: mapped.lastUpdatedAt as bigint,
     commitment: mapped.commitment as string,
@@ -1382,18 +1383,20 @@ export async function dispatchHybrid(
     // Register with ar:// URI pointing to Arweave
     const storageURI = `ar://${arweaveTxId}`;
 
+    const ARWEAVE_PROVIDER_HASH = "0x" + bytesToHex(keccak_256(new TextEncoder().encode("arweave")));
+
     const txData = existingContractDataId
       ? encodeUpdateData(
           existingContractDataId,
           dataHash,
           storageURI,
-          1, // provider as number, will be encoded to bytes32 in helper
+          ARWEAVE_PROVIDER_HASH,
           fileSize,
         )
       : encodeRegisterData(
           dataHash,
           storageURI,
-          1, // provider as number, will be encoded to bytes32 in helper
+          ARWEAVE_PROVIDER_HASH,
           fileSize,
           "application/json",
           `vault-${vaultId}.json`,

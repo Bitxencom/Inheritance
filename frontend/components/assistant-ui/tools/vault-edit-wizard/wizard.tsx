@@ -1251,9 +1251,9 @@ export function VaultEditWizard({
       const localVaultForStorage = getVaultById(formState.vaultId);
       const detectedStorageType: "arweave" | "bitxenArweave" =
         (typeof data.metadata?.blockchainChain === "string" && data.metadata.blockchainChain.trim().length > 0) ||
-        (typeof data.metadata?.contractEncryptedKey === "string" && data.metadata.contractEncryptedKey.trim().length > 0) ||
-        (typeof localVaultForStorage?.storageType === "string" && localVaultForStorage.storageType === "bitxenArweave") ||
-        (typeof localVaultForStorage?.contractDataId === "string" && localVaultForStorage.contractDataId.startsWith("0x"))
+          (typeof data.metadata?.contractEncryptedKey === "string" && data.metadata.contractEncryptedKey.trim().length > 0) ||
+          (typeof localVaultForStorage?.storageType === "string" && localVaultForStorage.storageType === "bitxenArweave") ||
+          (typeof localVaultForStorage?.contractDataId === "string" && localVaultForStorage.contractDataId.startsWith("0x"))
           ? "bitxenArweave"
           : "arweave";
 
@@ -1267,10 +1267,10 @@ export function VaultEditWizard({
           selectedChain:
             detectedStorageType === "bitxenArweave"
               ? (typeof data.metadata?.blockchainChain === "string" && data.metadata.blockchainChain.trim().length > 0
-                  ? data.metadata.blockchainChain.trim()
-                  : typeof localVaultForStorage?.blockchainChain === "string" && localVaultForStorage.blockchainChain.trim().length > 0
-                    ? localVaultForStorage.blockchainChain.trim()
-                    : prev.payment.selectedChain)
+                ? data.metadata.blockchainChain.trim()
+                : typeof localVaultForStorage?.blockchainChain === "string" && localVaultForStorage.blockchainChain.trim().length > 0
+                  ? localVaultForStorage.blockchainChain.trim()
+                  : prev.payment.selectedChain)
               : prev.payment.selectedChain,
         },
         willDetails: {
@@ -1568,13 +1568,13 @@ export function VaultEditWizard({
 
       const contractEncryptedKeyForMetadata =
         typeof hybridContractEncryptedKeyRef.current === "string" &&
-        hybridContractEncryptedKeyRef.current.trim().length > 0
+          hybridContractEncryptedKeyRef.current.trim().length > 0
           ? hybridContractEncryptedKeyRef.current
           : undefined;
 
       const contractSecretForMetadata =
         typeof hybridContractSecretRef.current === "string" &&
-        hybridContractSecretRef.current.trim().length > 0
+          hybridContractSecretRef.current.trim().length > 0
           ? hybridContractSecretRef.current
           : undefined;
 
@@ -2607,7 +2607,7 @@ export function VaultEditWizard({
                             const config = getChainConfig(chain);
                             window.open(`${config.blockExplorer}/tx/${latestTxId}`, "_blank");
                           } else {
-                            const explorerBaseUrl = process.env.EXPLORER_BASE_URL || "http://localhost:3021";
+                            const explorerBaseUrl = process.env.NEXT_PUBLIC_EXPLORER_BASE_URL || "http://localhost:3021";
                             window.open(`${explorerBaseUrl}/explorer/arweave/tx/${latestTxId}`, "_blank");
                           }
                         }}

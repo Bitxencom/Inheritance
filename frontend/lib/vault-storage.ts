@@ -316,6 +316,6 @@ export function getSmartChainExplorerUrl(
  * Get Arweave explorer URL for a transaction
  */
 export function getArweaveExplorerUrl(txId: string): string {
-  const baseUrl = process.env.EXPLORER_BASE_URL || "http://localhost:3021";
+  const baseUrl = process.env.NEXT_PUBLIC_EXPLORER_BASE_URL || "http://localhost:3021";
   return `${baseUrl}/explorer/arweave/tx/${txId}`;
 }
