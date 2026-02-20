@@ -30,12 +30,12 @@ export const CHAIN_CONFIG = {
       "https://data-seed-prebsc-2-s1.binance.org:8545/",
       "https://data-seed-prebsc-1-s1.binance.org:8545/",
       "https://data-seed-prebsc-2-s1.binance.org:8545/",
-      "https://bsc-testnet-rpc.publicnode.com/",
-      "https://bsc-testnet.public.blastapi.io/"
+      "https://bsc-testnet-rpc.publicnode.com/"
     ],
-    rpcUrl: "https://data-seed-prebsc-1-s1.binance.org:8545/",
+    rpcUrl: "https://data-seed-prebsc-2-s1.bnbchain.org:8545/",
     blockExplorer: "https://testnet.bscscan.com",
-    contractAddress: "0xE9a33420eF860bAE14e41a47f37e2D632D4A7bE7",
+    contractAddress: "0xE157bf1FFe263BF8115d94ebCFe6e27e69a4011E",
+    governorAddress: "0x0a8c69742dD248820A019E3606c3F6740a7b5311",
     logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/smartchain/info/logo.png",
     isTestnet: true,
   },
@@ -183,6 +183,7 @@ interface ChainConfigBase {
   rpcUrl: string;
   blockExplorer: string;
   contractAddress: string;
+  governorAddress?: string;
   logo: string;
   isTestnet: boolean;
 }
@@ -361,7 +362,8 @@ export interface HybridDispatchResult {
 export type HybridDispatchOptions = {
   isPermanent?: boolean;
   releaseDate?: bigint;
-  encryptedKey?: string;
+  commitment?: string;
+  secret?: string;
   onProgress?: (status: string) => void;
   onUploadProgress?: (progress: number) => void;
   contractDataId?: string;
@@ -369,16 +371,40 @@ export type HybridDispatchOptions = {
 };
 
 /**
+ * Custom error thrown when user's BITXEN balance is insufficient to pay the fee.
+ * Frontend can catch this specific error to show an informative UI.
+ */
+export class InsufficientBitxenError extends Error {
+  public readonly required: bigint;
+  public readonly balance: bigint;
+  public readonly shortfall: bigint;
+  public readonly chainId: ChainId;
+
+  constructor(params: { required: bigint; balance: bigint; chainId: ChainId }) {
+    const fmt = (n: bigint) => (Number(n) / 1e18).toFixed(2);
+    super(
+      `Insufficient BITXEN balance. Required: ${fmt(params.required)} BITXEN, ` +
+      `Current: ${fmt(params.balance)} BITXEN, ` +
+      `Shortfall: ${fmt(params.required - params.balance)} BITXEN.`
+    );
+    this.name = "InsufficientBitxenError";
+    this.required = params.required;
+    this.balance = params.balance;
+    this.shortfall = params.required - params.balance;
+    this.chainId = params.chainId;
+  }
+}
+
+/**
  * Bitxen Contract ABI (partial - only functions we need)
  */
 const BITXEN_ABI = {
-  // Registration fee getter
-  registrationFee: {
-    name: "registrationFee",
+  // Calculate Fee getter
+  calculateFee: {
+    name: "calculateFee",
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
   },
-  // Register data function
   registerData: {
     name: "registerData",
     inputs: [
@@ -388,16 +414,33 @@ const BITXEN_ABI = {
         components: [
           { name: "dataHash", type: "bytes32" },
           { name: "storageURI", type: "string" },
-          { name: "provider", type: "uint8" }, // 0=IPFS, 1=ARWEAVE, 2=CUSTOM
+          { name: "provider", type: "bytes32" }, // Changed to bytes32 (was uint8)
           { name: "fileSize", type: "uint256" },
           { name: "contentType", type: "string" },
           { name: "fileName", type: "string" },
           { name: "isPermanent", type: "bool" },
           { name: "releaseDate", type: "uint256" },
-          { name: "encryptedKey", type: "string" },
+          { name: "commitment", type: "bytes32" },
+          { name: "secret", type: "bytes32" },
         ],
       },
     ],
+    outputs: [{ name: "dataId", type: "bytes32" }],
+  },
+  updateData: {
+    name: "updateData",
+    inputs: [
+      { name: "dataId", type: "bytes32" },
+      { name: "newDataHash", type: "bytes32" },
+      { name: "newStorageURI", type: "string" },
+      { name: "newProvider", type: "bytes32" }, // Changed to bytes32
+      { name: "newFileSize", type: "uint256" },
+    ],
+    outputs: [{ name: "newVersion", type: "uint256" }],
+  },
+  finalizeRelease: {
+    name: "finalizeRelease",
+    inputs: [{ name: "dataId", type: "bytes32" }],
   },
 };
 
@@ -413,11 +456,11 @@ export function encodeRegisterData(
   fileName: string,
   isPermanent: boolean,
   releaseDate: bigint,
-  encryptedKey: string,
+  commitment: string,
+  secret: string,
 ): string {
-  // Function selector: keccak256("registerData((bytes32,string,uint8,uint256,string,string,bool,uint256,string))")[0:4]
-  // Correct Selector for V2 Contract: 0x822d01b4
-  const selector = "822d01b4";
+  // Function selector: keccak256("registerData((bytes32,string,bytes32,uint256,string,string,bool,uint256,bytes32,bytes32))")[0:4]
+  const selector = abiSelector("registerData((bytes32,string,bytes32,uint256,string,string,bool,uint256,bytes32,bytes32))");
 
   // Helper for string encoding with length prefix
   const encodeStringToBytes = (
@@ -444,43 +487,50 @@ export function encodeRegisterData(
   const tupleOffset =
     "0000000000000000000000000000000000000000000000000000000000000020";
 
-  // Static fields in order: dataHash, provider, fileSize, isPermanent, releaseDate
-  // Dynamic fields: storageURI, contentType, fileName, encryptedKey
+  // Static fields: dataHash, provider, fileSize, isPermanent, releaseDate, commitment, secret
+  // Dynamic fields: storageURI, contentType, fileName
 
-  // Encode static parts
   const encodedProvider = provider.toString(16).padStart(64, "0");
   const encodedFileSize = fileSize.toString(16).padStart(64, "0");
   const encodedIsPermanent = (isPermanent ? 1 : 0)
     .toString(16)
     .padStart(64, "0");
   const encodedReleaseDate = releaseDate.toString(16).padStart(64, "0");
+  const encodedCommitment = encodeBytes32(commitment);
+  const encodedSecret = encodeBytes32(secret);
 
-  // Calculate offsets for dynamic data
-  // Position after all static fields (9 * 32 = 288 bytes = 0x120)
-  const dynamicStart = 9 * 32;
+  // 10 fields total.
+  // Static parts:
+  // 1. dataHash (inline)
+  // 2. storageURI (offset) -> Dynamic
+  // 3. provider (inline)
+  // 4. fileSize (inline)
+  // 5. contentType (offset) -> Dynamic
+  // 6. fileName (offset) -> Dynamic
+  // 7. isPermanent (inline)
+  // 8. releaseDate (inline)
+  // 9. commitment (inline)
+  // 10. secret (inline)
+
+  // Total static size = 10 * 32 = 320 bytes = 0x140
+  const dynamicStart = 10 * 32;
   let currentOffset = dynamicStart;
 
-  // Encode all strings
+  // Encode strings
   const storageURIData = encodeStringToBytes(storageURI);
   const contentTypeData = encodeStringToBytes(contentType);
   const fileNameData = encodeStringToBytes(fileName);
-  const encryptedKeyData = encodeStringToBytes(encryptedKey);
 
-  // Calculate actual offsets
+  // Calculate offsets
   const storageURIOffset = currentOffset;
-  currentOffset +=
-    32 + Math.ceil(new TextEncoder().encode(storageURI).length / 32) * 32;
-  const contentTypeOffset = currentOffset;
-  currentOffset +=
-    32 + Math.ceil(new TextEncoder().encode(contentType).length / 32) * 32;
-  const fileNameOffset = currentOffset;
-  currentOffset +=
-    32 + Math.ceil(new TextEncoder().encode(fileName).length / 32) * 32;
-  const encryptedKeyOffset = currentOffset;
+  currentOffset += 32 + Math.ceil(new TextEncoder().encode(storageURI).length / 32) * 32;
 
-  // Build the full encoded data
-  // Order in tuple: dataHash, storageURI(offset), provider, fileSize, contentType(offset),
-  //                 fileName(offset), isPermanent, releaseDate, encryptedKey(offset)
+  const contentTypeOffset = currentOffset;
+  currentOffset += 32 + Math.ceil(new TextEncoder().encode(contentType).length / 32) * 32;
+
+  const fileNameOffset = currentOffset;
+
+  // Build payload
   const encodedParams =
     tupleOffset +
     encodedDataHash +
@@ -491,11 +541,11 @@ export function encodeRegisterData(
     fileNameOffset.toString(16).padStart(64, "0") +
     encodedIsPermanent +
     encodedReleaseDate +
-    encryptedKeyOffset.toString(16).padStart(64, "0") +
+    encodedCommitment +
+    encodedSecret +
     storageURIData.data +
     contentTypeData.data +
-    fileNameData.data +
-    encryptedKeyData.data;
+    fileNameData.data;
 
   return "0x" + selector + encodedParams;
 }
@@ -556,7 +606,7 @@ export function encodeUpdateData(
   newProvider: number,
   newFileSize: bigint,
 ): string {
-  const selector = abiSelector("updateData(bytes32,bytes32,string,uint8,uint256)");
+  const selector = abiSelector("updateData(bytes32,bytes32,string,bytes32,uint256)");
 
   const headWords = BigInt(5);
   const stringOffsetBytes = headWords * BigInt(32);
@@ -571,12 +621,22 @@ export function encodeUpdateData(
     encodeBytes32(dataId) +
     encodeBytes32(newDataHash) +
     encodeUint256(stringOffsetBytes) +
-    encodeUint8(newProvider) +
+    (newProvider.toString(16).padStart(64, "0")) + // encode as bytes32 (left-padded for consistency)
     encodeUint256(newFileSize);
 
   const tail = encodeUint256(uriLen) + uriPaddedHex;
 
   return "0x" + selector + head + tail;
+}
+
+/**
+ * Encode function call for calculateFee
+ */
+export function encodeCalculateFee(): string {
+  const selector = abiSelector("calculateFee()");
+  
+  // No arguments for new calculateFee
+  return "0x" + selector;
 }
 
 function decodeWord(hexNo0x: string, wordIndex: number): string {
@@ -622,10 +682,28 @@ function decodeStringAtOffset(hexNo0x: string, offsetBytes: bigint): string {
 }
 
 function decodeAbiTuple(types: string[], dataHex: string): unknown[] {
-  const hexNo0x = dataHex.startsWith("0x") ? dataHex.slice(2) : dataHex;
+  const rawHex = dataHex.startsWith("0x") ? dataHex.slice(2) : dataHex;
+
+  // eth_call responses for struct/tuple return types are wrapped with an outer
+  // tuple pointer: the first word is 0x0000...0020 (= 32), pointing to where
+  // the actual tuple data starts. We must detect and skip this wrapper so that
+  // field indices and dynamic string offsets are calculated correctly.
+  let hexNo0x = rawHex;
+
+  if (rawHex.length >= 64) {
+    const firstWord = BigInt("0x" + rawHex.slice(0, 64));
+    if (firstWord === BigInt(32)) {
+      // Outer tuple wrapper detected — skip 1 word (32 bytes = 64 hex chars).
+      // eth_call responses for struct/tuple return types are wrapped with this
+      // pointer so that field indices and dynamic string offsets are correct.
+      hexNo0x = rawHex.slice(64);
+    }
+  }
+
   if (hexNo0x.length < types.length * 64) {
     throw new Error("Invalid ABI response length");
   }
+
   const head: unknown[] = new Array(types.length);
   const dynamicOffsets: Array<{ index: number; offset: bigint }> = [];
 
@@ -654,6 +732,10 @@ function decodeAbiTuple(types: string[], dataHex: string): unknown[] {
       continue;
     }
     if (t === "string") {
+      // Dynamic offsets in the tuple head are relative to the start of the tuple,
+      // NOT relative to the start of the full response. Since we already sliced
+      // off the outer wrapper, the offset value read from the head word is already
+      // correct relative to hexNo0x — no further adjustment needed.
       dynamicOffsets.push({ index: i, offset: decodeUint256Word(word) });
       continue;
     }
@@ -683,7 +765,10 @@ type BitxenDataRecordRead = {
   totalFeePaid: bigint;
   releaseDate: bigint;
   isReleased: boolean;
-  encryptedKey: string;
+  releaseEntropy: string;
+  commitment: string;
+  secret?: string;
+  encryptedKey?: string;
 };
 
 async function jsonRpcRequest(rpcUrl: string, payload: Record<string, unknown>, options?: RequestInit): Promise<unknown> {
@@ -714,6 +799,10 @@ async function ethCall(params: { rpcUrl: string; to: string; data: string }): Pr
       }, { signal: controller.signal })) as { result?: unknown };
 
       clearTimeout(timeoutId);
+      if ((result as { error?: unknown }).error) {
+        const rpcErr = (result as { error: { message?: string; code?: number } }).error;
+        throw Object.assign(new Error(rpcErr.message ?? "Contract call reverted"), { isRevert: true });
+      }
       const hex = typeof result?.result === "string" ? result.result : "";
       if (hex === "0x") throw new Error("Empty eth_call result");
       if (hex.startsWith("0x")) return hex;
@@ -727,30 +816,44 @@ async function ethCall(params: { rpcUrl: string; to: string; data: string }): Pr
     }
   }
 
-  // Fallback ke multiple RPC URLs
-  const chainKey = Object.keys(CHAIN_CONFIG).find(key => 
-    CHAIN_CONFIG[key as ChainId].rpcUrl === params.rpcUrl
-  ) as ChainId;
-  
-  const chainConfig = CHAIN_CONFIG[chainKey];
-  if (chainConfig && 'rpcUrls' in chainConfig) {
-    const rpcUrlsRaw = (chainConfig as { rpcUrls?: unknown }).rpcUrls;
-    const rpcUrls = Array.isArray(rpcUrlsRaw) ? rpcUrlsRaw.filter((u): u is string => typeof u === "string") : [];
-    
-    // Coba semua RPC URLs secara berurutan
-    for (const rpcUrl of rpcUrls) {
-      try {
-        console.log(`🔄 Trying RPC: ${rpcUrl}`);
-        return await callWithTimeout(rpcUrl, 2000);
-      } catch (error) {
-        console.warn(`❌ RPC Failed: ${rpcUrl}`, error);
-        continue; // Coba RPC berikutnya
+  // Kumpulkan semua RPC URLs: cari chain yang cocok berdasarkan rpcUrl atau rpcUrls
+  const allRpcUrls: string[] = [];
+
+  for (const key of Object.keys(CHAIN_CONFIG)) {
+    const cfg = CHAIN_CONFIG[key as ChainId] as { rpcUrl: string; rpcUrls?: unknown };
+    const urls: string[] = Array.isArray((cfg as { rpcUrls?: unknown }).rpcUrls)
+      ? ((cfg as { rpcUrls?: string[] }).rpcUrls!).filter((u): u is string => typeof u === "string")
+      : [];
+    const isMatch =
+      cfg.rpcUrl === params.rpcUrl || urls.includes(params.rpcUrl);
+    if (isMatch) {
+      // Tambahkan semua rpcUrls dari chain yang cocok
+      for (const u of urls) {
+        if (!allRpcUrls.includes(u)) allRpcUrls.push(u);
       }
+      if (!allRpcUrls.includes(cfg.rpcUrl)) allRpcUrls.push(cfg.rpcUrl);
     }
-    
-    // Jika semua RPC gagal, coba MetaMask
-    console.log("🔄 All RPCs failed, trying MetaMask...");
   }
+
+  // Selalu sertakan params.rpcUrl sebagai fallback terakhir
+  if (!allRpcUrls.includes(params.rpcUrl)) allRpcUrls.push(params.rpcUrl);
+
+  // Coba semua RPC URLs secara berurutan
+  for (const rpcUrl of allRpcUrls) {
+    try {
+      console.log(`🔄 Trying RPC: ${rpcUrl}`);
+      return await callWithTimeout(rpcUrl, 2000);
+    } catch (error) {
+      if (error instanceof Error && (error as { isRevert?: boolean }).isRevert) {
+        throw error;
+      }
+      console.warn(`❌ RPC Failed: ${rpcUrl}`, error);
+      continue;
+    }
+  }
+
+  // Jika semua RPC gagal, coba MetaMask
+  console.log("🔄 All RPCs failed, trying MetaMask...");
 
   // Fallback ke MetaMask atau RPC asli
   if (window.ethereum) {
@@ -769,11 +872,14 @@ async function ethCall(params: { rpcUrl: string; to: string; data: string }): Pr
   throw new Error(`Unable to read from chain. All RPC endpoints failed.`);
 }
 
+
+export function getNetworkIdFromChainKey(chainKey: ChainId): number {
+  return CHAIN_CONFIG[chainKey]?.chainId || 0;
+}
+
 export function getChainKeyFromNumericChainId(chainId: number): ChainId | null {
-  for (const [key, cfg] of Object.entries(CHAIN_CONFIG)) {
-    if (cfg.chainId === chainId) return key as ChainId;
-  }
-  return null;
+  const entry = Object.entries(CHAIN_CONFIG).find(([_, config]) => config.chainId === chainId);
+  return entry ? (entry[0] as ChainId) : null;
 }
 
 export async function readBitxenDataRecord(params: {
@@ -790,46 +896,262 @@ export async function readBitxenDataRecord(params: {
   const selector = abiSelector("getDataRecord(bytes32)");
   const data = "0x" + selector + encodeBytes32(params.contractDataId);
   const result = await ethCall({ rpcUrl: config.rpcUrl, to: contractAddress, data });
+  // Result is a tuple: (owner, currentDataHash, currentStorageURI, currentProvider, ...)
 
-  const types = [
-    "address",
-    "bytes32",
-    "string",
-    "uint8",
-    "uint256",
-    "uint256",
-    "uint256",
-    "string",
-    "string",
-    "bool",
-    "uint256",
-    "uint256",
-    "uint256",
-    "uint256",
-    "bool",
-    "string",
+  const typesNew = [
+    "address", // owner (0)
+    "bytes32", // currentDataHash (1)
+    "string", // currentStorageURI (2)
+    "bytes32", // currentProvider (3)
+    "uint256", // createdAt (4)
+    "uint256", // lastUpdatedAt (5)
+    "bytes32", // commitment (6)
+    "uint256", // fileSize (7)
+    "string", // contentType (8)
+    "string", // fileName (9)
+    "bool", // isPermanent (10)
+    "uint256", // currentVersion (11)
+    "uint256", // totalVersions (12)
+    "uint256", // totalFeePaid (13)
+    "uint256", // releaseDate (14)
+    "bool", // isReleased (15)
+    "bytes32", // releaseEntropy (16)
   ];
-  const decoded = decodeAbiTuple(types, result);
+
+  const typesV2 = [
+    "address", // owner (0)
+    "bytes32", // currentDataHash (1)
+    "string", // currentStorageURI (2)
+    "uint8", // currentProvider (3)
+    "uint256", // createdAt (4)
+    "uint256", // lastUpdatedAt (5)
+    "uint256", // fileSize (6)
+    "string", // contentType (7)
+    "string", // fileName (8)
+    "bool", // isPermanent (9)
+    "uint256", // currentVersion (10)
+    "uint256", // totalVersions (11)
+    "uint256", // totalFeePaid (12)
+    "uint256", // releaseDate (13)
+    "bool", // isReleased (14)
+    "bytes32", // releaseEntropy (15)
+    "string", // encryptedKey (16)
+  ];
+
+  // LEGACY ABI (Bitxen.sol original) - 16 fields (including commitment, excluding releaseEntropy)
+  // Based on previous metamaskWallet.ts structure
+  const typesLegacy = [
+    "address", // owner (0)
+    "uint8", // currentProvider (1)
+    "uint256", // createdAt (2)
+    "uint256", // lastUpdatedAt (3)
+    "bytes32", // currentDataHash (4)
+    "bytes32", // commitment (5)
+    "string", // currentStorageURI (6)
+    "uint256", // fileSize (7)
+    "string", // contentType (8)
+    "string", // fileName (9)
+    "bool", // isPermanent (10)
+    "uint256", // currentVersion (11)
+    "uint256", // totalVersions (12)
+    "uint256", // totalFeePaid (13)
+    "uint256", // releaseDate (14)
+    "bool", // isReleased (15)
+  ];
+
+  let decoded: unknown[] | null = null;
+  let variant: "new" | "v2" | "legacy" = "new";
+  let lastError: unknown = null;
+
+  for (const candidate of [
+    { variant: "new" as const, types: typesNew },
+    { variant: "v2" as const, types: typesV2 },
+    { variant: "legacy" as const, types: typesLegacy },
+  ]) {
+    try {
+      decoded = decodeAbiTuple(candidate.types, result);
+      variant = candidate.variant;
+      break;
+    } catch (e) {
+      lastError = e;
+    }
+  }
+
+  if (!decoded) {
+    throw (lastError instanceof Error ? lastError : new Error("Failed to decode getDataRecord response"));
+  }
+
+  let mapped: Partial<BitxenDataRecordRead> = {};
+
+  if (variant === "new") {
+      mapped = {
+        owner: decoded[0] as string,
+        currentDataHash: decoded[1] as string,
+        currentStorageURI: decoded[2] as string,
+        currentProvider: Number(BigInt(decoded[3] as string)),
+        createdAt: decoded[4] as bigint,
+        lastUpdatedAt: decoded[5] as bigint,
+        commitment: decoded[6] as string,
+        fileSize: decoded[7] as bigint,
+        contentType: decoded[8] as string,
+        fileName: decoded[9] as string,
+        isPermanent: decoded[10] as boolean,
+        currentVersion: decoded[11] as bigint,
+        totalVersions: decoded[12] as bigint,
+        totalFeePaid: decoded[13] as bigint,
+        releaseDate: decoded[14] as bigint,
+        isReleased: decoded[15] as boolean,
+        releaseEntropy: decoded[16] as string,
+      };
+  } else if (variant === "v2") {
+      mapped = {
+        owner: decoded[0] as string,
+        currentDataHash: decoded[1] as string,
+        currentStorageURI: decoded[2] as string,
+        currentProvider: decoded[3] as number,
+        createdAt: decoded[4] as bigint,
+        lastUpdatedAt: decoded[5] as bigint,
+        commitment: "0x" + "0".repeat(64),
+        fileSize: decoded[6] as bigint,
+        contentType: decoded[7] as string,
+        fileName: decoded[8] as string,
+        isPermanent: decoded[9] as boolean,
+        currentVersion: decoded[10] as bigint,
+        totalVersions: decoded[11] as bigint,
+        totalFeePaid: decoded[12] as bigint,
+        releaseDate: decoded[13] as bigint,
+        isReleased: decoded[14] as boolean,
+        releaseEntropy: decoded[15] as string,
+        encryptedKey: decoded[16] as string,
+      };
+  } else {
+      mapped = {
+        owner: decoded[0] as string,
+        currentProvider: decoded[1] as number,
+        createdAt: decoded[2] as bigint,
+        lastUpdatedAt: decoded[3] as bigint,
+        currentDataHash: decoded[4] as string,
+        commitment: decoded[5] as string,
+        currentStorageURI: decoded[6] as string,
+        fileSize: decoded[7] as bigint,
+        contentType: decoded[8] as string,
+        fileName: decoded[9] as string,
+        isPermanent: decoded[10] as boolean,
+        currentVersion: decoded[11] as bigint,
+        totalVersions: decoded[12] as bigint,
+        totalFeePaid: decoded[13] as bigint,
+        releaseDate: decoded[14] as bigint,
+        isReleased: decoded[15] as boolean,
+        releaseEntropy: "0x" + "0".repeat(64), // Default empty for legacy
+      };
+  }
+
+  const isReleased = mapped.isReleased as boolean;
+  const contractDataId = params.contractDataId;
+
+  // If released, the releaseEntropy should be present.
+  // HOWEVER, for vaults encrypted with "envelope" mode using a contract that generates random entropy (original BitxenEntropy),
+  // the releaseEntropy in the struct will be random and NOT the key.
+  // We must try to fetch the actual secret via getVaultSecret.
+  
+  let secret = "0x" + "0".repeat(64);
+  if (isReleased) {
+    try {
+      // Try to get the secret from the contract
+      // Note: This relies on the contract having getVaultSecret function
+      const selector = abiSelector("getVaultSecret(bytes32)");
+      const data = "0x" + selector + encodeBytes32(contractDataId);
+      const secretHex = await ethCall({
+        rpcUrl: config.rpcUrl,
+        to: contractAddress,
+        data,
+      });
+      if (secretHex && secretHex.startsWith("0x") && secretHex !== "0x" + "0".repeat(64)) {
+        secret = secretHex;
+      }
+    } catch (e) {
+      // If getVaultSecret fails (e.g. not released, or function doesn't exist on older ABI, or strict check failed),
+      // we fall back to what we have in releaseEntropy.
+      // But if the vault relies on this secret, decryption will fail later.
+      console.warn("Failed to fetch vault secret via getVaultSecret", e);
+    }
+  }
+
+  // If we found a secret (from getVaultSecret), use it to override releaseEntropy
+  // This ensures the frontend gets the correct key for decryption.
+  if (secret !== "0x" + "0".repeat(64)) {
+    mapped.releaseEntropy = secret;
+  } else if (isReleased && mapped.releaseEntropy && mapped.releaseEntropy !== "0x" + "0".repeat(64)) {
+    // Fallback: if getVaultSecret failed or returned empty, but releaseEntropy is set, use that.
+    // This covers cases where the contract MIGHT have set releaseEntropy correctly (e.g. if my previous patch was deployed elsewhere)
+    // or if the frontend logic changes.
+    mapped.releaseEntropy = mapped.releaseEntropy;
+  }
+
+
 
   return {
-    owner: decoded[0] as string,
-    currentDataHash: decoded[1] as string,
-    currentStorageURI: decoded[2] as string,
-    currentProvider: decoded[3] as number,
-    createdAt: decoded[4] as bigint,
-    lastUpdatedAt: decoded[5] as bigint,
-    fileSize: decoded[6] as bigint,
-    contentType: decoded[7] as string,
-    fileName: decoded[8] as string,
-    isPermanent: decoded[9] as boolean,
-    currentVersion: decoded[10] as bigint,
-    totalVersions: decoded[11] as bigint,
-    totalFeePaid: decoded[12] as bigint,
-    releaseDate: decoded[13] as bigint,
-    isReleased: decoded[14] as boolean,
-    encryptedKey: decoded[15] as string,
+    owner: mapped.owner as string,
+    currentDataHash: mapped.currentDataHash as string,
+    currentStorageURI: mapped.currentStorageURI as string,
+    currentProvider: mapped.currentProvider as number,
+    createdAt: mapped.createdAt as bigint,
+    lastUpdatedAt: mapped.lastUpdatedAt as bigint,
+    commitment: mapped.commitment as string,
+    fileSize: mapped.fileSize as bigint,
+    contentType: mapped.contentType as string,
+    fileName: mapped.fileName as string,
+    isPermanent: mapped.isPermanent as boolean,
+    currentVersion: mapped.currentVersion as bigint,
+    totalVersions: mapped.totalVersions as bigint,
+    totalFeePaid: mapped.totalFeePaid as bigint,
+    releaseDate: mapped.releaseDate as bigint,
+    isReleased: mapped.isReleased as boolean,
+    releaseEntropy: mapped.releaseEntropy as string,
+    secret,
+    encryptedKey: mapped.encryptedKey,
   };
 }
+
+export async function finalizeRelease(
+  chainId: ChainId,
+  contractDataId: string,
+  contractAddress?: string,
+): Promise<string> {
+  if (!window.ethereum) {
+    throw new Error("MetaMask not installed");
+  }
+
+  const config = CHAIN_CONFIG[chainId];
+  const targetAddress =
+    typeof contractAddress === "string" && contractAddress.trim().length > 0
+      ? contractAddress.trim()
+      : config.contractAddress;
+
+  const userAddress = await connectMetaMask();
+  const currentChainId = await getCurrentChainId();
+
+  if (currentChainId !== config.chainId) {
+    await switchToChain(chainId);
+  }
+
+  const selector = abiSelector("finalizeRelease(bytes32)");
+  const data = "0x" + selector + encodeBytes32(contractDataId);
+
+  const txHash = (await window.ethereum.request({
+    method: "eth_sendTransaction",
+    params: [
+      {
+        to: targetAddress,
+        from: userAddress,
+        data,
+      },
+    ],
+  })) as string;
+
+  return txHash;
+}
+
 
 export async function readBitxenDataIdByHash(params: {
   chainId: ChainId;
@@ -866,49 +1188,28 @@ async function hashData(data: string): Promise<string> {
 }
 
 /**
- * Get registration fee from contract
+ * Calculate dynamic fee from contract
  * Returns fee in wei (as bigint)
  */
-export async function getRegistrationFee(
-  chainId: ChainId = DEFAULT_CHAIN,
-  isPermanent: boolean = false,
+export async function calculateBitxenFee(
+  chainId: ChainId
 ): Promise<bigint> {
-  if (!window.ethereum) {
-    throw new Error("MetaMask not installed");
-  }
-
   const config = CHAIN_CONFIG[chainId];
 
-  // Call registrationFee() on the contract
-  const data = "0x14c44e09"; // keccak256("registrationFee()")[0:4]
-
   try {
-    const result = (await window.ethereum.request({
-      method: "eth_call",
-      params: [
-        {
-          to: config.contractAddress,
-          data: data,
-        },
-        "latest",
-      ],
-    })) as string;
-
-    // Handle empty or invalid result
-    if (!result || result === "0x" || result.length < 3) {
-      console.warn("Empty result from registrationFee, using fallback");
-      const fallbackFee = BigInt("1000000000000000000"); // 1 token
-      return isPermanent ? fallbackFee * BigInt(10) : fallbackFee;
-    }
-
-    const baseFee = BigInt(result);
-    // Permanent storage costs 10x
-    return isPermanent ? baseFee * BigInt(10) : baseFee;
+    const data = encodeCalculateFee();
+    const resultHex = await ethCall({
+      rpcUrl: config.rpcUrl,
+      to: config.contractAddress,
+      data,
+    });
+    
+    if (!resultHex || resultHex === "0x") return BigInt(0);
+    return BigInt(resultHex);
   } catch (error) {
-    console.error("Error fetching registration fee:", error);
-    // Fallback to 1 BITXEN (10^18 wei)
-    const oneToken = BigInt(10) ** BigInt(18);
-    return isPermanent ? BigInt(10) * oneToken : oneToken;
+    console.error("Failed to calculate Bitxen fee:", error);
+    // Fallback: Return 0 or handle error appropriately
+    throw error;
   }
 }
 
@@ -921,6 +1222,38 @@ export function formatBitxenAmount(amount: bigint): string {
   const decimals = 18;
   const value = Number(amount) / Math.pow(10, decimals);
   return `${value.toFixed(2)} BITXEN`;
+}
+
+/**
+ * Get BITXEN token balance for a given address on a given chain.
+ * Uses eth_call with balanceOf(address) – no gas cost.
+ * @param chainId - The chain to query
+ * @param address - Wallet address to check
+ * @returns Balance in wei (bigint)
+ */
+export async function getBitxenBalance(
+  chainId: ChainId,
+  address: string,
+): Promise<bigint> {
+  const config = CHAIN_CONFIG[chainId];
+  // ERC-20 balanceOf(address) selector = 0x70a08231
+  const selector = abiSelector("balanceOf(address)");
+  // Encode address: pad to 32 bytes
+  const encodedAddress = address.toLowerCase().replace("0x", "").padStart(64, "0");
+  const data = "0x" + selector + encodedAddress;
+
+  try {
+    const resultHex = await ethCall({
+      rpcUrl: config.rpcUrl,
+      to: config.contractAddress,
+      data,
+    });
+    if (!resultHex || resultHex === "0x") return BigInt(0);
+    return BigInt(resultHex);
+  } catch (error) {
+    console.warn("Failed to read BITXEN balance:", error);
+    return BigInt(0);
+  }
 }
 
 /**
@@ -957,7 +1290,8 @@ export async function dispatchHybrid(
 ): Promise<HybridDispatchResult> {
   const isPermanent = options.isPermanent === true;
   const releaseDate = typeof options.releaseDate === "bigint" ? options.releaseDate : BigInt(0);
-  const encryptedKey = typeof options.encryptedKey === "string" ? options.encryptedKey : "";
+  const commitment = typeof options.commitment === "string" ? options.commitment : "0x" + "0".repeat(64);
+  const secret = typeof options.secret === "string" ? options.secret : "0x" + "0".repeat(64);
   const onProgress = options.onProgress;
   const onUploadProgress = options.onUploadProgress;
   const existingContractDataId =
@@ -1035,8 +1369,15 @@ export async function dispatchHybrid(
     const fileSize = BigInt(new TextEncoder().encode(payloadString).length);
 
     // Get the required fee
-    const fee = await getRegistrationFee(chainId, isPermanent);
+    const fee = await calculateBitxenFee(chainId);
     console.log(`📝 Registration fee: ${formatBitxenAmount(fee)}`);
+
+    // Cek balance BITXEN sebelum kirim transaksi
+    const balance = await getBitxenBalance(chainId, fromAddress);
+    console.log(`💰 BITXEN balance: ${formatBitxenAmount(balance)}`);
+    if (balance < fee) {
+      throw new InsufficientBitxenError({ required: fee, balance, chainId });
+    }
 
     // Register with ar:// URI pointing to Arweave
     const storageURI = `ar://${arweaveTxId}`;
@@ -1046,19 +1387,20 @@ export async function dispatchHybrid(
           existingContractDataId,
           dataHash,
           storageURI,
-          1,
+          1, // provider as number, will be encoded to bytes32 in helper
           fileSize,
         )
       : encodeRegisterData(
           dataHash,
           storageURI,
-          1,
+          1, // provider as number, will be encoded to bytes32 in helper
           fileSize,
           "application/json",
           `vault-${vaultId}.json`,
           isPermanent,
           releaseDate,
-          encryptedKey,
+          commitment,
+          secret,
         );
 
     const registerTxHash = (await window.ethereum.request({
@@ -1093,6 +1435,12 @@ export async function dispatchHybrid(
     };
   } catch (error) {
     console.error("Hybrid dispatch error:", error);
+
+    // Re-throw InsufficientBitxenError as-is agar frontend bisa
+    // mendeteksinya dengan instanceof dan tampilkan UI khusus.
+    if (error instanceof InsufficientBitxenError) {
+      throw error;
+    }
 
     if ((error as { code?: number }).code === 4001) {
       throw new Error("Transaction was rejected. Please try again.");

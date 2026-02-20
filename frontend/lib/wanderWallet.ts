@@ -731,16 +731,17 @@ export async function dispatchToArweave(
       throw new Error('Wallet not connected. Please connect your wallet to proceed.');
     }
 
-    if (effectivePayloadBytes.byteLength <= 250_000 && typeof wallet.dispatch === "function") {
-      onStatus?.("Waiting for wallet confirmation...");
-      const dispatched = await wallet.dispatch(transaction as unknown as never);
-      onProgress?.(100);
-      onStatus?.("Upload successful.");
-      return {
-        txId: dispatched.id,
-        type: typeof dispatched.type === "string" && dispatched.type.trim().length > 0 ? dispatched.type : "DISPATCH",
-      };
-    }
+    // Force direct transaction for all sizes to ensure instant visibility on gateway
+    // if (effectivePayloadBytes.byteLength <= 250_000 && typeof wallet.dispatch === "function") {
+    //   onStatus?.("Waiting for wallet confirmation...");
+    //   const dispatched = await wallet.dispatch(transaction as unknown as never);
+    //   onProgress?.(100);
+    //   onStatus?.("Upload successful.");
+    //   return {
+    //     txId: dispatched.id,
+    //     type: typeof dispatched.type === "string" && dispatched.type.trim().length > 0 ? dispatched.type : "DISPATCH",
+    //   };
+    // }
 
     const signedRaw = (await wallet.sign(transaction)) as unknown;
     if (!signedRaw || typeof signedRaw !== "object") {

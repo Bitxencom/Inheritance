@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { CHAIN_CONFIG, type ChainId } from "@/lib/metamaskWallet";
 
 const backendBaseUrl =
   process.env.BACKEND_BASE_URL?.replace(/\/$/, "") || "http://localhost:7002";
@@ -44,6 +45,13 @@ async function findLatestArweaveTxIdForVault(vaultId: string): Promise<string | 
     return null;
   }
 }
+
+// Helper to resolve numeric chainId from string key
+const resolveChainId = (chainKey: string | undefined): number | null => {
+  if (!chainKey) return null;
+  const config = CHAIN_CONFIG[chainKey as ChainId];
+  return config ? config.chainId : null;
+};
 
 export async function POST(req: Request) {
   let payload;
@@ -108,6 +116,23 @@ export async function POST(req: Request) {
         lastData = primary.data;
 
         if (primary.response.ok && primary.data.success) {
+          const resolvedTxId =
+            typeof arweaveTxId === "string" && arweaveTxId.trim().length > 0
+              ? arweaveTxId.trim()
+              : await findLatestArweaveTxIdForVault(normalizedVaultId);
+
+          const meta = (primary.data.metadata as Record<string, unknown>) || {};
+          
+          // Fallback extraction from metadata
+          const contractDataId = (primary.data.contractDataId as string) || (meta.contractDataId as string) || null;
+          const contractAddress = (primary.data.contractAddress as string) || (meta.contractAddress as string) || null;
+          const releaseEntropy = (primary.data.releaseEntropy as string) || (meta.releaseEntropy as string) || null;
+          
+          let chainId = (primary.data.chainId as number) || null;
+          if (!chainId && typeof meta.blockchainChain === "string") {
+             chainId = resolveChainId(meta.blockchainChain);
+          }
+
           return NextResponse.json({
             success: true,
             encryptedVault: primary.data.encryptedVault || null,
@@ -115,6 +140,11 @@ export async function POST(req: Request) {
             metadata: primary.data.metadata || null,
             legacy: primary.data.legacy || null,
             message: primary.data.message || "Vault unlocked successfully.",
+            releaseEntropy,
+            contractDataId,
+            contractAddress,
+            chainId,
+            latestTxId: resolvedTxId,
           });
         }
 
@@ -140,6 +170,19 @@ export async function POST(req: Request) {
             lastData = fb.data;
 
             if (fb.response.ok && fb.data.success) {
+              const successfulTxId = candidate ?? (await findLatestArweaveTxIdForVault(normalizedVaultId));
+
+              const meta = (fb.data.metadata as Record<string, unknown>) || {};
+              // Fallback extraction from metadata
+              const contractDataId = (fb.data.contractDataId as string) || (meta.contractDataId as string) || null;
+              const contractAddress = (fb.data.contractAddress as string) || (meta.contractAddress as string) || null;
+              const releaseEntropy = (fb.data.releaseEntropy as string) || (meta.releaseEntropy as string) || null;
+              
+              let chainId = (fb.data.chainId as number) || null;
+              if (!chainId && typeof meta.blockchainChain === "string") {
+                 chainId = resolveChainId(meta.blockchainChain);
+              }
+
               return NextResponse.json({
                 success: true,
                 encryptedVault: fb.data.encryptedVault || null,
@@ -147,6 +190,11 @@ export async function POST(req: Request) {
                 metadata: fb.data.metadata || null,
                 legacy: fb.data.legacy || null,
                 message: fb.data.message || "Vault unlocked successfully.",
+                releaseEntropy,
+                contractDataId,
+                contractAddress,
+                chainId,
+                latestTxId: successfulTxId,
               });
             }
           }

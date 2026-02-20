@@ -21,6 +21,24 @@ import {
 } from "../services/storage/arweave.js";
 import { appEnv } from "../config/env.js";
 
+const triggerSchema = z
+  .object({
+    triggerType: z.enum(["date", "death", "manual"]),
+    triggerDate: z.string().optional(),
+  })
+  .refine(
+    (data) => {
+      if (data.triggerType !== "date") {
+        return !data.triggerDate || data.triggerDate.trim() === "";
+      }
+      return true;
+    },
+    {
+      message: "Trigger date must be empty if trigger type is not date",
+      path: ["triggerDate"],
+    },
+  );
+
 const vaultSchema = z.object({
   willDetails: z.object({
     willType: z.enum(["one-time", "editable"]),
@@ -56,10 +74,7 @@ const vaultSchema = z.object({
     )
     .optional()
     .default([]),
-  triggerRelease: z.object({
-    triggerType: z.enum(["date", "death", "manual"]),
-    triggerDate: z.string().optional(),
-  }),
+  triggerRelease: triggerSchema,
   payment: z.object({
     paymentMethod: z.enum(["wander", "metamask"]),
   }),
@@ -327,7 +342,7 @@ const clientEncryptedSchema = z.object({
     keyMode: z.enum(["pqc", "envelope"]).optional(),
   }),
   metadata: z.object({
-    trigger: z.any(),
+    trigger: triggerSchema,
     beneficiaryCount: z.number(),
     securityQuestionHashes: z.array(
       z.object({
@@ -532,18 +547,7 @@ vaultRouter.post("/:vaultId/unlock", async (req, res, next) => {
       }
     }
 
-    if (parsed.securityQuestionAnswers && parsed.securityQuestionAnswers.length > 0) {
-      const limit = rateLimitVerify(req, vaultId);
-      if (!limit.ok) {
-        const seconds = Math.max(1, Math.ceil(limit.retryAfterMs / 1000));
-        res.setHeader("Retry-After", String(seconds));
-        return res.status(429).json({
-          success: false,
-          error: "Too many attempts. Please try again later.",
-        });
-      }
-
-      const storedHashes = (metadata.securityQuestionHashes as Array<{
+    const storedHashes = (metadata.securityQuestionHashes as Array<{
         q?: string;
         a?: string;
         question?: string;
@@ -556,92 +560,108 @@ vaultRouter.post("/:vaultId/unlock", async (req, res, next) => {
         points?: number;
       }>) || [];
 
-      if (storedHashes.length > 0) {
-        const expectedClaimNonce = computeClaimNonce({
-          vaultId,
-          latestTxId: uploadPayload.latestTxId,
+    if (storedHashes.length > 0) {
+      if (!parsed.securityQuestionAnswers || parsed.securityQuestionAnswers.length === 0) {
+        return res.status(401).json({
+          success: false,
+          error: "Security questions are required to unlock this vault.",
         });
-        const requiredIndexes = selectRequiredIndexes({
-          totalQuestions: storedHashes.length,
-          claimNonce: expectedClaimNonce,
+      }
+
+      const limit = rateLimitVerify(req, vaultId);
+      if (!limit.ok) {
+        const seconds = Math.max(1, Math.ceil(limit.retryAfterMs / 1000));
+        res.setHeader("Retry-After", String(seconds));
+        return res.status(429).json({
+          success: false,
+          error: "Too many attempts. Please try again later.",
         });
+      }
 
-        const useRequiredIndexes =
-          typeof parsed.claimNonce === "string" && parsed.claimNonce.length > 0;
-        if (useRequiredIndexes && parsed.claimNonce !== expectedClaimNonce) {
-          return res.status(400).json({
-            success: false,
-            error: "Invalid claim nonce.",
-          });
+      const expectedClaimNonce = computeClaimNonce({
+        vaultId,
+        latestTxId: uploadPayload.latestTxId,
+      });
+      const requiredIndexes = selectRequiredIndexes({
+        totalQuestions: storedHashes.length,
+        claimNonce: expectedClaimNonce,
+      });
+
+      const useRequiredIndexes =
+        typeof parsed.claimNonce === "string" && parsed.claimNonce.length > 0;
+      if (useRequiredIndexes && parsed.claimNonce !== expectedClaimNonce) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid claim nonce.",
+        });
+      }
+
+      const providedAnswers = parsed.securityQuestionAnswers;
+      const answersByIndex = new Map<number, string>();
+      for (let i = 0; i < providedAnswers.length; i += 1) {
+        const provided = providedAnswers[i];
+        const idx = typeof provided.index === "number" ? provided.index : i;
+        if (!answersByIndex.has(idx)) {
+          answersByIndex.set(idx, provided.answer);
         }
+      }
 
-        const providedAnswers = parsed.securityQuestionAnswers;
-        const answersByIndex = new Map<number, string>();
-        for (let i = 0; i < providedAnswers.length; i += 1) {
-          const provided = providedAnswers[i];
-          const idx = typeof provided.index === "number" ? provided.index : i;
-          if (!answersByIndex.has(idx)) {
-            answersByIndex.set(idx, provided.answer);
-          }
+      const indexesToCheck = useRequiredIndexes
+        ? requiredIndexes
+        : Array.from({ length: providedAnswers.length }, (_, i) => i);
+
+      const incorrectIndexes: number[] = [];
+      const correctIndexes: number[] = [];
+
+      for (const idx of indexesToCheck) {
+        if (idx < 0 || idx >= storedHashes.length) {
+          incorrectIndexes.push(idx);
+          continue;
         }
-
-        const indexesToCheck = useRequiredIndexes
-          ? requiredIndexes
-          : Array.from({ length: providedAnswers.length }, (_, i) => i);
-
-        const incorrectIndexes: number[] = [];
-        const correctIndexes: number[] = [];
-
-        for (const idx of indexesToCheck) {
-          if (idx < 0 || idx >= storedHashes.length) {
-            incorrectIndexes.push(idx);
-            continue;
-          }
-          const answer = answersByIndex.get(idx);
-          if (!answer) {
-            incorrectIndexes.push(idx);
-            continue;
-          }
-          const entry = storedHashes[idx] as unknown as Record<string, unknown>;
-          if (!verifyAnswerAgainstEntry(answer, entry)) {
-            incorrectIndexes.push(idx);
-            continue;
-          }
-          correctIndexes.push(idx);
+        const answer = answersByIndex.get(idx);
+        if (!answer) {
+          incorrectIndexes.push(idx);
+          continue;
         }
-
-        const achieved = {
-          correctCount: correctIndexes.length,
-          points: 0,
-        };
-
-        let canEnforcePoints = true;
-        for (const idx of correctIndexes) {
-          const entry = storedHashes[idx] as unknown as Record<string, unknown>;
-          const { points } = getEntryPoints(entry);
-          if (points == null) {
-            canEnforcePoints = false;
-            continue;
-          }
-          achieved.points += points;
+        const entry = storedHashes[idx] as unknown as Record<string, unknown>;
+        if (!verifyAnswerAgainstEntry(answer, entry)) {
+          incorrectIndexes.push(idx);
+          continue;
         }
+        correctIndexes.push(idx);
+      }
 
-        const policy = unlockPolicyV1;
-        const meetsCorrectCount = achieved.correctCount >= policy.requiredCorrect;
-        const meetsPoints = canEnforcePoints ? achieved.points >= policy.minPoints : true;
+      const achieved = {
+        correctCount: correctIndexes.length,
+        points: 0,
+      };
 
-        const ok = meetsCorrectCount && meetsPoints;
-
-        if (!ok) {
-          return res.status(401).json({
-            success: false,
-            error: meetsCorrectCount ? "Unlock policy requirements not met." : "Incorrect answers to security questions. Please try again.",
-            incorrectIndexes,
-            unlockPolicy: policy,
-            achieved,
-            fallbackRequired: !canEnforcePoints,
-          });
+      let canEnforcePoints = true;
+      for (const idx of correctIndexes) {
+        const entry = storedHashes[idx] as unknown as Record<string, unknown>;
+        const { points } = getEntryPoints(entry);
+        if (points == null) {
+          canEnforcePoints = false;
+          continue;
         }
+        achieved.points += points;
+      }
+
+      const policy = unlockPolicyV1;
+      const meetsCorrectCount = achieved.correctCount >= policy.requiredCorrect;
+      const meetsPoints = canEnforcePoints ? achieved.points >= policy.minPoints : true;
+
+      const ok = meetsCorrectCount && meetsPoints;
+
+      if (!ok) {
+        return res.status(401).json({
+          success: false,
+          error: meetsCorrectCount ? "Unlock policy requirements not met." : "Incorrect answers to security questions. Please try again.",
+          incorrectIndexes,
+          unlockPolicy: policy,
+          achieved,
+          fallbackRequired: !canEnforcePoints,
+        });
       }
     }
 
@@ -654,6 +674,7 @@ vaultRouter.post("/:vaultId/unlock", async (req, res, next) => {
           ...metadata,
           encryptionVersion,
         },
+        latestTxId: uploadPayload.latestTxId ?? null,
       });
     }
 
@@ -692,6 +713,7 @@ vaultRouter.post("/:vaultId/unlock", async (req, res, next) => {
             encryptionVersion,
             isPqcEnabled: true,
           },
+          latestTxId: uploadPayload.latestTxId ?? null,
         });
       } catch (error) {
         console.error("❌ Failed to decrypt PQC vault during unlock:", error);
@@ -714,6 +736,7 @@ vaultRouter.post("/:vaultId/unlock", async (req, res, next) => {
         encryptionVersion,
         isPqcEnabled: false,
       },
+      latestTxId: uploadPayload.latestTxId ?? null,
     });
   } catch (error) {
     if (error instanceof z.ZodError) {

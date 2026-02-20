@@ -41,14 +41,15 @@ import type {
   VaultEditWizardProps,
 } from "./types";
 import { editSteps, initialEditFormState } from "./constants";
-import { StorageSelector, MetaMaskWalletButton, WanderWalletButton } from "@/components/shared/payment";
+import { UnifiedPaymentSelector, type PaymentMode } from "@/components/shared/payment";
 import { Stepper } from "@/components/shared/stepper";
-import { connectWanderWallet } from "@/lib/wanderWallet";
+
 import {
   type ChainId,
   getAvailableChains,
   getChainConfig,
   DEFAULT_CHAIN,
+  CHAIN_CONFIG,
   readBitxenDataIdByHash,
   readBitxenDataRecord,
 } from "@/lib/metamaskWallet";
@@ -57,6 +58,7 @@ import { getVaultById, updateVaultTxId } from "@/lib/vault-storage";
 import { combineSharesClient } from "@/lib/shamirClient";
 import {
   deriveEffectiveAesKeyClient,
+  deriveUnlockKey,
   decryptVaultPayloadClient,
   decryptVaultPayloadRawKeyClient,
   encryptVaultPayloadClient,
@@ -221,6 +223,65 @@ async function discoverBitxenEncryptedKeyForVault(vaultId: string): Promise<{
   contractEncryptedKey: string;
 } | null> {
   const localVault = getVaultById(vaultId);
+
+  // Strategy 1: Use localStorage chain + contractDataId directly (fastest — no RPC loop needed)
+  const localChainKey = typeof localVault?.blockchainChain === "string" && localVault.blockchainChain.trim().length > 0
+    ? localVault.blockchainChain.trim() as ChainId
+    : null;
+  const localContractDataId = typeof localVault?.contractDataId === "string" && localVault.contractDataId.startsWith("0x")
+    ? localVault.contractDataId
+    : null;
+  const localContractAddress = typeof localVault?.contractAddress === "string" && localVault.contractAddress.trim().length > 0
+    ? localVault.contractAddress.trim()
+    : undefined;
+
+  if (localChainKey && localContractDataId) {
+    return {
+      chainKey: localChainKey,
+      contractDataId: localContractDataId,
+      contractEncryptedKey: "",
+    };
+  }
+
+  // Strategy 2: Arweave index document (bitxen-index tag) — fast, single fetch
+  try {
+    const gqlResponse = await fetch("https://arweave.net/graphql", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: `query ($vaultId: String!) {
+          transactions(first: 1 sort: HEIGHT_DESC tags: [
+            { name: "Doc-Id", values: [$vaultId] }
+            { name: "App-Name", values: ["doc-storage"] }
+            { name: "Type", values: ["bitxen-index"] }
+          ]) { edges { node { id } } }
+        }`,
+        variables: { vaultId: vaultId.trim() },
+      }),
+    });
+    if (gqlResponse.ok) {
+      const gql = await gqlResponse.json().catch(() => ({}));
+      const indexTxId = gql?.data?.transactions?.edges?.[0]?.node?.id;
+      if (typeof indexTxId === "string" && indexTxId.trim().length > 0) {
+        const indexResponse = await fetch(`https://arweave.net/${indexTxId.trim()}`);
+        if (indexResponse.ok) {
+          const indexJson = await indexResponse.json().catch(() => null);
+          const bitxen = indexJson?.bitxen;
+          const contractDataId = typeof bitxen?.contractDataId === "string" && bitxen.contractDataId.startsWith("0x")
+            ? bitxen.contractDataId : null;
+          const chainKey = typeof bitxen?.chainKey === "string" && bitxen.chainKey.trim().length > 0
+            ? bitxen.chainKey.trim() as ChainId : null;
+          if (contractDataId && chainKey) {
+            return { chainKey, contractDataId, contractEncryptedKey: "" };
+          }
+        }
+      }
+    }
+  } catch {
+    // fall through to hash-based strategy
+  }
+
+  // Strategy 3: Hash-based on-chain lookup (slow fallback — only used if above strategies fail)
   const txId = typeof localVault?.arweaveTxId === "string" && localVault.arweaveTxId.trim().length > 0
     ? localVault.arweaveTxId.trim()
     : await findLatestArweaveDocTxIdForVault(vaultId);
@@ -230,18 +291,26 @@ async function discoverBitxenEncryptedKeyForVault(vaultId: string): Promise<{
   const bytes = new TextEncoder().encode(text);
   const latestHash = ("0x" + (await sha256Hex(bytes))).toLowerCase();
 
-  const chains = getAvailableChains();
+  // Limit to known chain if available, otherwise try all chains
+  const chains = localChainKey ? [localChainKey] : getAvailableChains();
   for (const chainKey of chains) {
     for (let v = 1; v <= 30; v += 1) {
       const id = await readBitxenDataIdByHash({
         chainId: chainKey,
         dataHash: latestHash,
         version: BigInt(v),
+        ...(localContractAddress ? { contractAddress: localContractAddress } : {}),
       }).catch(() => null);
-      if (typeof id === "string" && id.startsWith("0x") && id.length === 66 && !/^0x0{64}$/i.test(id)) {
-        const record = await readBitxenDataRecord({ chainId: chainKey, contractDataId: id }).catch(() => null);
+      // Zero result means no more versions on this chain — break early
+      if (!id || /^0x0{64}$/i.test(id)) break;
+      if (typeof id === "string" && id.startsWith("0x") && id.length === 66) {
+        const record = await readBitxenDataRecord({
+          chainId: chainKey,
+          contractDataId: id,
+          ...(localContractAddress ? { contractAddress: localContractAddress } : {}),
+        }).catch(() => null);
         if (record && typeof record.currentDataHash === "string" && record.currentDataHash.toLowerCase() === latestHash) {
-          return { chainKey, contractDataId: id, contractEncryptedKey: record.encryptedKey };
+          return { chainKey, contractDataId: id, contractEncryptedKey: "" };
         }
       }
     }
@@ -297,6 +366,8 @@ export function VaultEditWizard({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
   const [paymentStatus, setPaymentStatus] = useState<string | null>(null);
+  const [paymentProgress, setPaymentProgress] = useState<number | null>(null);
+  const [paymentPhase, setPaymentPhase] = useState<"confirm" | "upload" | "finalize" | null>(null);
   const [isSecurityAnswersVerified, setIsSecurityAnswersVerified] = useState(false);
   const [validSecurityAnswerIndexes, setValidSecurityAnswerIndexes] = useState<number[]>([]);
   const [isFractionKeysVerified, setIsFractionKeysVerified] = useState(false);
@@ -313,13 +384,8 @@ export function VaultEditWizard({
 
   // State for pending edit transaction (from localStorage)
   const [hasPendingEdit, setHasPendingEdit] = useState(false);
+  const [isStorageAutoDetected, setIsStorageAutoDetected] = useState(false);
 
-  // State for payment
-  const [paymentState, setPaymentState] = useState<{
-    paymentMethod: "wander";
-  }>({
-    paymentMethod: "wander",
-  });
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -332,6 +398,7 @@ export function VaultEditWizard({
   const hybridChainRef = useRef<ChainId | null>(null);
   const hybridContractDataIdRef = useRef<string | null>(null);
   const hybridContractEncryptedKeyRef = useRef<string | null>(null);
+  const hybridContractSecretRef = useRef<string | null>(null);
 
   const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
@@ -376,6 +443,10 @@ export function VaultEditWizard({
     hybridChainRef.current = null;
     hybridContractDataIdRef.current = null;
     hybridContractEncryptedKeyRef.current = null;
+    hybridContractSecretRef.current = null;
+    setIsStorageAutoDetected(false);
+    setPaymentProgress(null);
+    setPaymentPhase(null);
   }, []);
 
   useEffect(() => {
@@ -407,14 +478,6 @@ export function VaultEditWizard({
     setVerificationSuccess(false);
   };
 
-  const handlePaymentMethodChange = (
-    method: "wander",
-  ) => {
-    setPaymentState((prev) => ({
-      ...prev,
-      paymentMethod: method,
-    }));
-  };
 
   const handleWillDetailsChange = (field: "title" | "content", value: string) => {
     setFormState((prev) => ({
@@ -1097,15 +1160,67 @@ export function VaultEditWizard({
         const vaultKey = encryptedVaultForDecrypt
           ? await deriveEffectiveAesKeyClient(encryptedVaultForDecrypt, combinedKey)
           : combinedKey;
-        const discovered = await discoverBitxenEncryptedKeyForVault(formState.vaultId);
-        if (!discovered) {
-          throw new Error("Unable to load encrypted key from Bitxen contract.");
+
+        // Get contractEncryptedKey from metadata (returned by backend) — no on-chain lookup needed
+        const metadataEncryptedKey =
+          typeof data.metadata?.contractEncryptedKey === "string" && data.metadata.contractEncryptedKey.trim().length > 0
+            ? data.metadata.contractEncryptedKey.trim()
+            : null;
+
+        if (!metadataEncryptedKey) {
+          throw new Error("Unable to load encrypted key. Please ensure your vault was created with the Hybrid storage option.");
         }
-        hybridChainRef.current = discovered.chainKey;
-        hybridContractDataIdRef.current = discovered.contractDataId;
-        hybridContractEncryptedKeyRef.current = discovered.contractEncryptedKey;
-        const wrappedKey = parseWrappedKeyV1(JSON.parse(discovered.contractEncryptedKey) as unknown);
-        const payloadKey = await unwrapKeyClient(wrappedKey, vaultKey);
+
+        hybridContractEncryptedKeyRef.current = metadataEncryptedKey;
+
+        const wrappedKey = parseWrappedKeyV1(JSON.parse(metadataEncryptedKey) as unknown);
+
+        // Derive the same finalVaultKey used during creation:
+        // finalVaultKey = deriveUnlockKey(vaultKey, contractSecret, {chainId, contractAddress})
+        // contractSecret is stored in metadata; contractAddress/chainId from metadata or CHAIN_CONFIG.
+        const contractSecret =
+          typeof data.metadata?.contractSecret === "string" && data.metadata.contractSecret.trim().length > 0
+            ? data.metadata.contractSecret.trim()
+            : null;
+
+        hybridContractSecretRef.current = contractSecret;
+
+        let unwrappingKey = vaultKey;
+        if (contractSecret) {
+          const metaChainKey =
+            typeof data.metadata?.blockchainChain === "string" && data.metadata.blockchainChain.trim().length > 0
+              ? (data.metadata.blockchainChain.trim() as ChainId)
+              : null;
+          const localVaultForKey = getVaultById(formState.vaultId);
+          const resolvedChainKey =
+            metaChainKey ??
+            (typeof localVaultForKey?.blockchainChain === "string" ? (localVaultForKey.blockchainChain as ChainId) : null) ??
+            DEFAULT_CHAIN as ChainId;
+          const metaContractAddress =
+            typeof data.metadata?.contractAddress === "string" && data.metadata.contractAddress.trim().length > 0
+              ? data.metadata.contractAddress.trim()
+              : null;
+          const resolvedContractAddress =
+            metaContractAddress ??
+            (typeof localVaultForKey?.contractAddress === "string" ? localVaultForKey.contractAddress : null) ??
+            CHAIN_CONFIG[resolvedChainKey].contractAddress;
+          const resolvedChainId = CHAIN_CONFIG[resolvedChainKey].chainId;
+          unwrappingKey = await deriveUnlockKey(vaultKey, contractSecret, {
+            contractAddress: resolvedContractAddress,
+            chainId: resolvedChainId,
+          });
+        }
+
+        // Run discovery and decryption in parallel — discovery doesn't block decryption
+        const [payloadKey, discovered] = await Promise.all([
+          unwrapKeyClient(wrappedKey, unwrappingKey),
+          discoverBitxenEncryptedKeyForVault(formState.vaultId).catch(() => null),
+        ]);
+
+        if (discovered) {
+          hybridChainRef.current = discovered.chainKey;
+          hybridContractDataIdRef.current = discovered.contractDataId;
+        }
         envelopePayloadKeyRef.current = payloadKey;
         decrypted = (data.decryptedVault
           ? data.decryptedVault
@@ -1132,8 +1247,32 @@ export function VaultEditWizard({
         return false;
       }
 
+      // Auto-detect storage type dari metadata atau localStorage
+      const localVaultForStorage = getVaultById(formState.vaultId);
+      const detectedStorageType: "arweave" | "bitxenArweave" =
+        (typeof data.metadata?.blockchainChain === "string" && data.metadata.blockchainChain.trim().length > 0) ||
+        (typeof data.metadata?.contractEncryptedKey === "string" && data.metadata.contractEncryptedKey.trim().length > 0) ||
+        (typeof localVaultForStorage?.storageType === "string" && localVaultForStorage.storageType === "bitxenArweave") ||
+        (typeof localVaultForStorage?.contractDataId === "string" && localVaultForStorage.contractDataId.startsWith("0x"))
+          ? "bitxenArweave"
+          : "arweave";
+
+      setIsStorageAutoDetected(true);
       setFormState((prev) => ({
         ...prev,
+        storageType: detectedStorageType,
+        payment: {
+          ...prev.payment,
+          paymentMethod: detectedStorageType === "bitxenArweave" ? "metamask" : "wander",
+          selectedChain:
+            detectedStorageType === "bitxenArweave"
+              ? (typeof data.metadata?.blockchainChain === "string" && data.metadata.blockchainChain.trim().length > 0
+                  ? data.metadata.blockchainChain.trim()
+                  : typeof localVaultForStorage?.blockchainChain === "string" && localVaultForStorage.blockchainChain.trim().length > 0
+                    ? localVaultForStorage.blockchainChain.trim()
+                    : prev.payment.selectedChain)
+              : prev.payment.selectedChain,
+        },
         willDetails: {
           title: decrypted.willDetails?.title ?? "",
           content: decrypted.willDetails?.content ?? "",
@@ -1210,7 +1349,7 @@ export function VaultEditWizard({
 
 
 
-  const submitEdit = async () => {
+  const submitEdit = async (overrides?: { storageType?: "arweave" | "bitxenArweave"; selectedChain?: ChainId }) => {
     setIsSubmitting(true);
     setStepError(null);
 
@@ -1433,6 +1572,22 @@ export function VaultEditWizard({
           ? hybridContractEncryptedKeyRef.current
           : undefined;
 
+      const contractSecretForMetadata =
+        typeof hybridContractSecretRef.current === "string" &&
+        hybridContractSecretRef.current.trim().length > 0
+          ? hybridContractSecretRef.current
+          : undefined;
+
+      const localVaultForMeta = getVaultById(formState.vaultId);
+      const chainKeyForMeta =
+        hybridChainRef.current ??
+        (typeof localVaultForMeta?.blockchainChain === "string" ? (localVaultForMeta.blockchainChain as ChainId) : null) ??
+        null;
+      const contractAddressForMeta =
+        typeof localVaultForMeta?.contractAddress === "string" && localVaultForMeta.contractAddress.trim().length > 0
+          ? localVaultForMeta.contractAddress.trim()
+          : chainKeyForMeta ? CHAIN_CONFIG[chainKeyForMeta].contractAddress : undefined;
+
       const metadata = {
         trigger: updatedPayload.triggerRelease ?? null,
         beneficiaryCount: 0,
@@ -1443,6 +1598,9 @@ export function VaultEditWizard({
             : undefined,
         willType: "editable",
         ...(contractEncryptedKeyForMetadata ? { contractEncryptedKey: contractEncryptedKeyForMetadata } : {}),
+        ...(contractSecretForMetadata ? { contractSecret: contractSecretForMetadata } : {}),
+        ...(chainKeyForMeta ? { blockchainChain: chainKeyForMeta } : {}),
+        ...(contractAddressForMeta ? { contractAddress: contractAddressForMeta } : {}),
         encryptionVersion: envelopePayloadKeyRef.current ? ("v3-envelope" as const) : ("v2-client" as const),
       };
 
@@ -1484,13 +1642,16 @@ export function VaultEditWizard({
       let blockchainChain: string | undefined;
 
       // Check if we need to dispatch from client (New Flow)
+      const effectiveStorageType = overrides?.storageType ?? formState.storageType;
+      const effectiveChainOverride = overrides?.selectedChain;
+
       if (data.shouldDispatch && data.details?.arweavePayload) {
         try {
-          if (formState.storageType === "bitxenArweave") {
+          if (effectiveStorageType === "bitxenArweave") {
             // "bitxenArweave" option now means Hybrid (Arweave + Contract)
-            setPaymentStatus("Step 1/2: Confirm Arweave upload in Wander...");
+            setPaymentStatus("Step 1/2: Confirm in Wander (Arweave)...");
             const { dispatchHybrid } = await import("@/lib/metamaskWallet");
-            const requestedChain = (formState.payment.selectedChain || DEFAULT_CHAIN) as ChainId;
+            const requestedChain = (effectiveChainOverride ?? formState.payment.selectedChain ?? DEFAULT_CHAIN) as ChainId;
             let selectedChain = requestedChain;
             let contractDataId: string | null = null;
             let contractAddress: string | undefined;
@@ -1581,6 +1742,11 @@ export function VaultEditWizard({
                 isPermanent: false,
                 ...(contractDataId ? { contractDataId } : {}),
                 ...(contractAddress ? { contractAddress } : {}),
+                onProgress: (status: string) => setPaymentStatus(status),
+                onUploadProgress: (progress: number) => {
+                  setPaymentProgress(progress);
+                  if (progress >= 0 && progress < 100) setPaymentPhase("upload");
+                },
               }
             );
 
@@ -1591,18 +1757,33 @@ export function VaultEditWizard({
             blockchainChain = selectedChain;
             hybridChainRef.current = selectedChain;
             hybridContractDataIdRef.current = hybridResult.contractDataId;
+            setPaymentProgress(100);
+            setPaymentPhase("finalize");
             setPaymentStatus(`Hybrid storage complete! Arweave + ${selectedChain.toUpperCase()}`);
           } else {
             // Default to Arweave/Wander
             setPaymentStatus("Confirm transaction in Wander Wallet...");
-            const { dispatchToArweave } = await import("@/lib/wanderWallet");
+            const { dispatchToArweave, isWalletReady, connectWanderWallet: connectWander } = await import("@/lib/wanderWallet");
+            if (!(await isWalletReady())) {
+              await connectWander();
+            }
 
             const dispatchResult = await dispatchToArweave(
               data.details.arweavePayload,
-              data.details.vaultId
+              data.details.vaultId,
+              undefined,
+              (progress) => {
+                setPaymentProgress(progress);
+                setPaymentPhase("upload");
+              },
+              (status) => {
+                setPaymentStatus(status);
+              },
             );
 
             txId = dispatchResult.txId;
+            setPaymentProgress(100);
+            setPaymentPhase("finalize");
             setPaymentStatus("Upload successful!");
           }
         } catch (dispatchError) {
@@ -1610,42 +1791,37 @@ export function VaultEditWizard({
           throw new Error(
             dispatchError instanceof Error
               ? dispatchError.message
-              : "Failed to sign and upload transaction"
+              : "Failed to dispatch transaction."
           );
         }
       }
 
-      const resultData: EditSubmissionResult = {
-        success: true,
-        vaultId: formState.vaultId,
-        message:
-          data.message ||
-          "New version of inheritance successfully created and stored on blockchain storage.",
-        arweaveTxId: formState.storageType === "arweave" ? (txId ?? null) : null,
-        blockchainTxHash,
-        blockchainChain,
-        storageType: formState.storageType,
-      };
-
-      // Update localStorage with the new transaction ID
-      // This ensures the vault always points to the latest version
       if (txId) {
         const updated = updateVaultTxId(formState.vaultId, txId, {
-          storageType: formState.storageType,
+          storageType: effectiveStorageType,
           blockchainTxHash: blockchainTxHash || undefined,
           blockchainChain: blockchainChain || undefined,
           contractDataId:
-            formState.storageType === "bitxenArweave"
+            effectiveStorageType === "bitxenArweave"
               ? (hybridContractDataIdRef.current ?? undefined)
               : undefined,
         });
         if (updated) {
           console.log(`✅ Updated vault ${formState.vaultId} with new txId: ${txId}`);
         } else {
-          // Vault not found in localStorage (might be claimed from another device)
           console.log(`ℹ️ Vault ${formState.vaultId} not found in local storage, edit still successful.`);
         }
       }
+
+      const resultData = {
+        success: true,
+        vaultId: formState.vaultId,
+        message: "New version of inheritance successfully created and stored on blockchain storage.",
+        arweaveTxId: effectiveStorageType === "arweave" ? (txId ?? null) : null,
+        blockchainTxHash,
+        blockchainChain,
+        storageType: effectiveStorageType,
+      };
 
       onResult?.({
         status: "success",
@@ -1676,43 +1852,33 @@ export function VaultEditWizard({
     }
   };
 
-  const handleWanderPayment = async () => {
+  const handleUnifiedPayment = async (mode: PaymentMode, chainId?: ChainId) => {
     try {
       setIsProcessingPayment(true);
-      setPaymentStatus("Connecting to your Wander Wallet...");
+      setPaymentProgress(null);
+      setPaymentPhase(null);
 
-      await connectWanderWallet();
+      const effectiveStorageType = mode === "wander" ? "arweave" : "bitxenArweave";
 
-      setPaymentStatus("Wallet connected");
+      setFormState((prev) => ({
+        ...prev,
+        storageType: effectiveStorageType,
+        payment: {
+          ...prev.payment,
+          selectedChain: chainId ?? prev.payment.selectedChain,
+        },
+      }));
 
-      // No separate payment - fee inheritance be handled duringblockchain storage upload
-      await submitEdit();
+      if (mode === "wander") {
+        setPaymentStatus("Preparing your vault...");
+        setPaymentPhase("confirm");
+      } else {
+        setPaymentStatus("Step 1/2: Uploading to Arweave...");
+      }
 
-      setPaymentStatus("Payment successful!");
+      await submitEdit({ storageType: effectiveStorageType, selectedChain: chainId });
     } catch (error) {
-      console.error("Wander Wallet error:", error);
-      setPaymentStatus(
-        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
-    } finally {
-      setIsProcessingPayment(false);
-    }
-  };
-
-  const handleMetaMaskPayment = async () => {
-    try {
-      setIsProcessingPayment(true);
-      setPaymentStatus("Connecting to MetaMask...");
-
-      // MetaMask connection happens within dispatchToBitxen if needed,
-      // but we can trigger it here for better UX
-      setPaymentStatus("MetaMask ready");
-
-      await submitEdit();
-
-      setPaymentStatus("Payment successful!");
-    } catch (error) {
-      console.error("MetaMask error:", error);
+      console.error("Payment error:", error);
       setPaymentStatus(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
@@ -1976,28 +2142,32 @@ export function VaultEditWizard({
       }
     }
 
-    if (editSteps[currentStep].key === "payment") {
-      // If wander method is selected, force user to complete payment
-      if (paymentState.paymentMethod === "wander") {
-        setStepError(
-          "Complete payment via the payment button to save the new version.",
-        );
-        return;
-      }
-
-      // For other methods, allow direct submit
-      await submitEdit();
+    if (editSteps[currentStep].key === "payment" || editSteps[currentStep].key === "storageSelection") {
+      setStepError("Please use the payment button to save the new version.");
       return;
     }
 
-    setCurrentStep((prev) => Math.min(prev + 1, editSteps.length - 1));
+    // Skip step storageSelection jika storage type sudah auto-detected dari vault yang ada
+    const nextStepIndex = currentStep + 1;
+    const nextStep = editSteps[nextStepIndex];
+    if (nextStep?.key === "storageSelection" && isStorageAutoDetected) {
+      setCurrentStep(nextStepIndex + 1);
+    } else {
+      setCurrentStep(Math.min(nextStepIndex, editSteps.length - 1));
+    }
   };
 
   const handlePrev = () => {
     setStepError(null);
     setFieldErrors({});
     if (currentStep === 0) return;
-    setCurrentStep((prev) => prev - 1);
+    const prevStepIndex = currentStep - 1;
+    const prevStep = editSteps[prevStepIndex];
+    if (prevStep?.key === "storageSelection" && isStorageAutoDetected) {
+      setCurrentStep(prevStepIndex - 1);
+    } else {
+      setCurrentStep(prevStepIndex);
+    }
   };
 
   const renderStepContent = () => {
@@ -2352,55 +2522,27 @@ export function VaultEditWizard({
 
       case "storageSelection":
         return (
-          <StorageSelector
-            selectedStorage={formState.storageType}
-            selectedChain={(formState.payment.selectedChain as ChainId) || DEFAULT_CHAIN}
-            onStorageChange={(storage) => {
-              setFormState((prev) => ({
-                ...prev,
-                storageType: storage,
-                payment: {
-                  ...prev.payment,
-                  paymentMethod: storage === "arweave" ? "wander" : "metamask",
-                },
-              }));
-            }}
-            onChainChange={(chain) => {
-              setFormState((prev) => ({
-                ...prev,
-                payment: {
-                  ...prev.payment,
-                  selectedChain: chain,
-                },
-              }));
-            }}
+          <UnifiedPaymentSelector
+            onSubmit={handleUnifiedPayment}
+            isSubmitting={isSubmitting || isProcessingPayment}
+            paymentStatus={paymentStatus}
+            paymentProgress={paymentProgress}
+            paymentPhase={paymentPhase}
+            isReady={true}
           />
         );
 
       case "payment":
-        // Render different component based on storage type
-        if (formState.storageType === "bitxenArweave") {
-          return (
-            <MetaMaskWalletButton
-              selectedChain={(formState.payment.selectedChain as ChainId) || DEFAULT_CHAIN}
-              onClick={handleMetaMaskPayment}
-              disabled={isSubmitting || isProcessingPayment}
-              onChainChange={(chain) =>
-                setFormState((prev) => ({
-                  ...prev,
-                  payment: { ...prev.payment, selectedChain: chain },
-                }))
-              }
-            />
-          );
-        }
-
         return (
-          <WanderWalletButton
-            onClick={handleWanderPayment}
-            isSubmitting={isSubmitting}
-            isProcessingPayment={isProcessingPayment}
+          <UnifiedPaymentSelector
+            onSubmit={handleUnifiedPayment}
+            isSubmitting={isSubmitting || isProcessingPayment}
             paymentStatus={paymentStatus}
+            paymentProgress={paymentProgress}
+            paymentPhase={paymentPhase}
+            isReady={true}
+            lockedMode={isStorageAutoDetected ? (formState.storageType === "bitxenArweave" ? "hybrid" : "wander") : undefined}
+            lockedChain={isStorageAutoDetected && formState.storageType === "bitxenArweave" ? ((formState.payment.selectedChain as ChainId) || DEFAULT_CHAIN) : undefined}
           />
         );
 
@@ -2417,7 +2559,7 @@ export function VaultEditWizard({
             </div>
 
             <div className="space-y-4">
-              <div className="rounded-lg border bg-card p-4 shadow-sm">
+              <div className="rounded-lg border bg-card p-4">
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                     Inheritance ID
@@ -2438,7 +2580,7 @@ export function VaultEditWizard({
               </div>
 
               {latestTxId && (
-                <div className="rounded-lg border bg-card p-4 shadow-sm">
+                <div className="rounded-lg border bg-card p-4">
                   <div className="flex items-center justify-between mb-2">
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                       {formState.storageType === "bitxenArweave"
@@ -2554,7 +2696,13 @@ export function VaultEditWizard({
     <div className="space-y-6">
       {/* Progress Steps */}
       <div className={initialData || (editSteps[currentStep] && editSteps[currentStep].key === "success") ? "hidden" : ""}>
-        <Stepper steps={editSteps} currentStep={currentStep} />
+        {(() => {
+          const visibleSteps = isStorageAutoDetected
+            ? editSteps.filter((s) => s.key !== "storageSelection")
+            : editSteps;
+          const visibleIndex = visibleSteps.findIndex((s) => s.key === editSteps[currentStep]?.key);
+          return <Stepper steps={visibleSteps} currentStep={visibleIndex >= 0 ? visibleIndex : currentStep} />;
+        })()}
       </div>
 
       {/* Warning regarding pending edit - visible on all steps after Vault ID (Step 1) */}

@@ -24,9 +24,22 @@ OLD:
 0x1f3310a9dE5e554CdE6717648E25888EF35B3254
 Explorer: https://testnet.bscscan.com/address/0x1f3310a9dE5e554CdE6717648E25888EF35B3254
 
-NEW: 
+OLD: 
 0xE9a33420eF860bAE14e41a47f37e2D632D4A7bE7
 Explorer: https://testnet.bscscan.com/address/0xE9a33420eF860bAE14e41a47f37e2D632D4A7bE7
+
+OLD - 10 Feb 2026 (releaseEntropy)
+0x0231E1e50F720b5b4024C15aF887fD9B0867c363
+https://testnet.bscscan.com/address/0x0231E1e50F720b5b4024C15aF887fD9B0867c363
+
+OLD - 19 Feb 2026 (releaseEntropy)
+0x61031Ef4F474C4a02aF85D5EC210c830Cdc81D19
+https://testnet.bscscan.com/address/0x61031Ef4F474C4a02aF85D5EC210c830Cdc81D19
+
+NEW - 19 Feb 2026 (Bitxen Governance)
+Bitxen: 0xE157bf1FFe263BF8115d94ebCFe6e27e69a4011E
+BitxenGovernor: 0x0a8c69742dD248820A019E3606c3F6740a7b5311
+https://testnet.bscscan.com/address/0xE157bf1FFe263BF8115d94ebCFe6e27e69a4011E
 
 ## Get Test Tokens
 

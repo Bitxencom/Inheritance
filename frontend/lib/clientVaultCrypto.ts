@@ -1,6 +1,7 @@
 "use client";
 
 import { ml_kem768 } from "@noble/post-quantum/ml-kem";
+import { keccak_256 } from "@noble/hashes/sha3.js";
 
 export type EncryptedVaultClient = {
   cipherText: string;
@@ -55,6 +56,13 @@ export function generateVaultKey(): Uint8Array {
   const key = new Uint8Array(32);
   crypto.getRandomValues(key);
   return key;
+}
+
+export function generateRandomSecret(): string {
+  const crypto = getCrypto();
+  const key = new Uint8Array(32);
+  crypto.getRandomValues(key);
+  return "0x" + Array.from(key).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 async function importAesKey(rawKey: Uint8Array, alg: "AES-CBC" | "AES-GCM"): Promise<CryptoKey> {
@@ -127,7 +135,7 @@ export async function encryptMetadataClient(metadata: Record<string, unknown>, v
   const plain = new TextEncoder().encode(JSON.stringify(metadata));
 
   const encryptedBuffer = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv: ivBytes, additionalData: aad },
+    { name: "AES-GCM", iv: toArrayBuffer(ivBytes), additionalData: toArrayBuffer(aad) },
     key,
     plain,
   );
@@ -146,6 +154,51 @@ export async function encryptMetadataClient(metadata: Record<string, unknown>, v
   payload.set(cipherText, ivBytes.length + tag.length);
 
   return `v3:${toBase64(payload)}`;
+}
+
+export async function decryptMetadataClient(encryptedStr: string, vaultId: string): Promise<Record<string, unknown>> {
+  if (!encryptedStr.startsWith("v3:")) {
+    // Maybe v1/v2 legacy? Or cleartext?
+    // For now assume v3 is required for this path.
+    // If it is JSON, try parsing it directly (legacy fallback)
+    try {
+      return JSON.parse(encryptedStr) as Record<string, unknown>;
+    } catch {
+      throw new Error("Unknown metadata format.");
+    }
+  }
+
+  const rawBase64 = encryptedStr.slice(3);
+  const crypto = getCrypto();
+  const keyBytes = await deriveKeyFromVaultIdClient(vaultId);
+  const key = await importAesKey(keyBytes, "AES-GCM");
+
+  const fullBytes = fromBase64(rawBase64);
+  const ivLength = 12;
+  const tagLength = 16;
+  if (fullBytes.length < ivLength + tagLength) {
+    throw new Error("Invalid encrypted metadata length.");
+  }
+
+  const ivBytes = fullBytes.subarray(0, ivLength);
+  const tag = fullBytes.subarray(ivLength, ivLength + tagLength);
+  const cipherText = fullBytes.subarray(ivLength + tagLength);
+
+  // Web Crypto AES-GCM expects tag appended to ciphertext
+  const encryptedBuffer = new Uint8Array(cipherText.length + tag.length);
+  encryptedBuffer.set(cipherText, 0);
+  encryptedBuffer.set(tag, cipherText.length);
+
+  const aad = new TextEncoder().encode(vaultId);
+
+  const plainBuffer = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: toArrayBuffer(ivBytes), additionalData: toArrayBuffer(aad) },
+    key,
+    toArrayBuffer(encryptedBuffer),
+  );
+
+  const json = new TextDecoder().decode(plainBuffer);
+  return JSON.parse(json) as Record<string, unknown>;
 }
 
 export async function prepareArweavePayloadClient(params: {
@@ -384,4 +437,55 @@ export async function decryptVaultPayloadRawKeyClient(
   const decoder = new TextDecoder();
   const json = decoder.decode(plainBuffer);
   return JSON.parse(json) as unknown;
+}
+
+export async function deriveUnlockKey(
+  shareKey: Uint8Array,
+  releaseEntropy: string,
+  context: { contractAddress: string; chainId: number },
+): Promise<Uint8Array> {
+  const crypto = getCrypto();
+
+  const contextString = `${context.chainId}:${context.contractAddress}`;
+  const saltRaw = releaseEntropy + ":" + contextString;
+  const salt = new TextEncoder().encode(saltRaw);
+
+  const baseKey = await crypto.subtle.importKey(
+    "raw",
+    shareKey as BufferSource,
+    "PBKDF2",
+    false,
+    ["deriveBits"]
+  );
+
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      salt: salt as unknown as BufferSource,
+      iterations: 100000,
+      hash: "SHA-256",
+    },
+    baseKey,
+    256,
+  );
+
+  return new Uint8Array(derivedBits);
+}
+
+export function calculateCommitment(params: {
+  dataHash: string;
+  wrappedKeyHash: string;
+  ownerAddress: string;
+}): string {
+  const dHash = params.dataHash.startsWith("0x") ? params.dataHash.slice(2) : params.dataHash;
+  const kHash = params.wrappedKeyHash.startsWith("0x") ? params.wrappedKeyHash.slice(2) : params.wrappedKeyHash;
+  const owner = params.ownerAddress.startsWith("0x") ? params.ownerAddress.slice(2) : params.ownerAddress;
+
+  const combinedHex = dHash + kHash + owner;
+  const combinedBytes = new Uint8Array(
+    combinedHex.match(/.{1,2}/g)!.map((byte) => parseInt(byte, 16)),
+  );
+
+  const hashBytes = keccak_256(combinedBytes);
+  return "0x" + Array.from(hashBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
 }

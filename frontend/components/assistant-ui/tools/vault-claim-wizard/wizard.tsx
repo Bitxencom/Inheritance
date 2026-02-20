@@ -28,8 +28,10 @@ import {
   deriveEffectiveAesKeyClient,
   decryptVaultPayloadClient,
   decryptVaultPayloadRawKeyClient,
+  decryptMetadataClient,
   sha256Hex,
   unwrapKeyClient,
+  deriveUnlockKey,
   type WrappedKeyV1,
   type EncryptedVaultClient,
 } from "@/lib/clientVaultCrypto";
@@ -38,6 +40,9 @@ import {
   getChainKeyFromNumericChainId,
   readBitxenDataIdByHash,
   readBitxenDataRecord,
+  finalizeRelease,
+  getNetworkIdFromChainKey,
+  CHAIN_CONFIG,
   type ChainId,
 } from "@/lib/metamaskWallet";
 
@@ -74,7 +79,298 @@ type UnlockResponseLike = {
   legacy?: unknown;
   message?: unknown;
   error?: unknown;
+  releaseEntropy?: string;
+  contractDataId?: string;
+  contractAddress?: string;
+  chainId?: number;
 };
+
+/**
+ * Lightweight discovery: find contractDataId + chainKey for a vault from the
+ * Arweave bitxen-index document. Does NOT download the full vault payload.
+ * Works from any browser (no localStorage required).
+ *
+ * Strategy:
+ *  1. Query Arweave GraphQL for a "bitxen-index" tag document for this vaultId.
+ *  2. Parse contractDataId + chainKey from the index JSON.
+ *  3. Fallback: if arweaveTxId is provided, try fetching the doc tx and reading
+ *     embedded bitxen metadata from the payload itself.
+ */
+async function discoverBitxenChainInfo(params: {
+  vaultId: string;
+  arweaveTxId?: string | null;
+  chainKeyHint?: ChainId | null;
+}): Promise<{
+  chainKey: ChainId;
+  contractDataId: string;
+  contractAddress?: string;
+} | null> {
+  const safeVaultId = typeof params.vaultId === "string" ? params.vaultId.trim() : "";
+  if (!safeVaultId) return null;
+
+  // Strategy 1: Query Arweave GraphQL for bitxen-index document
+  try {
+    const response = await fetch("https://arweave.net/graphql", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: `
+          query ($vaultId: String!) {
+            transactions(
+              first: 1
+              sort: HEIGHT_DESC
+              tags: [
+                { name: "Doc-Id", values: [$vaultId] }
+                { name: "App-Name", values: ["doc-storage"] }
+                { name: "Type", values: ["bitxen-index"] }
+              ]
+            ) {
+              edges { node { id } }
+            }
+          }
+        `,
+        variables: { vaultId: safeVaultId },
+      }),
+    });
+    if (response.ok) {
+      const gql = await response.json().catch(() => ({}));
+      const indexTxId = gql?.data?.transactions?.edges?.[0]?.node?.id;
+      if (typeof indexTxId === "string" && indexTxId.trim().length > 0) {
+        const indexText = await fetch(`https://arweave.net/${indexTxId.trim()}`)
+          .then((r) => (r.ok ? r.text() : null))
+          .catch(() => null);
+        if (indexText) {
+          const indexJson = JSON.parse(indexText) as BitxenIndexV1;
+          const contractDataIdRaw = indexJson?.bitxen?.contractDataId;
+          const contractDataId =
+            typeof contractDataIdRaw === "string" && contractDataIdRaw.startsWith("0x")
+              ? contractDataIdRaw
+              : null;
+          const chainKeyRaw = indexJson?.bitxen?.chainKey;
+          const numericChainId =
+            typeof indexJson?.bitxen?.chainId === "number" ? indexJson.bitxen.chainId : null;
+          const inferredChainKey = numericChainId
+            ? getChainKeyFromNumericChainId(numericChainId)
+            : null;
+          const chainKey =
+            typeof chainKeyRaw === "string" && chainKeyRaw.trim().length > 0
+              ? (chainKeyRaw.trim() as ChainId)
+              : inferredChainKey;
+          const contractAddressRaw = indexJson?.bitxen?.contractAddress;
+          const contractAddress =
+            typeof contractAddressRaw === "string" &&
+              /^0x[a-fA-F0-9]{40}$/.test(contractAddressRaw.trim())
+              ? contractAddressRaw.trim()
+              : undefined;
+          if (contractDataId && chainKey) {
+            return { chainKey, contractDataId, contractAddress };
+          }
+        }
+      }
+    }
+  } catch {
+    // ignore, try next strategy
+  }
+
+  // Strategy 2: Fetch vault payload from Arweave and decrypt metadata using vaultId as key.
+  // contractDataId + blockchainChain are stored in encrypted metadata — decrypt with vaultId.
+  // Works from any browser because vaultId is always known (from form input).
+  const txId = typeof params.arweaveTxId === "string" ? params.arweaveTxId.trim() : "";
+  if (txId.length > 0) {
+    try {
+      const payloadText = await fetch(`https://arweave.net/${txId}`)
+        .then((r) => (r.ok ? r.text() : null))
+        .catch(() => null);
+      if (payloadText) {
+        const payloadJson = JSON.parse(payloadText) as Record<string, unknown>;
+        // Vault payload structure: { id, v, t, m (encrypted metadata), d (encrypted vault) }
+        const encryptedMetadata = payloadJson?.m;
+        if (typeof encryptedMetadata === "string" && encryptedMetadata.length > 0) {
+          // Decrypt metadata using vaultId as key (same algorithm as backend)
+          const metadata = await decryptMetadataClient(encryptedMetadata, safeVaultId).catch(() => null);
+          if (metadata) {
+            const contractDataIdRaw = (metadata as Record<string, unknown>).contractDataId;
+            let contractDataId =
+              typeof contractDataIdRaw === "string" && contractDataIdRaw.startsWith("0x")
+                ? contractDataIdRaw
+                : null;
+            const chainKeyRaw = (metadata as Record<string, unknown>).blockchainChain;
+            const chainKey =
+              typeof chainKeyRaw === "string" && chainKeyRaw.trim().length > 0
+                ? (chainKeyRaw.trim() as ChainId)
+                : null;
+            const contractAddressRaw = (metadata as Record<string, unknown>).contractAddress;
+            const contractAddress =
+              typeof contractAddressRaw === "string" &&
+                /^0x[a-fA-F0-9]{40}$/.test(contractAddressRaw.trim())
+                ? contractAddressRaw.trim()
+                : undefined;
+
+            // If contractDataId not in metadata, derive from dataHash by scanning all chains + versions
+            let resolvedId = contractDataId;
+            let resolvedChain = chainKey;
+            let resolvedAddr = contractAddress;
+            if (!resolvedId) {
+              try {
+                const payloadBuffer = new TextEncoder().encode(payloadText);
+                const dataHashRaw = await sha256Hex(payloadBuffer);
+                const dataHash = "0x" + dataHashRaw;
+                const chainsToTry = resolvedChain
+                  ? [resolvedChain]
+                  : params.chainKeyHint
+                    ? [params.chainKeyHint]
+                    : (Object.keys(CHAIN_CONFIG) as ChainId[]);
+                outer: for (const tryChain of chainsToTry) {
+                  const tryAddress = resolvedAddr ?? CHAIN_CONFIG[tryChain].contractAddress;
+                  for (let v = 1; v <= 5; v++) {
+                    try {
+                      const foundId = await readBitxenDataIdByHash({
+                        chainId: tryChain,
+                        dataHash,
+                        version: BigInt(v),
+                        contractAddress: tryAddress,
+                      });
+                      if (foundId && foundId !== "0x" + "0".repeat(64)) {
+                        resolvedId = foundId;
+                        resolvedChain = tryChain;
+                        resolvedAddr = tryAddress;
+                        break outer;
+                      }
+                    } catch {
+                      // version not found, try next
+                    }
+                  }
+                }
+              } catch (e) {
+                console.warn("Failed to derive contractDataId from hash lookup:", e);
+              }
+            }
+
+            if (resolvedId && resolvedChain) {
+              return { chainKey: resolvedChain, contractDataId: resolvedId, contractAddress: resolvedAddr };
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // Strategy 3: Fallback - if no arweaveTxId was provided/found, query for the main "doc" transaction directly.
+  // This helps when the backend API fails to return the latestTxId (e.g., incognito or API error).
+  if (txId.length === 0) {
+    try {
+      const response = await fetch("https://arweave.net/graphql", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: `
+            query ($vaultId: String!) {
+              transactions(
+                first: 1
+                sort: HEIGHT_DESC
+                tags: [
+                  { name: "Doc-Id", values: [$vaultId] }
+                  { name: "App-Name", values: ["doc-storage"] }
+                  { name: "Type", values: ["doc"] }
+                ]
+              ) {
+                edges { node { id } }
+              }
+            }
+          `,
+          variables: { vaultId: safeVaultId },
+        }),
+      });
+      if (response.ok) {
+        const gql = await response.json().catch(() => ({}));
+        const docTxId = gql?.data?.transactions?.edges?.[0]?.node?.id;
+
+        if (typeof docTxId === "string" && docTxId.trim().length > 0) {
+          // Found the doc! Fetch it and try to extract metadata (same logic as Strategy 2)
+          const payloadText = await fetch(`https://arweave.net/${docTxId.trim()}`)
+            .then((r) => (r.ok ? r.text() : null))
+            .catch(() => null);
+
+          if (payloadText) {
+            const payloadJson = JSON.parse(payloadText) as Record<string, unknown>;
+            const encryptedMetadata = payloadJson?.m;
+
+            if (typeof encryptedMetadata === "string" && encryptedMetadata.length > 0) {
+              const metadata = await decryptMetadataClient(encryptedMetadata, safeVaultId).catch(() => null);
+              if (metadata) {
+                const contractDataIdRaw = (metadata as Record<string, unknown>).contractDataId;
+                let contractDataId =
+                  typeof contractDataIdRaw === "string" && contractDataIdRaw.startsWith("0x")
+                    ? contractDataIdRaw
+                    : null;
+                const chainKeyRaw = (metadata as Record<string, unknown>).blockchainChain;
+                const chainKey =
+                  typeof chainKeyRaw === "string" && chainKeyRaw.trim().length > 0
+                    ? (chainKeyRaw.trim() as ChainId)
+                    : null;
+                const contractAddressRaw = (metadata as Record<string, unknown>).contractAddress;
+                const contractAddress =
+                  typeof contractAddressRaw === "string" &&
+                    /^0x[a-fA-F0-9]{40}$/.test(contractAddressRaw.trim())
+                    ? contractAddressRaw.trim()
+                    : undefined;
+
+                let resolvedId3 = contractDataId;
+                let resolvedChain3 = chainKey;
+                let resolvedAddr3 = contractAddress;
+                if (!resolvedId3) {
+                  try {
+                    const payloadBuffer = new TextEncoder().encode(payloadText);
+                    const dataHashRaw = await sha256Hex(payloadBuffer);
+                    const dataHash = "0x" + dataHashRaw;
+                    const chainsToTry = resolvedChain3
+                      ? [resolvedChain3]
+                      : params.chainKeyHint
+                        ? [params.chainKeyHint]
+                        : (Object.keys(CHAIN_CONFIG) as ChainId[]);
+                    outer3: for (const tryChain of chainsToTry) {
+                      const tryAddress = resolvedAddr3 ?? CHAIN_CONFIG[tryChain].contractAddress;
+                      for (let v = 1; v <= 5; v++) {
+                        try {
+                          const foundId = await readBitxenDataIdByHash({
+                            chainId: tryChain,
+                            dataHash,
+                            version: BigInt(v),
+                            contractAddress: tryAddress,
+                          });
+                          if (foundId && foundId !== "0x" + "0".repeat(64)) {
+                            resolvedId3 = foundId;
+                            resolvedChain3 = tryChain;
+                            resolvedAddr3 = tryAddress;
+                            break outer3;
+                          }
+                        } catch {
+                          // version not found, try next
+                        }
+                      }
+                    }
+                  } catch (e) {
+                    console.warn("Failed to derive contractDataId from hash lookup:", e);
+                  }
+                }
+
+                if (resolvedId3 && resolvedChain3) {
+                  return { chainKey: resolvedChain3, contractDataId: resolvedId3, contractAddress: resolvedAddr3 };
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
+}
 
 async function findLatestArweaveDocTxIdForVault(vaultId: string): Promise<string | null> {
   try {
@@ -141,7 +437,17 @@ function parseArweaveTxIdFromStorageURI(storageURI: string): string | null {
 async function tryLoadHybridEncryptedVault(params: {
   vaultId: string;
   onProgress?: (step: string, details?: string) => void;
-}): Promise<{ encryptedVault: EncryptedVaultClient; metadata: unknown | null; contractEncryptedKey: string } | null> {
+}): Promise<{
+  encryptedVault: EncryptedVaultClient;
+  metadata: unknown | null;
+  contractEncryptedKey: string | null;
+  releaseEntropy?: string;
+  isReleased?: boolean;
+  canFinalize?: boolean; // True if date passed but randomness not set
+  chainId?: ChainId;
+  dataId?: string;
+  contractAddress?: string; // Add this
+} | null> {
   params.onProgress?.("🔍 Searching for vault location...");
 
   const latestDocTxId = await findLatestArweaveDocTxIdForVault(params.vaultId);
@@ -296,14 +602,33 @@ async function tryLoadHybridEncryptedVault(params: {
       ...(discovered.contractAddress ? { contractAddress: discovered.contractAddress } : {}),
     }));
 
-  params.onProgress?.("🔒 Checking release permissions...");
   const nowSec = BigInt(Math.floor(Date.now() / 1000));
   const releaseDate = record.releaseDate;
-  const released = record.isReleased || releaseDate === BigInt(0) || nowSec >= releaseDate;
-  if (!released) {
+  // Bitxen3 Logic:
+  // 1. Check if date passed OR manually released
+  // 2. Check if `releaseEntropy` is set (TRULY released)
+
+  const isTimePassed = releaseDate > 0 && nowSec >= releaseDate;
+  const isManuallyReleased = record.isReleased; // This flag usually means "Manual Release Triggered" in V2, check V3 meaning.
+  // In Bitxen3, `isReleased` implies `releaseEntropy` is set?
+  // Let's look at `readBitxenDataRecord` implementation.
+  // It returns `isReleased` and `releaseEntropy`.
+
+  const hasEntropy =
+    typeof record.releaseEntropy === "string" &&
+    record.releaseEntropy !== "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+  // If time passed BUT no entropy -> Needs Finalization
+  const needsFinalization = isTimePassed && !hasEntropy;
+
+  if (!isTimePassed && !isManuallyReleased && !hasEntropy) {
     const when = new Date(Number(releaseDate) * 1000);
     throw new Error(`This inheritance isn't ready yet. Scheduled: ${when.toLocaleString()}.`);
   }
+
+  // If it needs finalization, we SHOULD NOT throw error here if we want to show the button.
+  // But strictly speaking, we can't get the key yet.
+  // So we return `canFinalize: true` and let the UI handle it.
 
   params.onProgress?.("📥 Downloading encrypted vault...");
   const finalTxId = parseArweaveTxIdFromStorageURI(record.currentStorageURI);
@@ -334,7 +659,39 @@ async function tryLoadHybridEncryptedVault(params: {
   }
 
   params.onProgress?.("✅ Vault loaded successfully");
-  return { encryptedVault, metadata: null, contractEncryptedKey: record.encryptedKey };
+
+  // Attempt to extract encrypted key from metadata if not on chain
+  let contractEncryptedKey: string | null = null;
+  // Bitxen3: encryptedKey is NOT on chain. It is in metadata.
+  // Metadata is encrypted with vaultId.
+  let metadataDecrypted: Record<string, unknown> | null = null;
+
+  if (payloadJson?.m && typeof payloadJson.m === "string") {
+    try {
+      params.onProgress?.("🔓 Decrypting metadata...");
+      metadataDecrypted = await decryptMetadataClient(payloadJson.m, params.vaultId);
+      const candidate =
+        (metadataDecrypted ? metadataDecrypted["contractEncryptedKey"] : null) ??
+        (metadataDecrypted ? metadataDecrypted["encryptedKey"] : null);
+      contractEncryptedKey = typeof candidate === "string" && candidate.trim().length > 0 ? candidate : null;
+    } catch (e) {
+      console.error("Failed to decrypt metadata:", e);
+      // Non-fatal, we might not need it if using legacy flow?
+      // actually for V3 we DO need it.
+    }
+  }
+
+  return {
+    encryptedVault,
+    metadata: metadataDecrypted, // Return decrypted metadata
+    contractEncryptedKey,
+    releaseEntropy: record.releaseEntropy,
+    isReleased: hasEntropy,
+    canFinalize: needsFinalization,
+    chainId: discovered.chainKey,
+    dataId: discovered.contractDataId,
+    contractAddress: discovered.contractAddress,
+  };
 }
 
 async function discoverBitxenEncryptedKeyForVault(vaultId: string): Promise<{
@@ -362,13 +719,6 @@ async function discoverBitxenEncryptedKeyForVault(vaultId: string): Promise<{
         ? { contractAddress: localContractAddressRaw.trim() }
         : {}),
     }).catch(() => null);
-    if (record?.encryptedKey && typeof record.encryptedKey === "string" && record.encryptedKey.trim().length > 0) {
-      return {
-        chainKey: localChainKeyRaw as ChainId,
-        contractDataId: localContractDataIdRaw,
-        contractEncryptedKey: record.encryptedKey,
-      };
-    }
   }
 
   const txId =
@@ -394,11 +744,10 @@ async function discoverBitxenEncryptedKeyForVault(vaultId: string): Promise<{
         if (
           record &&
           typeof record.currentDataHash === "string" &&
-          record.currentDataHash.toLowerCase() === latestHash &&
-          typeof record.encryptedKey === "string" &&
-          record.encryptedKey.trim().length > 0
+          record.currentDataHash.toLowerCase() === latestHash
         ) {
-          return { chainKey, contractDataId: id, contractEncryptedKey: record.encryptedKey };
+          // Encrypted Key is not in record anymore.
+          return { chainKey, contractDataId: id, contractEncryptedKey: "" };
         }
       }
     }
@@ -906,6 +1255,56 @@ export function VaultClaimWizard({
               }
             }
 
+            // EARLY BLOCKCHAIN CHECK: Verify release status before proceeding
+            // This prevents asking for security questions if the vault is definitely locked by time
+            try {
+              const apiLatestTxId = data.latestTxId;
+              const arweaveTxIdHint =
+                localVault?.arweaveTxId ??
+                (typeof apiLatestTxId === "string" && apiLatestTxId.trim().length > 0
+                  ? apiLatestTxId.trim()
+                  : null);
+
+              const discovered = await discoverBitxenChainInfo({
+                vaultId: formState.vaultId,
+                arweaveTxId: arweaveTxIdHint,
+              });
+
+              if (discovered) {
+                const record = await readBitxenDataRecord({
+                  chainId: discovered.chainKey,
+                  contractDataId: discovered.contractDataId,
+                  ...(discovered.contractAddress ? { contractAddress: discovered.contractAddress } : {}),
+                });
+
+                if (record && !record.isReleased) {
+                  const nowSec = BigInt(Math.floor(Date.now() / 1000));
+                  // Check if time has passed
+                  if (typeof record.releaseDate === "bigint" && record.releaseDate > BigInt(0)) {
+                    if (nowSec < record.releaseDate) {
+                      const releaseDateMs = Number(record.releaseDate) * 1000;
+                      const releaseText = Number.isFinite(releaseDateMs)
+                        ? new Date(releaseDateMs).toLocaleDateString("en-US", {
+                          year: "numeric",
+                          month: "long",
+                          day: "numeric",
+                        })
+                        : null;
+
+                      const message = `This inheritance is not released yet. It is scheduled to become available on ${releaseText ?? record.releaseDate.toString()}.`;
+
+                      setStepError(message);
+                      setIsWarning(true);
+                      setIsVerifying(false);
+                      return false;
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              console.warn("Early blockchain release check failed (non-fatal):", e);
+            }
+
             setVerificationSuccess(true);
             setIsVerifying(false);
             if (abortControllerRef.current === abortController) {
@@ -1138,6 +1537,10 @@ export function VaultClaimWizard({
               encryptedVault: hybrid.encryptedVault,
               metadata: hybrid.metadata,
               message: "Inheritance successfully opened.",
+              releaseEntropy: hybrid.releaseEntropy,
+              contractDataId: hybrid.dataId,
+              contractAddress: hybrid.contractAddress,
+              chainId: hybrid.chainId ? getNetworkIdFromChainKey(hybrid.chainId) : undefined,
             };
             hybridContractEncryptedKey = hybrid.contractEncryptedKey;
           } else {
@@ -1191,6 +1594,164 @@ export function VaultClaimWizard({
         throw error;
       }
 
+      // Determine whether we need to verify release status on-chain.
+      // We check blockchain whenever:
+      //   1. The encrypted vault uses "envelope" keyMode (always needs releaseEntropy), OR
+      //   2. localVault indicates this is a bitxenArweave vault (localStorage hint, best-effort)
+      // This must NOT depend solely on localStorage so that unlock works from any browser.
+      const encryptedVaultKeyModeHint =
+        ((data as Record<string, unknown>).encryptedVault as Record<string, unknown> | undefined)?.keyMode;
+      const shouldCheckReleaseOnChain =
+        encryptedVaultKeyModeHint === "envelope" ||
+        localVault?.storageType === "bitxenArweave" ||
+        (typeof localVault?.contractDataId === "string" && localVault.contractDataId.startsWith("0x"));
+
+      if (shouldCheckReleaseOnChain) {
+        setUnlockProgress("🔗 Checking release status (blockchain)...");
+        setUnlockStep("Verifying release date on-chain...");
+
+        // Collect contractDataId + chainKey from all available sources, in priority order:
+        // 1. localVault (localStorage — present only in the original browser)
+        // 2. data returned by the API (e.g. from tryLoadHybridEncryptedVault)
+        // 3. Arweave discovery (works from any browser, no localStorage needed)
+        let record: Awaited<ReturnType<typeof readBitxenDataRecord>> | null = null;
+        let resolvedChainKey: ChainId | null = null;
+        let resolvedContractDataId: string | null = null;
+        let resolvedContractAddress: string | null = null;
+
+        // Source 1: localVault
+        if (
+          typeof localVault?.blockchainChain === "string" &&
+          typeof localVault?.contractDataId === "string" &&
+          localVault.contractDataId.startsWith("0x")
+        ) {
+          resolvedChainKey = localVault.blockchainChain as ChainId;
+          resolvedContractDataId = localVault.contractDataId;
+          resolvedContractAddress =
+            typeof localVault.contractAddress === "string" && localVault.contractAddress.trim().length > 0
+              ? localVault.contractAddress.trim()
+              : null;
+        }
+
+        // Source 2: data from API (e.g. hybrid vault path already resolved chain info)
+        {
+          const apiContractDataId = (data as Record<string, unknown>).contractDataId;
+          const apiChainId = (data as Record<string, unknown>).chainId;
+          const apiContractAddress = (data as Record<string, unknown>).contractAddress;
+          const apiMetadata = (data as Record<string, unknown>).metadata as Record<string, unknown> | undefined;
+
+          if (!resolvedContractDataId && typeof apiContractDataId === "string" && apiContractDataId.startsWith("0x")) {
+            resolvedContractDataId = apiContractDataId;
+          }
+          if (!resolvedContractAddress && typeof apiContractAddress === "string" && apiContractAddress.trim().length > 0) {
+            resolvedContractAddress = apiContractAddress.trim();
+          }
+          // Resolve chainKey from numeric chainId (always, regardless of contractDataId)
+          if (!resolvedChainKey && apiChainId !== undefined && apiChainId !== null) {
+            const numericChainId = Number(apiChainId);
+            if (!Number.isNaN(numericChainId)) {
+              resolvedChainKey = getChainKeyFromNumericChainId(numericChainId) ?? null;
+            }
+          }
+          // Also try from metadata.blockchainChain (returned by backend after decrypting metadata)
+          if (!resolvedChainKey && typeof apiMetadata?.blockchainChain === "string" && apiMetadata.blockchainChain.trim().length > 0) {
+            resolvedChainKey = apiMetadata.blockchainChain.trim() as ChainId;
+          }
+          if (!resolvedContractAddress && typeof apiMetadata?.contractAddress === "string" && /^0x[a-fA-F0-9]{40}$/.test(apiMetadata.contractAddress.trim())) {
+            resolvedContractAddress = apiMetadata.contractAddress.trim();
+          }
+        }
+
+        // Source 3: Arweave discovery (no localStorage required).
+        // Fetches vault payload from Arweave and decrypts metadata using vaultId as key.
+        // vaultId is always known (from form input), so this works from any browser.
+        if (!resolvedContractDataId || !resolvedChainKey) {
+          setUnlockStep("Searching for vault on blockchain...");
+          // Use arweaveTxId from: localVault → API response (latestTxId) → null
+          // data.latestTxId is returned by the unlock API and works in any browser (no localStorage needed)
+          const apiLatestTxId = (data as Record<string, unknown>).latestTxId;
+          const arweaveTxIdHint =
+            localVault?.arweaveTxId ??
+            (typeof apiLatestTxId === "string" && apiLatestTxId.trim().length > 0
+              ? apiLatestTxId.trim()
+              : null);
+          const discovered = await discoverBitxenChainInfo({
+            vaultId: normalizedVaultId,
+            arweaveTxId: arweaveTxIdHint,
+            chainKeyHint: resolvedChainKey,
+          }).catch(() => null);
+          if (discovered) {
+            if (!resolvedContractDataId && discovered.contractDataId) {
+              resolvedContractDataId = discovered.contractDataId;
+            }
+            if (!resolvedChainKey && discovered.chainKey) {
+              resolvedChainKey = discovered.chainKey;
+            }
+            if (!resolvedContractAddress && discovered.contractAddress) {
+              resolvedContractAddress = discovered.contractAddress;
+            }
+          }
+        }
+
+
+        // Fallback contractAddress from CHAIN_CONFIG if still missing
+        if (!resolvedContractAddress && resolvedChainKey) {
+          resolvedContractAddress = CHAIN_CONFIG[resolvedChainKey]?.contractAddress ?? null;
+        }
+
+        if (!resolvedChainKey || !resolvedContractDataId) {
+          console.error("Missing blockchain info:", { resolvedChainKey, resolvedContractDataId, resolvedContractAddress });
+          throw new Error("Unable to locate inheritance on blockchain. Technical details: Missing chain or contract ID.");
+        }
+
+        if (resolvedChainKey && resolvedContractDataId) {
+          record = await readBitxenDataRecord({
+            chainId: resolvedChainKey,
+            contractDataId: resolvedContractDataId,
+            ...(resolvedContractAddress ? { contractAddress: resolvedContractAddress } : {}),
+          }).catch((e) => {
+            console.error("Failed to read Bitxen data record:", e);
+            return null;
+          });
+        }
+
+        if (!record) {
+          throw new Error("Unable to verify release status on blockchain (read failed).");
+        }
+
+        if (!record.isReleased) {
+          if (typeof record.releaseDate === "bigint" && record.releaseDate > BigInt(0)) {
+            const releaseDateMs = Number(record.releaseDate) * 1000;
+            const releaseText = Number.isFinite(releaseDateMs) ? new Date(releaseDateMs).toLocaleString() : null;
+            throw new Error(
+              `This inheritance is not released yet. Release date: ${releaseText ?? record.releaseDate.toString()}.`,
+            );
+          }
+          throw new Error("This inheritance is not released yet.");
+        }
+
+        // Inject on-chain releaseEntropy + contract info into `data` so that
+        // deriveUnlockKey is called correctly during client-side decryption.
+        const onChainEntropy =
+          typeof record.releaseEntropy === "string" &&
+            record.releaseEntropy !== "0x" + "0".repeat(64)
+            ? record.releaseEntropy
+            : null;
+
+        if (onChainEntropy) {
+          data = {
+            ...data,
+            releaseEntropy: onChainEntropy,
+            contractDataId: resolvedContractDataId ?? (data as Record<string, unknown>).contractDataId,
+            contractAddress: resolvedContractAddress ?? (data as Record<string, unknown>).contractAddress,
+            chainId:
+              resolvedChainKey
+                ? getNetworkIdFromChainKey(resolvedChainKey)
+                : (data as Record<string, unknown>).chainId,
+          } as typeof data;
+        }
+      }
+
       let vaultContent: string | null = null;
       let vaultTitle: string | null = null;
 
@@ -1226,22 +1787,37 @@ export function VaultClaimWizard({
           if (encryptedVaultForDecrypt.keyMode === "envelope") {
             let wrappedKeyRaw = hybridContractEncryptedKey;
             if (typeof wrappedKeyRaw !== "string" || wrappedKeyRaw.trim().length === 0) {
-              const discovered = await discoverBitxenEncryptedKeyForVault(normalizedVaultId);
-              if (discovered) {
-                wrappedKeyRaw = discovered.contractEncryptedKey;
-              }
-            }
-            if (typeof wrappedKeyRaw !== "string" || wrappedKeyRaw.trim().length === 0) {
               const fromMetadata = extractWrappedKeyRawFromMetadata(data.metadata);
               if (fromMetadata) {
                 wrappedKeyRaw = fromMetadata;
               }
             }
             if (typeof wrappedKeyRaw !== "string" || wrappedKeyRaw.trim().length === 0) {
+              const discovered = await discoverBitxenEncryptedKeyForVault(normalizedVaultId);
+              if (discovered) {
+                wrappedKeyRaw = discovered.contractEncryptedKey;
+              }
+            }
+            if (typeof wrappedKeyRaw !== "string" || wrappedKeyRaw.trim().length === 0) {
               throw new Error("Encrypted key not found (contract/metadata).");
             }
             const wrappedKey = parseWrappedKeyV1(JSON.parse(wrappedKeyRaw) as unknown);
-            const vaultKey = attachmentKey;
+
+            let vaultKey = attachmentKey; // Default to combinedKey (legacy)
+
+            // Bitxen3: If we have releaseEntropy, we MUST derive the UnlockKey
+            if (data.releaseEntropy && data.contractDataId && data.contractAddress && data.chainId) {
+              setUnlockStep("Deriving unlock key from release entropy...");
+              vaultKey = await deriveUnlockKey(
+                attachmentKey,
+                data.releaseEntropy,
+                {
+                  contractAddress: data.contractAddress,
+                  chainId: Number(data.chainId),
+                }
+              );
+            }
+
             const payloadKey = await unwrapKeyClient(wrappedKey, vaultKey);
             decrypted = (await decryptVaultPayloadRawKeyClient(
               encryptedVaultForDecrypt,
@@ -1254,6 +1830,12 @@ export function VaultClaimWizard({
             )) as typeof decrypted;
           }
         } catch (e) {
+          console.error("[DEBUG] Decryption error (real):", e);
+          console.log("[DEBUG] keyMode:", encryptedVaultForDecrypt.keyMode);
+          console.log("[DEBUG] data.releaseEntropy:", data.releaseEntropy);
+          console.log("[DEBUG] data.contractDataId:", data.contractDataId);
+          console.log("[DEBUG] data.contractAddress:", data.contractAddress);
+          console.log("[DEBUG] data.chainId:", data.chainId);
           if (e instanceof Error) {
             const msg = e.message.toLowerCase();
             if (msg.includes("encrypted key") || msg.includes("unsupported encrypted key") || msg.includes("invalid encrypted key")) {

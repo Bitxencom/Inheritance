@@ -12,11 +12,14 @@ import {
   formatWalletAddress,
   getConnectedAddress,
   getAvailableChains,
-  getRegistrationFee,
+  calculateBitxenFee,
   formatBitxenAmount,
   CHAIN_CONFIG,
+  InsufficientBitxenError,
   type ChainId,
 } from "@/lib/metamaskWallet";
+import { BitxenInsufficientBalance } from "@/components/shared/BitxenInsufficientBalance";
+
 
 interface MetaMaskWalletButtonProps {
   label?: string;
@@ -24,19 +27,26 @@ interface MetaMaskWalletButtonProps {
   disabled?: boolean;
   selectedChain?: ChainId;
   onChainChange?: (chain: ChainId) => void;
+  chainLocked?: boolean;
+  showHybridSteps?: boolean;
 }
 
 export function MetaMaskWalletButton({
-  label = "Pay with MetaMask",
+  label,
   onClick,
   disabled = false,
   selectedChain = "bsc",
   onChainChange,
+  chainLocked = false,
+  showHybridSteps = false,
 }: MetaMaskWalletButtonProps) {
+  const defaultLabel = showHybridSteps ? "Upload & Register (Wander + MetaMask)" : "Pay with MetaMask";
+  const resolvedLabel = label ?? defaultLabel;
   const availableChains = getAvailableChains();
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectedAddress, setConnectedAddress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [insufficientBalanceError, setInsufficientBalanceError] = useState<InsufficientBitxenError | null>(null);
   const [registrationFee, setRegistrationFee] = useState<string | null>(null);
   const [isLoadingFee, setIsLoadingFee] = useState(false);
 
@@ -49,7 +59,7 @@ export function MetaMaskWalletButton({
       if (!isInstalled) return;
       setIsLoadingFee(true);
       try {
-        const fee = await getRegistrationFee(selectedChain, false);
+        const fee = await calculateBitxenFee(selectedChain);
         setRegistrationFee(formatBitxenAmount(fee));
       } catch (err) {
         console.error("Failed to fetch fee:", err);
@@ -63,6 +73,7 @@ export function MetaMaskWalletButton({
 
   const handleConnect = async () => {
     setError(null);
+    setInsufficientBalanceError(null);
     setIsConnecting(true);
 
     try {
@@ -79,7 +90,13 @@ export function MetaMaskWalletButton({
         await onClick();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to connect MetaMask");
+      // Tangkap InsufficientBitxenError secara khusus
+      // agar bisa tampilkan UI informatif di bawah
+      if (err instanceof InsufficientBitxenError) {
+        setInsufficientBalanceError(err);
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to connect MetaMask");
+      }
     } finally {
       setIsConnecting(false);
     }
@@ -130,6 +147,11 @@ export function MetaMaskWalletButton({
         <p className="text-sm font-medium flex items-center gap-2">
           <span className="h-4 w-4">🔗</span>
           Select Blockchain Network
+          {chainLocked && (
+            <span className="ml-auto text-xs font-normal text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
+              🔒 Locked to original chain
+            </span>
+          )}
         </p>
         <div className="grid grid-cols-3 md:grid-cols-5 gap-2">
           {availableChains.map((chainId) => {
@@ -140,13 +162,16 @@ export function MetaMaskWalletButton({
               <button
                 key={chainId}
                 type="button"
-                onClick={() => onChainChange?.(chainId)}
-                disabled={disabled || isConnecting}
+                onClick={() => !chainLocked && onChainChange?.(chainId)}
+                disabled={disabled || isConnecting || chainLocked}
                 className={cn(
-                  "rounded-lg border-2 px-3 py-2 text-sm transition-all cursor-pointer group",
+                  "rounded-lg border-2 px-3 py-2 text-sm transition-all group",
                   isChainSelected
                     ? "border-primary bg-primary/10 font-medium"
-                    : "border-border hover:border-primary/50 hover:bg-muted/50",
+                    : "border-border",
+                  chainLocked
+                    ? "cursor-not-allowed opacity-70"
+                    : "cursor-pointer hover:border-primary/50 hover:bg-muted/50",
                   (disabled || isConnecting) && "opacity-50 cursor-not-allowed"
                 )}
               >
@@ -205,6 +230,23 @@ export function MetaMaskWalletButton({
         </div>
       )}
 
+      {/* Hybrid 2-step info */}
+      {showHybridSteps && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-950/30 p-3 space-y-2">
+          <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">2-Step Process</p>
+          <div className="space-y-1.5">
+            <div className="flex items-start gap-2 text-xs text-blue-600 dark:text-blue-400">
+              <span className="font-bold shrink-0">Step 1:</span>
+              <span>Confirm upload to Arweave via <strong>Wander Wallet</strong> (popup pertama)</span>
+            </div>
+            <div className="flex items-start gap-2 text-xs text-blue-600 dark:text-blue-400">
+              <span className="font-bold shrink-0">Step 2:</span>
+              <span>Confirm registration on blockchain via <strong>MetaMask</strong> (popup kedua)</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MetaMask Payment Section */}
       <div className="space-y-3 border-t pt-4">
         {/* Fee Info */}
@@ -239,19 +281,6 @@ export function MetaMaskWalletButton({
               <Loader2 className="h-4 w-4 animate-spin" />
               {connectedAddress ? "Processing..." : "Connecting..."}
             </>
-          ) : connectedAddress ? (
-            <>
-              <div className="flex items-center justify-center rounded-full bg-orange-50 p-1.5 dark:bg-orange-50 h-8 w-8">
-                <Image
-                  src="/metamask-fox.svg"
-                  alt="MetaMask"
-                  width={20}
-                  height={20}
-                  className="w-5 h-5"
-                />
-              </div>
-              {label}
-            </>
           ) : (
             <>
               <div className="flex items-center justify-center rounded-full bg-orange-50 p-1.5 dark:bg-orange-50 h-8 w-8">
@@ -263,7 +292,7 @@ export function MetaMaskWalletButton({
                   className="w-5 h-5"
                 />
               </div>
-              Pay with MetaMask
+              {resolvedLabel}
             </>
           )}
         </Button>
@@ -299,6 +328,17 @@ export function MetaMaskWalletButton({
         )}
       </div>
 
+      {/* Insufficient BITXEN Balance Warning */}
+      <BitxenInsufficientBalance
+        error={insufficientBalanceError}
+        walletAddress={connectedAddress ?? undefined}
+        onRetry={() => {
+          setInsufficientBalanceError(null);
+          handleConnect();
+        }}
+        onDismiss={() => setInsufficientBalanceError(null)}
+      />
+
       {/* Connected Address Display */}
       {connectedAddress && (
         <p className="text-xs text-center text-muted-foreground">
@@ -306,7 +346,7 @@ export function MetaMaskWalletButton({
         </p>
       )}
 
-      {/* Error Display */}
+      {/* Generic Error Display */}
       {error && (
         <div className="rounded-md bg-destructive/10 p-3">
           <p className="text-sm text-destructive">{error}</p>

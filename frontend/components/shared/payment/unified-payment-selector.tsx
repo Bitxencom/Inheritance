@@ -13,11 +13,14 @@ import {
   formatWalletAddress,
   getConnectedAddress as getMetaMaskAddress,
   getAvailableChains,
-  getRegistrationFee,
+  calculateBitxenFee,
   formatBitxenAmount,
+  getBitxenBalance,
+  InsufficientBitxenError,
   CHAIN_CONFIG,
   type ChainId,
 } from "@/lib/metamaskWallet";
+import { BitxenInsufficientBalance } from "@/components/shared/BitxenInsufficientBalance";
 import {
   connectWanderWallet,
   isWalletReady as isWanderReady,
@@ -37,6 +40,8 @@ interface UnifiedPaymentSelectorProps {
   paymentPhase?: ArweavePaymentPhase | null;
   isReady?: boolean;
   blockedReason?: string | null;
+  lockedMode?: PaymentMode;
+  lockedChain?: ChainId;
 }
 
 export function UnifiedPaymentSelector({
@@ -47,11 +52,15 @@ export function UnifiedPaymentSelector({
   paymentPhase = null,
   isReady = true,
   blockedReason = null,
+  lockedMode,
+  lockedChain,
 }: UnifiedPaymentSelectorProps) {
-  const [selectedMode, setSelectedMode] = useState<PaymentMode>("hybrid");
-  const [selectedChain, setSelectedChain] = useState<ChainId>("bsc");
+  const [selectedMode, setSelectedMode] = useState<PaymentMode>(lockedMode ?? "hybrid");
+  const [selectedChain, setSelectedChain] = useState<ChainId>(lockedChain ?? (process.env.NODE_ENV === "production" ? "bsc" : "bscTestnet"));
   const [isConnecting, setIsConnecting] = useState(false);
+  const [isAwaitingSubmit, setIsAwaitingSubmit] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [insufficientBalanceError, setInsufficientBalanceError] = useState<InsufficientBitxenError | null>(null);
 
   // Wallet connection states
   const [wanderAddress, setWanderAddress] = useState<string | null>(null);
@@ -82,7 +91,7 @@ export function UnifiedPaymentSelector({
     const fetchFee = async () => {
       if (selectedMode !== "hybrid" || !isMetaMaskAvailable) return;
       try {
-        const fee = await getRegistrationFee(selectedChain, false);
+        const fee = await calculateBitxenFee(selectedChain);
         setRegistrationFee(formatBitxenAmount(fee));
       } catch {
         setRegistrationFee("~1.00 BITXEN");
@@ -93,6 +102,7 @@ export function UnifiedPaymentSelector({
 
   const handleProceed = async () => {
     setError(null);
+    setInsufficientBalanceError(null);
     setIsConnecting(true);
 
     try {
@@ -102,6 +112,8 @@ export function UnifiedPaymentSelector({
           const address = await connectWanderWallet();
           setWanderAddress(address);
         }
+        setIsConnecting(false);
+        setIsAwaitingSubmit(true);
         await onSubmit("wander");
       } else {
         // Hybrid mode: need both wallets
@@ -112,21 +124,36 @@ export function UnifiedPaymentSelector({
         }
 
         // Then connect MetaMask
-        if (!metaMaskAddress) {
-          const mmAddr = await connectMetaMask();
+        let mmAddr = metaMaskAddress;
+        if (!mmAddr) {
+          mmAddr = await connectMetaMask();
           setMetaMaskAddress(mmAddr);
         }
 
+        // Check BITXEN balance before proceeding to avoid wasting AR fees
+        const fee = await calculateBitxenFee(selectedChain);
+        const balance = await getBitxenBalance(selectedChain, mmAddr);
+        if (balance < fee) {
+          throw new InsufficientBitxenError({ required: fee, balance, chainId: selectedChain });
+        }
+
+        setIsConnecting(false);
+        setIsAwaitingSubmit(true);
         await onSubmit("hybrid", selectedChain);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Connection failed");
+      if (err instanceof InsufficientBitxenError) {
+        setInsufficientBalanceError(err);
+      } else {
+        setError(err instanceof Error ? err.message : "Connection failed");
+      }
     } finally {
       setIsConnecting(false);
+      setIsAwaitingSubmit(false);
     }
   };
 
-  const isProcessing = isConnecting || isSubmitting;
+  const isProcessing = isConnecting || isSubmitting || isAwaitingSubmit;
   const isBlocked = !isReady;
 
   // Determine current step for hybrid mode progress
@@ -195,7 +222,7 @@ export function UnifiedPaymentSelector({
 
   return (
     <div className="space-y-6">
-      <Dialog open={isArweaveUploadDialogOpen} onOpenChange={() => {}}>
+      <Dialog open={isArweaveUploadDialogOpen} onOpenChange={() => { }}>
         <DialogContent showCloseButton={false} className="max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -228,183 +255,213 @@ export function UnifiedPaymentSelector({
         </DialogContent>
       </Dialog>
 
-      {/* Storage Type Selection */}
-      <div className="space-y-3">
-        <p className="text-sm font-medium mt-3">Choose Your Storage Type</p>
+      {/* Storage Type Selection — sembunyikan jika lockedMode */}
+      {!lockedMode && (
+        <div className="space-y-3">
+          <p className="text-sm font-medium mt-3">Choose Your Storage Type</p>
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          {/* Bitxen Smart Contract Option - Hybrid (Primary/Left) */}
-          <label
-            className={cn(
-              "cursor-pointer rounded-xl border-2 p-5 hover:shadow-md relative",
-              selectedMode === "hybrid"
-                ? "border-emerald-500 bg-emerald-50/50 dark:bg-emerald-950/20 shadow-sm"
-                : "border-border hover:border-emerald-300"
-            )}
-          >
-            <input
-              type="radio"
-              name="paymentMode"
-              value="hybrid"
-              checked={selectedMode === "hybrid"}
-              onChange={() => setSelectedMode("hybrid")}
-              className="sr-only"
-              disabled={isProcessing}
-            />
+          <div className="grid gap-4 sm:grid-cols-2">
+            {/* Bitxen Smart Contract Option - Hybrid (Primary/Left) */}
+            <label
+              className={cn(
+                "cursor-pointer rounded-xl border-2 p-5 hover:shadow-md relative",
+                selectedMode === "hybrid"
+                  ? "border-emerald-500 bg-emerald-50/50 dark:bg-emerald-950/20 shadow-sm"
+                  : "border-border hover:border-emerald-300"
+              )}
+            >
+              <input
+                type="radio"
+                name="paymentMode"
+                value="hybrid"
+                checked={selectedMode === "hybrid"}
+                onChange={() => setSelectedMode("hybrid")}
+                className="sr-only"
+                disabled={isProcessing}
+              />
 
-            {/* Selection indicator */}
-            {selectedMode === "hybrid" && (
-              <div className="absolute top-0 right-0 h-6 w-10 rounded-tr-lg rounded-bl-md bg-emerald-500 flex items-center justify-center">
-                <Check className="h-4 w-4 text-white" />
-              </div>
-            )}
+              {/* Selection indicator */}
+              {selectedMode === "hybrid" && (
+                <div className="absolute top-0 right-0 h-6 w-10 rounded-tr-lg rounded-bl-md bg-emerald-500 flex items-center justify-center">
+                  <Check className="h-4 w-4 text-white" />
+                </div>
+              )}
 
-            <div className="flex flex-col gap-4">
-              {/* Icon & Title */}
-              <div className="flex items-center gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-semibold text-base">Bitxen Smart Contract + Arweave</h3>
+              <div className="flex flex-col gap-4">
+                {/* Icon & Title */}
+                <div className="flex items-center gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-semibold text-base">Bitxen Smart Contract + Arweave</h3>
+                    </div>
+                    <p className="text-xs text-muted-foreground">Blockchain-verified storage</p>
                   </div>
-                  <p className="text-xs text-muted-foreground">Blockchain-verified storage</p>
+                </div>
+
+                {/* Features */}
+                <div className="space-y-2 text-sm">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Link2 className="h-4 w-4 text-emerald-500" />
+                    <span>Verifiable ownership on-chain</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Shield className="h-4 w-4 text-emerald-500" />
+                    <span>Multi-layer verification</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Coins className="h-4 w-4 text-emerald-500" />
+                    <span>Fee: 1 BITXEN + Network Fee varies (Paid by User)</span>
+                  </div>
+                </div>
+
+                {/* Recommended badge */}
+                <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 dark:bg-emerald-900/50 px-3 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300 w-fit">
+                  <Shield className="h-3 w-3" />
+                  Best Protection
                 </div>
               </div>
+            </label>
 
-              {/* Features */}
-              <div className="space-y-2 text-sm">
-                <div className="flex items-center gap-2 text-muted-foreground">
-                  <Link2 className="h-4 w-4 text-emerald-500" />
-                  <span>Verifiable ownership on-chain</span>
+            {/* Arweave Option - Simple Storage (Secondary/Right) */}
+            <label
+              className={cn(
+                "cursor-pointer rounded-xl border-2 p-5 hover:shadow-md relative",
+                selectedMode === "wander"
+                  ? "border-slate-700 bg-slate-50/50 dark:bg-slate-950/20 shadow-sm"
+                  : "border-border hover:border-slate-400"
+              )}
+            >
+              <input
+                type="radio"
+                name="paymentMode"
+                value="wander"
+                checked={selectedMode === "wander"}
+                onChange={() => setSelectedMode("wander")}
+                className="sr-only"
+                disabled={isProcessing}
+              />
+
+              {/* Selection indicator */}
+              {selectedMode === "wander" && (
+                <div className="absolute top-0 right-0 h-6 w-10 rounded-tr-lg rounded-bl-md bg-slate-700 flex items-center justify-center">
+                  <Check className="h-4 w-4 text-white" />
                 </div>
-                <div className="flex items-center gap-2 text-muted-foreground">
-                  <Shield className="h-4 w-4 text-emerald-500" />
-                  <span>Multi-layer verification</span>
+              )}
+
+              <div className="flex flex-col gap-4 h-full">
+                {/* Icon & Title */}
+                <div className="flex items-center gap-3">
+                  <div>
+                    <h3 className="font-semibold text-base">Arweave</h3>
+                    <p className="text-xs text-muted-foreground">Simple permanent storage</p>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2 text-muted-foreground">
-                  <Coins className="h-4 w-4 text-emerald-500" />
-                  <span>Fee: 1 BITXEN + Network Fee varies (Paid by User)</span>
+
+                {/* Features */}
+                <div className="space-y-2 text-sm">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Globe className="h-4 w-4 text-slate-600" />
+                    <span>Only stored on Arweave</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Coins className="h-4 w-4 text-slate-600" />
+                    <span>Fee: Network Fee varies (Paid by User)</span>
+                  </div>
                 </div>
-              </div>
 
-              {/* Recommended badge */}
-              <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 dark:bg-emerald-900/50 px-3 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300 w-fit">
-                <Shield className="h-3 w-3" />
-                Best Protection
-              </div>
-            </div>
-          </label>
-
-          {/* Arweave Option - Simple Storage (Secondary/Right) */}
-          <label
-            className={cn(
-              "cursor-pointer rounded-xl border-2 p-5 hover:shadow-md relative",
-              selectedMode === "wander"
-                ? "border-slate-700 bg-slate-50/50 dark:bg-slate-950/20 shadow-sm"
-                : "border-border hover:border-slate-400"
-            )}
-          >
-            <input
-              type="radio"
-              name="paymentMode"
-              value="wander"
-              checked={selectedMode === "wander"}
-              onChange={() => setSelectedMode("wander")}
-              className="sr-only"
-              disabled={isProcessing}
-            />
-
-            {/* Selection indicator */}
-            {selectedMode === "wander" && (
-              <div className="absolute top-0 right-0 h-6 w-10 rounded-tr-lg rounded-bl-md bg-slate-700 flex items-center justify-center">
-                <Check className="h-4 w-4 text-white" />
-              </div>
-            )}
-
-            <div className="flex flex-col gap-4 h-full">
-              {/* Icon & Title */}
-              <div className="flex items-center gap-3">
-                <div>
-                  <h3 className="font-semibold text-base">Arweave</h3>
-                  <p className="text-xs text-muted-foreground">Simple permanent storage</p>
+                {/* Simple badge */}
+                <div className="mt-auto inline-flex items-center gap-1.5 rounded-full bg-slate-100 dark:bg-slate-800/50 px-3 py-1 text-xs font-medium text-slate-700 dark:text-slate-300 w-fit">
+                  Basic
                 </div>
               </div>
-
-              {/* Features */}
-              <div className="space-y-2 text-sm">
-                <div className="flex items-center gap-2 text-muted-foreground">
-                  <Globe className="h-4 w-4 text-slate-600" />
-                  <span>Only stored on Arweave</span>
-                </div>
-                {/* <div className="flex items-center gap-2 text-muted-foreground">
-                  <Zap className="h-4 w-4 text-purple-500" />
-                  <span>One-click process</span>
-                </div> */}
-                <div className="flex items-center gap-2 text-muted-foreground">
-                  <Coins className="h-4 w-4 text-slate-600" />
-                  <span>Fee: Network Fee varies (Paid by User)</span>
-                </div>
-              </div>
-
-              {/* Simple badge */}
-              <div className="mt-auto inline-flex items-center gap-1.5 rounded-full bg-slate-100 dark:bg-slate-800/50 px-3 py-1 text-xs font-medium text-slate-700 dark:text-slate-300 w-fit">
-                Basic
-              </div>
-            </div>
-          </label>
+            </label>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Chain Selection - Only for Hybrid */}
       {selectedMode === "hybrid" && (
         <div className="space-y-3 rounded-xl border bg-muted/30 p-4">
-          <p className="text-sm font-medium flex items-center gap-2">
-            <span>🔗</span>
-            Select Blockchain Network
-          </p>
-          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-            {availableChains.map((chainId) => {
-              const chain = CHAIN_CONFIG[chainId];
-              const isChainSelected = selectedChain === chainId;
-
-              return (
-                <button
-                  key={chainId}
-                  type="button"
-                  onClick={() => setSelectedChain(chainId)}
-                  disabled={isProcessing}
-                  className={cn(
-                    "rounded-lg border-2 px-2 py-2 text-sm transition-all cursor-pointer",
-                    isChainSelected
-                      ? "border-emerald-500 bg-emerald-100 dark:bg-emerald-900/30 font-medium"
-                      : "border-border hover:border-emerald-300 hover:bg-muted/50",
-                    isProcessing && "opacity-50 cursor-not-allowed"
-                  )}
-                >
-                  <div className="flex flex-col items-center gap-1.5">
-                    {chain.logo && (
-                      <div className="h-5 w-5 rounded-full overflow-hidden bg-white/50 p-0.5">
-                        <Image
-                          src={chain.logo}
-                          alt={chain.shortName}
-                          width={20}
-                          height={20}
-                          className="h-full w-full object-contain"
-                          unoptimized
-                        />
-                      </div>
-                    )}
-                    <span className="text-xs font-medium">{chain.shortName}</span>
+          {lockedChain ? (
+            /* Locked chain — tampilkan hanya 1 chain */
+            <>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+                <span>🔗</span> Blockchain Network
+              </p>
+              <div className="flex items-center gap-3 rounded-xl border-2 border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3">
+                {CHAIN_CONFIG[lockedChain]?.logo && (
+                  <div className="h-9 w-9 rounded-full overflow-hidden bg-white shadow-sm flex-shrink-0 p-1">
+                    <Image
+                      src={CHAIN_CONFIG[lockedChain].logo!}
+                      alt={CHAIN_CONFIG[lockedChain].shortName}
+                      width={36}
+                      height={36}
+                      className="h-full w-full object-contain"
+                      unoptimized
+                    />
                   </div>
-                </button>
-              );
-            })}
-          </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-sm">{CHAIN_CONFIG[lockedChain]?.name ?? lockedChain}</p>
+                  <p className="text-xs text-muted-foreground">{CHAIN_CONFIG[lockedChain]?.shortName}</p>
+                </div>
+              </div>
+              <div className="flex items-center justify-between text-xs text-muted-foreground pt-3 border-t">
+                <span>Contract Fee:</span>
+                <span className="font-semibold text-emerald-600">{registrationFee || "~1.00 BITXEN"}</span>
+              </div>
+            </>
+          ) : (
+            /* Normal chain selector */
+            <>
+              <p className="text-sm font-medium flex items-center gap-2">
+                <span>🔗</span>
+                Select Blockchain Network
+              </p>
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                {availableChains.map((chainId) => {
+                  const chain = CHAIN_CONFIG[chainId];
+                  const isChainSelected = selectedChain === chainId;
 
-          {/* Fee info */}
-          <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t">
-            <span>Contract Fee:</span>
-            <span className="font-medium text-emerald-600">{registrationFee || "~1.00 BITXEN"}</span>
-          </div>
+                  return (
+                    <button
+                      key={chainId}
+                      type="button"
+                      onClick={() => setSelectedChain(chainId)}
+                      disabled={isProcessing}
+                      className={cn(
+                        "rounded-lg border-2 px-2 py-2 text-sm transition-all",
+                        isChainSelected
+                          ? "border-emerald-500 bg-emerald-100 dark:bg-emerald-900/30 font-medium"
+                          : "border-border cursor-pointer hover:border-emerald-300 hover:bg-muted/50",
+                        isProcessing && "opacity-50 cursor-not-allowed"
+                      )}
+                    >
+                      <div className="flex flex-col items-center gap-1.5">
+                        {chain.logo && (
+                          <div className="h-5 w-5 rounded-full overflow-hidden bg-white/50 p-0.5">
+                            <Image
+                              src={chain.logo}
+                              alt={chain.shortName}
+                              width={20}
+                              height={20}
+                              className="h-full w-full object-contain"
+                              unoptimized
+                            />
+                          </div>
+                        )}
+                        <span className="text-xs font-medium">{chain.shortName}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t">
+                <span>Contract Fee:</span>
+                <span className="font-medium text-emerald-600">{registrationFee || "~1.00 BITXEN"}</span>
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -460,7 +517,7 @@ export function UnifiedPaymentSelector({
         </div>
       )}
 
-      {selectedMode === "wander" && isProcessing && paymentStatus && (
+      {selectedMode === "wander" && isProcessing && (
         <div className="rounded-xl border bg-card p-4 space-y-3">
           <p className="text-sm font-medium">Processing Arweave Upload</p>
           <div className="flex items-center gap-3">
@@ -609,6 +666,17 @@ export function UnifiedPaymentSelector({
           )}
         </div>
       )}
+
+      {/* Insufficient BITXEN Balance Warning */}
+      <BitxenInsufficientBalance
+        error={insufficientBalanceError}
+        walletAddress={metaMaskAddress ?? undefined}
+        onRetry={() => {
+          setInsufficientBalanceError(null);
+          handleProceed();
+        }}
+        onDismiss={() => setInsufficientBalanceError(null)}
+      />
 
       {/* Error Display */}
       {error && (

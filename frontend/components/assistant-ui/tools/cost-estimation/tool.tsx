@@ -57,8 +57,16 @@ export const CostEstimationTool: ToolCallMessagePartComponent<{
           <div className="space-y-4">
             <div className="text-center">
               <p className="text-lg font-semibold text-green-700 dark:text-green-300">
-                Estimated Upload Cost: {estimationResult.costAR.toFixed(6)} AR
+                Estimated Upload Cost
               </p>
+              <div className="mt-2 flex flex-col gap-1">
+                <p className="font-medium">
+                  Arweave: {estimationResult.costAR.toFixed(6)} AR
+                </p>
+                <p className="font-medium">
+                  Bitxen: {estimationResult.costBITXEN}
+                </p>
+              </div>
             </div>
 
             <div className="rounded-lg border px-4 py-3">

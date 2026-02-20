@@ -25,16 +25,21 @@ import { UnifiedPaymentSelector, type PaymentMode } from "@/components/shared/pa
 import { Stepper } from "@/components/shared/stepper";
 import type { ChainId } from "@/lib/metamaskWallet";
 import {
+  prepareArweavePayloadClient,
+  calculateCommitment,
+  generatePqcKeyPairClient,
   encapsulatePqcClient,
   generateVaultKey,
   encryptVaultPayloadClient,
-  generatePqcKeyPairClient,
-  prepareArweavePayloadClient,
   wrapKeyClient,
   type PqcKeyPairClient,
+  generateRandomSecret,
+  deriveUnlockKey,
 } from "@/lib/clientVaultCrypto";
+import { keccak_256 } from "@noble/hashes/sha3.js";
 import { splitKeyClient } from "@/lib/shamirClient";
 import { hashSecurityAnswerClient } from "@/lib/securityQuestionsClient";
+import { CHAIN_CONFIG } from "@/lib/metamaskWallet";
 
 import type {
   FormState,
@@ -175,7 +180,7 @@ export function VaultCreationWizard({
       },
       securityQuestions,
       triggerRelease: {
-        triggerType: "manual",
+        triggerType: "date",
         triggerDate,
       },
       storageType: "arweave",
@@ -574,7 +579,26 @@ export function VaultCreationWizard({
       encryptedVault.alg = "AES-GCM";
       encryptedVault.keyMode = "envelope";
 
-      const wrappedKey = await wrapKeyClient(payloadKey, vaultKey);
+      let finalVaultKey = vaultKey;
+      let secret: string | undefined;
+
+      if (effectiveStorageType === "bitxenArweave") {
+        secret = generateRandomSecret();
+        const selectedChain = (effectiveChain || "bsc") as ChainId;
+        const config = CHAIN_CONFIG[selectedChain];
+        const contractAddress = config.contractAddress;
+
+        finalVaultKey = await deriveUnlockKey(
+          vaultKey,
+          secret,
+          {
+            chainId: config.chainId,
+            contractAddress: contractAddress,
+          }
+        );
+      }
+
+      const wrappedKey = await wrapKeyClient(payloadKey, finalVaultKey);
       const contractEncryptedKey = JSON.stringify(wrappedKey);
 
       const fractionKeys = splitKeyClient(pqcKeyPair.secretKey);
@@ -595,6 +619,15 @@ export function VaultCreationWizard({
         fractionKeyCommitments,
         contractEncryptedKey,
         encryptionVersion: "v3-envelope" as const,
+        contractAddress:
+          effectiveStorageType === "bitxenArweave" && effectiveChain
+            ? CHAIN_CONFIG[effectiveChain as ChainId].contractAddress
+            : undefined,
+        blockchainChain:
+          effectiveStorageType === "bitxenArweave" && effectiveChain
+            ? effectiveChain
+            : undefined,
+        ...(effectiveStorageType === "bitxenArweave" && secret ? { contractSecret: secret } : {}),
       };
 
       const arweavePayload = await prepareArweavePayloadClient({
@@ -657,22 +690,49 @@ export function VaultCreationWizard({
       } else if (effectiveStorageType === "bitxenArweave") {
         // Hybrid: Arweave storage + Bitxen contract registry
         // We use the "bitxenArweave" storage type name but "hybrid" implementation under the hood
-        setPaymentStatus("Confirm Arweave upload in Wander...");
+        setPaymentStatus("Step 1/2: Confirm in Wander (Arweave)...");
         const { dispatchHybrid } = await import("@/lib/metamaskWallet");
         const selectedChain = (effectiveChain || "bsc") as ChainId;
         const isPermanent = payload.willDetails.willType === "one-time";
-        const triggerMs =
-          payload.triggerRelease.triggerType === "date" && payload.triggerRelease.triggerDate
-            ? Date.parse(payload.triggerRelease.triggerDate)
-            : NaN;
+        let triggerMs = NaN;
+        if (payload.triggerRelease.triggerType === "date" && payload.triggerRelease.triggerDate) {
+          const now = new Date();
+          const todayStr = now.toISOString().split("T")[0];
+          const isToday = payload.triggerRelease.triggerDate === todayStr;
+          // If today, set to end of day to ensure it's in the future.
+          // If future date, set to start of day so it opens as soon as day starts.
+          const timeSuffix = isToday ? "T23:59:59Z" : "T00:00:00Z";
+          triggerMs = Date.parse(payload.triggerRelease.triggerDate + timeSuffix);
+        }
         const releaseDate = Number.isFinite(triggerMs)
           ? BigInt(Math.floor(triggerMs / 1000))
           : BigInt(0);
 
+        // Calculate Commitment (Anti-Bypass)
+        // We need dataHash (hash of the encrypted vault payload) and wrappedKeyHash.
+        // We must ensure dataHash matches what dispatchHybrid uses (keccak256(JSON.stringify(payload))).
+
+        const { connectMetaMask } = await import("@/lib/metamaskWallet");
+        const userAddress = await connectMetaMask();
+
+        const dataJson = JSON.stringify(arweavePayload);
+        const dataHashBytes = keccak_256(new TextEncoder().encode(dataJson));
+        const dataHash = "0x" + Array.from(dataHashBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+
+        const wrappedKeyHashBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(contractEncryptedKey));
+        const wrappedKeyHash = "0x" + Array.from(new Uint8Array(wrappedKeyHashBytes)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+        const commitment = calculateCommitment({
+          dataHash,
+          wrappedKeyHash,
+          ownerAddress: userAddress,
+        });
+
         const hybridResult = await dispatchHybrid(arweavePayload, vaultId, selectedChain, {
           isPermanent,
           releaseDate,
-          encryptedKey: contractEncryptedKey,
+          commitment,
+          secret,
           onUploadProgress: (progress) => {
             setPaymentProgress(progress);
             if (progress >= 0 && progress < 100) setPaymentPhase("upload");

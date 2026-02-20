@@ -11,6 +11,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import Arweave from "arweave";
+import { calculateBitxenFee, formatBitxenAmount, CHAIN_CONFIG, type ChainId } from "@/lib/metamaskWallet";
 
 import type {
   CostEstimationWizardProps,
@@ -80,6 +82,13 @@ export function CostEstimationWizard({
     }
   }, [isDialog, open, resetWizard]);
 
+  // Initialize Arweave
+  const arweave = Arweave.init({
+    host: "arweave.net",
+    port: 443,
+    protocol: "https",
+  });
+
   const handleCalculate = async () => {
     setError(null);
     setIsCalculating(true);
@@ -99,31 +108,34 @@ export function CostEstimationWizard({
         dataSizeBytes = convertToBytes(inputValue, sizeUnit);
       }
 
-      // Use simple endpoint that only accepts data size
-      const response = await fetch("/api/vault/estimate-cost-simple", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          dataSizeBytes,
-        }),
-      });
+      // Calculate Arweave Cost
+      // Get price for data size in winston (1 AR = 10^12 winston)
+      const priceWinston = await arweave.transactions.getPrice(dataSizeBytes);
+      const costAR = arweave.ar.winstonToAr(priceWinston); // returns string
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ message: "An unexpected error occurred." }));
-        throw new Error(errorData.message || `HTTP ${response.status}: We couldn't calculate the cost estimation. Please try again.`);
-      }
+      // Calculate Bitxen Registration Fee
+      // Assume BSC Testnet for estimation if no chain selected
+      const estimationChain: ChainId = "bscTestnet";
 
-      const data = await response.json();
-      if (data.success && data.estimate) {
-        // Send result to parent (tool.tsx) and close wizard
-        onResult?.({ status: "success", data: data.estimate });
-        if (isDialog) {
-          onOpenChange?.(false);
-        }
-      } else {
-        throw new Error(data.message || "We couldn't calculate the cost estimation. Please try again.");
+      // Bitxen now uses a flat fee regardless of file size
+      const feeWei = await calculateBitxenFee(estimationChain);
+      const costBITXEN = formatBitxenAmount(feeWei);
+
+      const dataSizeKB = (dataSizeBytes / 1024).toFixed(2);
+      const dataSizeMB = (dataSizeBytes / (1024 * 1024)).toFixed(2);
+
+      const result = {
+        costAR: parseFloat(costAR),
+        costBITXEN,
+        dataSizeBytes,
+        dataSizeKB,
+        dataSizeMB,
+      };
+
+      // Send result to parent (tool.tsx) and close wizard
+      onResult?.({ status: "success", data: result });
+      if (isDialog) {
+        onOpenChange?.(false);
       }
     } catch (error) {
       console.error("Error calculating cost:", error);
