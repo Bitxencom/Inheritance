@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+const MIN_CONFIRMATION_DEPTH = 0;
+
 const normalizeBackendBaseUrl = (value: string | undefined): string => {
   const trimmed = (value ?? "").trim();
   if (!trimmed) return "";
@@ -17,13 +19,63 @@ const backendBaseUrl =
     ? "http://backend:7020"
     : "http://localhost:7020");
 
-type VerifyClaimRequest = {
+type CheckClaimRequest = {
   vaultId?: string;
   arweaveTxId?: string | null;
 };
 
+async function getArweaveConfirmations(txId: string): Promise<number> {
+  try {
+    // 1️⃣ Ambil block height transaksi
+    const gqlResponse = await fetch("https://arweave.net/graphql", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: `
+          query ($id: ID!) {
+            transaction(id: $id) {
+              block {
+                height
+              }
+            }
+          }
+        `,
+        variables: { id: txId }
+      })
+    });
+
+    if (!gqlResponse.ok) {
+      console.log("GraphQL error");
+      return 0;
+    }
+
+    const gqlData = await gqlResponse.json();
+    const txBlockHeight =
+      gqlData?.data?.transaction?.block?.height ?? null;
+
+    // kalau belum masuk block
+    if (txBlockHeight === null) return 0;
+
+    // 2️⃣ Ambil current network height (REST API, bukan GraphQL)
+    const heightResponse = await fetch("https://arweave.net/info");
+    if (!heightResponse.ok) return 0;
+
+    const heightData = await heightResponse.json();
+    const currentHeight = heightData?.height ?? null;
+
+    if (currentHeight === null) return 0;
+
+    // 3️⃣ Hitung confirmations
+    return Math.max(0, currentHeight - txBlockHeight);
+
+  } catch (err) {
+    console.error(err);
+    return 0;
+  }
+}
+
 export async function POST(req: Request) {
-  let payload: VerifyClaimRequest;
+  let payload: CheckClaimRequest;
   try {
     payload = await req.json();
   } catch {
@@ -47,9 +99,11 @@ export async function POST(req: Request) {
   const maxRetries = 3;
   let lastResponse: Response | null = null;
   let lastData: unknown = null;
+  let confirmationDepth: number = 0;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
+      // Use the existing endpoint but only check status, don't process questions
       const response = await fetch(
         `${backendBaseUrl}/api/v1/vaults/${encodeURIComponent(vaultId)}/security-questions`,
         {
@@ -78,27 +132,49 @@ export async function POST(req: Request) {
           message?: string;
         };
 
+        // Check blockchain confirmation depth for all vaults
+        const txId = typed.latestTxId || arweaveTxId;
+        let isConfirmed = true;
+
+        if (txId) {
+          confirmationDepth = await getArweaveConfirmations(txId);
+          if (confirmationDepth >= MIN_CONFIRMATION_DEPTH) {
+            isConfirmed = true;
+          } else {
+            isConfirmed = false
+          }
+        }
+
+        // Check if vault is hybrid (for metadata purposes)
+        let isHybrid = false;
+        if (txId) {
+          try {
+            const payloadText = await fetch(`https://arweave.net/${txId}`).then(r => r.ok ? r.text() : null);
+            if (payloadText) {
+              try {
+                const payloadJson = JSON.parse(payloadText);
+                const metadata = payloadJson?.metadata || {};
+                isHybrid = !!(metadata.blockchainChain || metadata.contractAddress || metadata.contractEncryptedKey);
+              } catch (e) {
+                // Ignore JSON parse errors
+              }
+            }
+          } catch (err) {
+            // ignore fetch failures
+          }
+        }
+
+        // For check endpoint, we only return status info, not the questions
         return NextResponse.json({
           success: true,
-          securityQuestions: typed.securityQuestions || [],
-          requiredIndexes: Array.isArray(typed.requiredIndexes)
-            ? typed.requiredIndexes
-                .map((x) => Number(x))
-                .filter(Number.isFinite)
-            : [],
-          claimNonce:
-            typeof typed.claimNonce === "string"
-              ? (typed.claimNonce || null)
-              : null,
-          unlockPolicy:
-            typed.unlockPolicy &&
-            typeof typed.unlockPolicy === "object"
-              ? typed.unlockPolicy
-              : null,
+          isConfirmed,
           willType: typed.willType || "one-time",
           trigger: typed.trigger || null,
           latestTxId: typed.latestTxId || null,
-          message: typed.message || "Security questions loaded.",
+          isHybrid,
+          message: isConfirmed
+            ? "Vault is confirmed and ready."
+            : `Vault has ${confirmationDepth} confirmations. Minimum ${MIN_CONFIRMATION_DEPTH} required.`,
         });
       }
 
@@ -125,9 +201,9 @@ export async function POST(req: Request) {
   }
 
   const statusFromBackend = lastResponse.status;
-  const data = (lastData || {}) as { error?: string; message?: string };
+  const data = (lastData || {}) as { error?: string; message?: string; trigger?: unknown };
   const fallbackMessage =
-    "Failed to load security questions. Please ensure the Vault ID is correct and the vault is confirmed.";
+    "Vault ID not found. Please ensure the Vault ID is correct.";
   const message =
     typeof data.error === "string"
       ? data.error
@@ -135,5 +211,11 @@ export async function POST(req: Request) {
         ? data.message
         : fallbackMessage;
 
-  return NextResponse.json({ success: false, error: message }, { status: statusFromBackend });
+  // Return structured response for frontend handling
+  return NextResponse.json({
+    success: false,
+    isConfirmed: false,
+    error: message,
+    trigger: data.trigger || null
+  }, { status: statusFromBackend });
 }

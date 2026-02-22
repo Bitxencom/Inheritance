@@ -10,21 +10,21 @@ import { cn } from "@/lib/utils";
 import {
   connectMetaMask,
   isMetaMaskInstalled,
-  formatWalletAddress,
   getConnectedAddress as getMetaMaskAddress,
-  getAvailableChains,
   calculateBitxenFee,
-  formatBitxenAmount,
   getBitxenBalance,
   InsufficientBitxenError,
+} from "@/lib/metamaskWallet";
+import {
+  getAvailableChains,
   CHAIN_CONFIG,
   type ChainId,
-} from "@/lib/metamaskWallet";
+} from "@/lib/chains";
+import { formatWalletAddress, formatBitxenAmount } from "@/lib/crypto-utils";
 import { BitxenInsufficientBalance } from "@/components/shared/BitxenInsufficientBalance";
 import {
   connectWanderWallet,
   isWalletReady as isWanderReady,
-  formatWalletAddress as formatArweaveAddress,
   getConnectedAddress as getWanderAddress,
 } from "@/lib/wanderWallet";
 import WanderLogo from "@/assets/logo/wander.svg";
@@ -655,7 +655,7 @@ export function UnifiedPaymentSelector({
           {wanderAddress && (
             <span className="flex items-center gap-1.5 bg-purple-100 dark:bg-purple-900/30 rounded-full px-2.5 py-1">
               <Image src={WanderLogo} alt="" className="h-3 w-3" />
-              {formatArweaveAddress(wanderAddress)}
+              {formatWalletAddress(wanderAddress)}
             </span>
           )}
           {selectedMode === "hybrid" && metaMaskAddress && (

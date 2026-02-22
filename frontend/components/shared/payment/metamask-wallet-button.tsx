@@ -9,15 +9,16 @@ import { cn, isMobile } from "@/lib/utils";
 import {
   connectMetaMask,
   isMetaMaskInstalled,
-  formatWalletAddress,
   getConnectedAddress,
-  getAvailableChains,
   calculateBitxenFee,
-  formatBitxenAmount,
-  CHAIN_CONFIG,
   InsufficientBitxenError,
-  type ChainId,
 } from "@/lib/metamaskWallet";
+import {
+  getAvailableChains,
+  CHAIN_CONFIG,
+  type ChainId,
+} from "@/lib/chains";
+import { formatWalletAddress, formatBitxenAmount } from "@/lib/crypto-utils";
 import { BitxenInsufficientBalance } from "@/components/shared/BitxenInsufficientBalance";
 
 

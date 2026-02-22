@@ -8,6 +8,16 @@
 
 import Arweave from 'arweave';
 
+// Re-export upload utilities from the dedicated module for consumers
+// who prefer importing from a single wallet entry point.
+export {
+  postJsonWithUploadProgress,
+  listenRelayJobEvents,
+  type UploadRecord,
+  type FetchWithProgressResult,
+  type RelayJobPayload,
+} from "./arweave-upload";
+
 // WanderConnect is dynamically imported to avoid bundling issues
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type WanderConnectType = any;
@@ -48,13 +58,13 @@ function getArweaveWallet(): ArweaveWallet | undefined {
 export const WANDER_CONFIG = {
   // Required permissions for the app
   permissions: ['ACCESS_ADDRESS', 'SIGN_TRANSACTION', 'DISPATCH'] as string[],
-  
+
   // App info for wallet connection
   appInfo: {
     name: 'Inheritance - Digital Vault',
     logo: 'https://chat.bitxen.com/logo.png',
   },
-  
+
   // Wander Connect Client ID (free tier for now)
   clientId: 'FREE_TRIAL',
 } as const;
@@ -127,32 +137,32 @@ export async function initializeWanderConnect(): Promise<string> {
   // Load script manually if not present
   if (!window.WanderSDK) {
     if (!document.querySelector('script[src="/wander-connect.js"]')) {
-        await new Promise<void>((resolve, reject) => {
+      await new Promise<void>((resolve, reject) => {
         const script = document.createElement('script');
         script.src = '/wander-connect.js';
         script.onload = () => resolve();
         script.onerror = () => reject(new Error('Failed to load Wander Connect SDK'));
         document.body.appendChild(script);
-        });
+      });
     } else {
-        // Script loading but not ready, wait a bit
-        await new Promise<void>((resolve) => {
-            const check = setInterval(() => {
-                if (window.WanderSDK) {
-                    clearInterval(check);
-                    resolve();
-                }
-            }, 100);
-        });
+      // Script loading but not ready, wait a bit
+      await new Promise<void>((resolve) => {
+        const check = setInterval(() => {
+          if (window.WanderSDK) {
+            clearInterval(check);
+            resolve();
+          }
+        }, 100);
+      });
     }
   }
 
   if (!window.WanderSDK || !window.WanderSDK.WanderConnect) {
-     throw new Error('Wander Connect SDK loaded but object is missing.');
+    throw new Error('Wander Connect SDK loaded but object is missing.');
   }
 
   const WanderConnect = window.WanderSDK.WanderConnect;
-  
+
   // Create new Wander Connect instance
   wanderConnectInstance = new WanderConnect({
     clientId: WANDER_CONFIG.clientId,
@@ -162,14 +172,14 @@ export async function initializeWanderConnect(): Promise<string> {
   const tryOpen = () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if (wanderConnectInstance && typeof (wanderConnectInstance as any).open === 'function') {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (wanderConnectInstance as any).open();
-          return true;
-        } catch (e) {
-          console.warn('Failed to auto-open Wander Connect UI:', e);
-          return false;
-        }
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (wanderConnectInstance as any).open();
+        return true;
+      } catch (e) {
+        console.warn('Failed to auto-open Wander Connect UI:', e);
+        return false;
+      }
     }
     return false;
   };
@@ -178,8 +188,8 @@ export async function initializeWanderConnect(): Promise<string> {
     // Retry a few times if immediate open fails
     let retries = 0;
     const interval = setInterval(() => {
-        if (tryOpen() || retries > 5) clearInterval(interval);
-        retries++;
+      if (tryOpen() || retries > 5) clearInterval(interval);
+      retries++;
     }, 500);
   }
 
@@ -201,20 +211,20 @@ export async function initializeWanderConnect(): Promise<string> {
         if (wallet) {
           // Force connect to trigger popup
           await wallet.connect(WANDER_CONFIG.permissions, WANDER_CONFIG.appInfo);
-          
+
           const address = await wallet.getActiveAddress();
           if (address) {
             currentConnectionMode = 'connect';
-            
+
             // Close the Wander Connect popup automatically after successful connection
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             if (wanderConnectInstance && typeof (wanderConnectInstance as any).close === 'function') {
-                try {
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    (wanderConnectInstance as any).close();
-                } catch (e) {
-                    console.warn('Failed to close Wander Connect UI:', e);
-                }
+              try {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                (wanderConnectInstance as any).close();
+              } catch (e) {
+                console.warn('Failed to close Wander Connect UI:', e);
+              }
             }
 
             resolve(address);
@@ -267,7 +277,7 @@ export async function connectWanderWallet(): Promise<string> {
       );
 
       const address = await wallet.getActiveAddress();
-      
+
       if (!address) {
         throw new Error('Unable to detect a connected wallet address.');
       }
@@ -331,7 +341,7 @@ export async function disconnectWanderWallet(): Promise<void> {
     if (isWanderWalletInstalled()) {
       await getArweaveWallet()!.disconnect();
     }
-    
+
     // Always cleanup Wander Connect
     await destroyWanderConnect();
   } catch (error) {
@@ -346,16 +356,16 @@ export async function isWalletReady(): Promise<boolean> {
   try {
     // Check extension or injected wallet (Wander Connect injects arweaveWallet too)
     if (getArweaveWallet()) {
-        const wallet = getArweaveWallet()!;
-        const permissions = await wallet.getPermissions();
-        const hasAllPermissions = WANDER_CONFIG.permissions.every(p => permissions.includes(p));
-        
-        if (!hasAllPermissions) {
-          return false;
-        }
-    
-        const address = await wallet.getActiveAddress();
-        return !!address;
+      const wallet = getArweaveWallet()!;
+      const permissions = await wallet.getPermissions();
+      const hasAllPermissions = WANDER_CONFIG.permissions.every(p => permissions.includes(p));
+
+      if (!hasAllPermissions) {
+        return false;
+      }
+
+      const address = await wallet.getActiveAddress();
+      return !!address;
     }
   } catch {
     return false;
@@ -363,13 +373,8 @@ export async function isWalletReady(): Promise<boolean> {
   return false;
 }
 
-/**
- * Format wallet address for display
- */
-export function formatWalletAddress(address: string): string {
-  if (!address || address.length < 12) return address;
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
-}
+import { formatWalletAddress, sleep } from './crypto-utils';
+export { formatWalletAddress };
 
 /**
  * Dispatch data to Arweave via Wander Wallet
@@ -549,9 +554,6 @@ function makeResumeKey(vaultId: string | undefined, payloadHash: string): string
   return `arweave_upload:${safeVault}:${payloadHash}`;
 }
 
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export async function dispatchToArweave(
   data: unknown,
@@ -602,9 +604,9 @@ export async function dispatchToArweave(
             ? await arweave.transactions.getUploader(resumeRecord.uploaderRaw as never, dataBytes)
             : resumeRecord.txRaw
               ? await arweave.transactions.getUploader(
-                  arweave.transactions.fromRaw(resumeRecord.txRaw as never) as never,
-                  dataBytes,
-                )
+                arweave.transactions.fromRaw(resumeRecord.txRaw as never) as never,
+                dataBytes,
+              )
               : null;
 
         if (!uploader) return null;
@@ -659,11 +661,11 @@ export async function dispatchToArweave(
             typeof (uploader as unknown as { pctComplete?: unknown }).pctComplete === "number"
               ? (uploader as unknown as { pctComplete: number }).pctComplete
               : typeof (uploader as unknown as { uploadedChunks?: unknown }).uploadedChunks === "number" &&
-                  typeof (uploader as unknown as { totalChunks?: unknown }).totalChunks === "number" &&
-                  (uploader as unknown as { totalChunks: number }).totalChunks > 0
+                typeof (uploader as unknown as { totalChunks?: unknown }).totalChunks === "number" &&
+                (uploader as unknown as { totalChunks: number }).totalChunks > 0
                 ? ((uploader as unknown as { uploadedChunks: number }).uploadedChunks /
-                    (uploader as unknown as { totalChunks: number }).totalChunks) *
-                  100
+                  (uploader as unknown as { totalChunks: number }).totalChunks) *
+                100
                 : 0;
           onProgress?.(Math.max(0, Math.min(100, pct)));
         }
@@ -708,7 +710,7 @@ export async function dispatchToArweave(
         transaction.addTag(name, value);
       }
     });
-    
+
     // Add Doc-Id tag (obfuscated vault ID) required for lookup
     if (vaultId) {
       transaction.addTag('Doc-Id', vaultId);
@@ -782,8 +784,7 @@ export async function dispatchToArweave(
       }
     } catch (e) {
       throw new Error(
-        `Arweave signature verification failed (client-side): ${
-          e instanceof Error ? e.message : "Unknown error"
+        `Arweave signature verification failed (client-side): ${e instanceof Error ? e.message : "Unknown error"
         }`,
       );
     }

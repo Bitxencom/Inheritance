@@ -20,6 +20,8 @@ import {
 import { getVaultById } from "@/lib/vault-storage";
 import { AlertMessage } from "@/components/ui/alert-message";
 import { cn } from "@/lib/utils";
+import { readBitxenDataIdByHash, getAvailableChains, ChainId } from "@/lib/metamaskWallet";
+import { sha256Hex } from "@/lib/clientVaultCrypto";
 
 interface RestoreVaultDialogProps {
   open: boolean;
@@ -45,6 +47,8 @@ export function RestoreVaultDialog({
   const [validIndexes, setValidIndexes] = useState<number[]>([]);
   const [isVerified, setIsVerified] = useState(false);
   const [vaultType, setVaultType] = useState<string | null>(null);
+  const [isPendingConfirmation, setIsPendingConfirmation] = useState(false);
+  const [releaseError, setReleaseError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -58,6 +62,8 @@ export function RestoreVaultDialog({
     setValidIndexes([]);
     setIsVerified(false);
     setVaultType(null);
+    setIsPendingConfirmation(false);
+    setReleaseError(null);
   };
 
   const handleOpenChange = (newOpen: boolean) => {
@@ -73,14 +79,43 @@ export function RestoreVaultDialog({
 
     setIsLoading(true);
     setError(null);
+    setReleaseError(null);
 
     try {
       const text = await file.text();
       const data = parseBackupFile(text);
       setBackupData(data);
 
-      // Fetch security questions
-      await loadSecurityQuestions(data.vaultId);
+      // Check vault confirmation status
+      const confirmationResult = await checkVaultConfirmation(data.vaultId);
+
+      if (confirmationResult === true) {
+        setError(`Vault ID ${data.vaultId} is still pending on blockchain storage. Please wait a few moments before trying again.`);
+        return;
+      }
+
+      if (typeof confirmationResult === "string") {
+        setReleaseError(confirmationResult);
+        return;
+      }
+
+      // Load security questions only if vault is confirmed
+      try {
+        await loadSecurityQuestionsOnly(data.vaultId);
+      } catch (err) {
+        // If loading questions fails with blockchain storage error, 
+        // it means the vault is actually pending
+        const errorMessage = err instanceof Error ? err.message : "Failed to load security questions";
+        
+        if (errorMessage.toLowerCase().includes("not found on blockchain storage")) {
+          setError(`Vault ID ${data.vaultId} is still pending on blockchain storage. Please wait a few moments before trying again.`);
+          return;
+        }
+        
+        // Re-throw other errors
+        throw err;
+      }
+
       setStep("verification");
     } catch (err) {
       const rawMessage =
@@ -103,7 +138,108 @@ export function RestoreVaultDialog({
     }
   };
 
-  const loadSecurityQuestions = async (vaultId: string) => {
+  const checkVaultConfirmation = async (vaultId: string): Promise<boolean | string> => {
+    const localVault = getVaultById(vaultId);
+    const arweaveTxId = localVault?.arweaveTxId;
+    
+    let lastSuccessfulData: CheckClaimResponse | null = null;
+
+    type CheckClaimResponse = {
+      success?: boolean;
+      error?: string;
+      isConfirmed?: boolean;
+      willType?: string;
+      trigger?: { triggerType: string; triggerDate?: string };
+      latestTxId?: string;
+      isHybrid?: boolean;
+      message?: string;
+    };
+
+    // Single API call to check vault status (includes blockchain confirmation check)
+    const response = await fetch("/api/vault/claim/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ vaultId, arweaveTxId }),
+    });
+
+    const raw = await response.text();
+    const data: CheckClaimResponse = (() => {
+      try {
+        return JSON.parse(raw) as CheckClaimResponse;
+      } catch {
+        return {
+          success: false,
+          error: raw || `Non-JSON response (HTTP ${response.status})`,
+        };
+      }
+    })();
+
+    if (!response.ok || data.success !== true) {
+      const message = (typeof data.error === "string" ? data.error.trim() : "") ||
+        `Failed to check vault status (HTTP ${response.status}).`;
+      
+      if (message.toLowerCase().includes("not found on blockchain storage") || message.toLowerCase().includes("belum tersedia di gateway")) {
+        setIsPendingConfirmation(true);
+        return true;
+      }
+
+      // Backend returns 403 with trigger info when vault is not yet released
+      if (response.status === 403 && data.trigger) {
+        const { triggerType, triggerDate } = data.trigger as { triggerType: string; triggerDate?: string };
+        if (triggerType === "date" && triggerDate) {
+          const releaseDate = new Date(triggerDate);
+          const formattedDate = releaseDate.toLocaleDateString(undefined, {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          });
+          return `This inheritance is not released yet. It is scheduled to become available on ${formattedDate}.`;
+        }
+        return message || "This inheritance is not released yet.";
+      }
+
+      throw new Error(message || `Failed to check vault status (HTTP ${response.status}).`);
+    }
+
+    // Check if vault is confirmed based on blockchain confirmation depth
+    if (data.isConfirmed === false) {
+      // Vault has insufficient confirmations
+      const message = (typeof data.message === "string" ? data.message : "Vault has insufficient blockchain confirmations.");
+      setIsPendingConfirmation(true);
+      return true;
+    }
+
+    // Store successful data
+    lastSuccessfulData = data;
+
+    // API handles blockchain confirmation check, just set pending status based on isHybrid
+    if (data.isHybrid) {
+      setIsPendingConfirmation(false); // API confirmed it has sufficient confirmations
+    } else {
+      // Non-hybrid vault
+      setIsPendingConfirmation(false);
+    }
+
+    // Check release date from API trigger info
+    if (data.trigger?.triggerType === "date" && data.trigger.triggerDate) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const releaseDate = new Date(data.trigger.triggerDate);
+      releaseDate.setHours(0, 0, 0, 0);
+      if (today < releaseDate) {
+        const formattedDate = releaseDate.toLocaleDateString(undefined, {
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+        });
+        return `This inheritance is not released yet. It is scheduled to become available on ${formattedDate}.`;
+      }
+    }
+
+    return false;
+  };
+
+  const loadSecurityQuestionsOnly = async (vaultId: string): Promise<void> => {
     const localVault = getVaultById(vaultId);
     const arweaveTxId = localVault?.arweaveTxId;
 
@@ -118,6 +254,53 @@ export function RestoreVaultDialog({
       error?: string;
       securityQuestions?: unknown;
       willType?: string;
+      latestTxId?: string;
+      trigger?: { triggerType: string; triggerDate?: string };
+    };
+
+    const raw = await response.text();
+    const data: VerifyClaimResponse = (() => {
+      try {
+        return JSON.parse(raw) as VerifyClaimResponse;
+      } catch {
+        throw new Error(`Non-JSON response (HTTP ${response.status})`);
+      }
+    })();
+
+    if (!response.ok || data.success !== true) {
+      throw new Error(`Failed to load security questions (HTTP ${response.status})`);
+    }
+
+    if (data.willType) {
+      setVaultType(data.willType);
+    }
+
+    if (Array.isArray(data.securityQuestions)) {
+      setSecurityQuestions(
+        data.securityQuestions.map((q: string) => ({ question: q, answer: "" }))
+      );
+    } else {
+      throw new Error("No security questions found for this vault.");
+    }
+  };
+
+  const loadSecurityQuestions = async (vaultId: string): Promise<boolean | string> => {
+    const localVault = getVaultById(vaultId);
+    const arweaveTxId = localVault?.arweaveTxId;
+
+    const response = await fetch("/api/vault/claim/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ vaultId, arweaveTxId }),
+    });
+
+    type VerifyClaimResponse = {
+      success?: boolean;
+      error?: string;
+      securityQuestions?: unknown;
+      willType?: string;
+      latestTxId?: string;
+      trigger?: { triggerType: string; triggerDate?: string };
     };
 
     const raw = await response.text();
@@ -135,7 +318,86 @@ export function RestoreVaultDialog({
     if (!response.ok || data.success !== true) {
       const message = (typeof data.error === "string" ? data.error.trim() : "") ||
         `Failed to load security questions (HTTP ${response.status}).`;
+
+      if (message.toLowerCase().includes("not found on blockchain storage") || message.toLowerCase().includes("belum tersedia di gateway")) {
+        setIsPendingConfirmation(true);
+        return true;
+      }
+
+      // Backend returns 403 with trigger info when vault is not yet released
+      if (response.status === 403 && data.trigger) {
+        const { triggerType, triggerDate } = data.trigger as { triggerType: string; triggerDate?: string };
+        if (triggerType === "date" && triggerDate) {
+          const releaseDate = new Date(triggerDate);
+          const formattedDate = releaseDate.toLocaleDateString(undefined, {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          });
+          return `This inheritance is not released yet. It is scheduled to become available on ${formattedDate}.`;
+        }
+        return message || "This inheritance is not released yet.";
+      }
+
       throw new Error(message || `Failed to load security questions (HTTP ${response.status}).`);
+    }
+
+    // EARLY BLOCKCHAIN CHECK
+    const txIdToCheck = data.latestTxId || arweaveTxId;
+    if (txIdToCheck) {
+      try {
+        const payloadText = await fetch(`https://arweave.net/${txIdToCheck}`).then(r => r.ok ? r.text() : null);
+        if (payloadText) {
+          let isHybrid = true;
+          try {
+            const payloadJson = JSON.parse(payloadText);
+            const metadata = payloadJson?.metadata || {};
+            isHybrid = !!(metadata.blockchainChain || metadata.contractAddress || metadata.contractEncryptedKey);
+          } catch (e) {
+            // Ignore JSON parse errors, fallback to hybrid
+          }
+
+          if (!isHybrid) {
+            setIsPendingConfirmation(false);
+          } else {
+            const payloadBuffer = new TextEncoder().encode(payloadText);
+            const dataHashRaw = await sha256Hex(payloadBuffer);
+            const dataHash = "0x" + dataHashRaw;
+
+            let isConfirmed = false;
+            const chains = getAvailableChains();
+            outer: for (const chainKey of chains) {
+              for (let v = 1; v <= 5; v++) {
+                try {
+                  const id = await readBitxenDataIdByHash({
+                    chainId: chainKey as ChainId,
+                    dataHash,
+                    version: BigInt(v),
+                  });
+                  if (id && id !== "0x" + "0".repeat(64)) {
+                    isConfirmed = true;
+                    break outer;
+                  }
+                } catch {
+                  // Ignore version not found
+                }
+              }
+            }
+
+            if (!isConfirmed) {
+              setIsPendingConfirmation(true);
+              return true;
+            } else {
+              setIsPendingConfirmation(false);
+            }
+          }
+        }
+      } catch (err) {
+        setIsPendingConfirmation(false);
+        // ignore fetch failures, assume it might be valid
+      }
+    } else {
+      setIsPendingConfirmation(false);
     }
 
     if (data.willType) {
@@ -149,6 +411,24 @@ export function RestoreVaultDialog({
     } else {
       throw new Error("No security questions found for this vault.");
     }
+
+    // Check release date from API trigger info
+    if (data.trigger?.triggerType === "date" && data.trigger.triggerDate) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const releaseDate = new Date(data.trigger.triggerDate);
+      releaseDate.setHours(0, 0, 0, 0);
+      if (today < releaseDate) {
+        const formattedDate = releaseDate.toLocaleDateString(undefined, {
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+        });
+        return `This inheritance is not released yet. It is scheduled to become available on ${formattedDate}.`;
+      }
+    }
+
+    return false;
   };
 
   const handleAnswerChange = (index: number, answer: string) => {
@@ -268,6 +548,12 @@ export function RestoreVaultDialog({
             message={error}
             className="mb-4"
           />
+          <AlertMessage
+            variant="warning"
+            showHeader
+            message={releaseError}
+            className="mb-4"
+          />
 
           {step === "upload" && (
             <div className="flex flex-col items-center justify-center border-2 border-dashed border-muted-foreground/25 rounded-lg p-12 text-center bg-muted/50 hover:bg-muted/80 transition-colors cursor-pointer"
@@ -352,10 +638,10 @@ export function RestoreVaultDialog({
               <Button variant="ghost" onClick={() => resetState()} disabled={isLoading}>
                 Back
               </Button>
-              <Button onClick={handleVerify} disabled={isLoading}>
+              <Button onClick={handleVerify} disabled={isLoading || isPendingConfirmation}>
                 {isLoading ? (
                   <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
                     Checking...
                   </>
                 ) : (

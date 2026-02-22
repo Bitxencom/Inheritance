@@ -76,3 +76,22 @@ export type EditWizardStep = {
   label: string;
   description?: string;
 };
+
+export type VaultPayloadForEdit = Record<string, unknown> & {
+  willDetails?: Record<string, unknown> & {
+    title?: string;
+    content?: string;
+    willType?: "one-time" | "editable";
+    documents?: Array<{ name?: string; size?: number; type?: string; content?: string }>;
+  };
+  securityQuestions?: Array<{ question: string; answer: string }>;
+  triggerRelease?: unknown;
+};
+
+export type FractionKeyCommitmentsV1 = {
+  scheme: "sha256";
+  version: 1;
+  byShareId: Record<string, string>;
+  createdAt?: string;
+};
+

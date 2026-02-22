@@ -8,207 +8,55 @@
 //
 // NOTE: Uses native window.ethereum API (no ethers dependency required)
 
+// ABI encoding/decoding utilities — pulled from abi-encoder.ts
+// Re-export for backward compatibility (consumers importing from this file still work)
+export {
+  bytesToHex,
+  hexToBytes,
+  abiSelector,
+  encodeBytes32,
+  encodeUint256,
+  encodeRegisterData,
+  encodeUpdateData,
+  encodeCalculateFee,
+  decodeAbiTuple,
+} from "./abi-encoder";
+
+// Import for internal use within this file
+import {
+  bytesToHex,
+  abiSelector,
+  encodeBytes32,
+  encodeUint256,
+  encodeRegisterData,
+  encodeUpdateData,
+  encodeCalculateFee,
+  decodeAbiTuple,
+} from "./abi-encoder";
+
+// keccak_256 is still needed for ARWEAVE_PROVIDER_HASH in dispatchHybrid
 import { keccak_256 } from "@noble/hashes/sha3.js";
 
 // Chain configurations with Bitxen contract addresses
-export const CHAIN_CONFIG = {
-  // BSC Testnet - for development testing
-  // Get free tBNB from: https://www.bnbchain.org/en/testnet-faucet
-  // Contract verified: BITXEN token with custom registration functions
+import {
+  CHAIN_CONFIG,
+  ChainId,
+  getAvailableChains,
+  getChainKeyFromNumericChainId,
+  getNetworkIdFromChainKey,
+  type ChainInfo,
+} from "./chains";
 
-  // BSC Testnet Only for Testing
-  bscTestnet: {
-    chainId: 97,
-    chainIdHex: "0x61",
-    name: "BNB Smart Chain Testnet",
-    shortName: "BSC Testnet",
-    nativeCurrency: { name: "tBNB", symbol: "tBNB", decimals: 18 },
-    rpcUrls: [
-      "https://bsc-testnet-dataseed.bnbchain.org/",
-      "https://bsc-testnet.publicnode.com/",
-      "https://data-seed-prebsc-1-s2.binance.org:8545/",
-      "https://data-seed-prebsc-2-s1.binance.org:8545/",
-      "https://data-seed-prebsc-1-s1.binance.org:8545/",
-      "https://data-seed-prebsc-2-s1.binance.org:8545/",
-      "https://bsc-testnet-rpc.publicnode.com/"
-    ],
-    rpcUrl: "https://data-seed-prebsc-2-s1.bnbchain.org:8545/",
-    blockExplorer: "https://testnet.bscscan.com",
-    contractAddress: "0xeFe3D5d233Df4764826Cba9edfF8c0032E78e06C",
-    governorAddress: "0x8F94e79c07ff47E16C316B5b184B72C8109AaEAC",
-    logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/smartchain/info/logo.png",
-    isTestnet: true,
-  },
-
-  bsc: {
-    chainId: 56,
-    chainIdHex: "0x38",
-    name: "BNB Smart Chain",
-    shortName: "BSC",
-    nativeCurrency: { name: "BNB", symbol: "BNB", decimals: 18 },
-    rpcUrls: [
-      "https://bsc-dataseed.binance.org/",
-      "https://bsc-dataseed1.defibit.io/",
-      "https://bsc-dataseed1.ninicoin.io/",
-      "https://bsc-dataseed2.defibit.io/",
-      "https://bsc-dataseed3.defibit.io/",
-      "https://bsc-dataseed4.defibit.io/",
-      "https://bsc-dataseed1.binance.org/",
-      "https://bsc-dataseed2.binance.org/",
-      "https://bsc-dataseed3.binance.org/",
-      "https://bsc-dataseed4.binance.org/"
-    ],
-    rpcUrl: "https://bsc-dataseed.binance.org/",
-    blockExplorer: "https://bscscan.com",
-    contractAddress: "0xfCE73A806c3B1400a7672049D56e16E5b9bfFA2A",
-    governorAddress: "0x6dd2E9B49ECBcC5b556da44D812C857Bf2a068bB",
-    logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/smartchain/info/logo.png",
-    isTestnet: false,
-  },
-  eth: {
-    chainId: 1,
-    chainIdHex: "0x1",
-    name: "Ethereum Mainnet",
-    shortName: "ETH",
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrl: "https://eth.llamarpc.com",
-    blockExplorer: "https://etherscan.io",
-    contractAddress: "0xa5e79731386f70ac4165cd9beb63a4876097ad8a",
-    logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/info/logo.png",
-    isTestnet: false,
-  },
-  polygon: {
-    chainId: 137,
-    chainIdHex: "0x89",
-    name: "Polygon Mainnet",
-    shortName: "POLY",
-    nativeCurrency: { name: "Matic", symbol: "MATIC", decimals: 18 },
-    rpcUrl: "https://polygon-rpc.com",
-    blockExplorer: "https://polygonscan.com",
-    contractAddress: "0x8c7D96de6a5E7734E9E300e0F4D6C02e348ddf31",
-    logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/polygon/info/logo.png",
-    isTestnet: false,
-  },
-  base: {
-    chainId: 8453,
-    chainIdHex: "0x2105",
-    name: "Base Mainnet",
-    shortName: "BASE",
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrl: "https://mainnet.base.org",
-    blockExplorer: "https://basescan.org",
-    contractAddress: "0xE6311C46841d6953D3EBc035CDdCC2f10C9d821c",
-    logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/base/info/logo.png",
-    isTestnet: false,
-  },
-  arbitrum: {
-    chainId: 42161,
-    chainIdHex: "0xa4b1",
-    name: "Arbitrum One",
-    shortName: "ARB",
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrl: "https://arb1.arbitrum.io/rpc",
-    blockExplorer: "https://arbiscan.io",
-    contractAddress: "0xE6311C46841d6953D3EBc035CDdCC2f10C9d821c",
-    logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/arbitrum/info/logo.png",
-    isTestnet: false,
-  },
-  optimism: {
-    chainId: 10,
-    chainIdHex: "0xa",
-    name: "Optimism",
-    shortName: "OP",
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrl: "https://mainnet.optimism.io",
-    blockExplorer: "https://optimistic.etherscan.io",
-    contractAddress: "0xE6311C46841d6953D3EBc035CDdCC2f10C9d821c",
-    logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/optimism/info/logo.png",
-    isTestnet: false,
-  },
-  linea: {
-    chainId: 59144,
-    chainIdHex: "0xe708",
-    name: "Linea",
-    shortName: "LINEA",
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrl: "https://rpc.linea.build",
-    blockExplorer: "https://lineascan.build",
-    contractAddress: "0xE6311C46841d6953D3EBc035CDdCC2f10C9d821c",
-    logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/linea/info/logo.png",
-    isTestnet: false,
-  },
-  sei: {
-    chainId: 1329,
-    chainIdHex: "0x531",
-    name: "Sei EVM",
-    shortName: "SEI",
-    nativeCurrency: { name: "Sei", symbol: "SEI", decimals: 18 },
-    rpcUrl: "https://evm-rpc.sei-apis.com",
-    blockExplorer: "https://seitrace.com",
-    contractAddress: "0xE6311C46841d6953D3EBc035CDdCC2f10C9d821c",
-    logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/sei/info/logo.png",
-    isTestnet: false,
-  },
-  avalanche: {
-    chainId: 43114,
-    chainIdHex: "0xa86a",
-    name: "Avalanche C-Chain",
-    shortName: "AVAX",
-    nativeCurrency: { name: "Avalanche", symbol: "AVAX", decimals: 18 },
-    rpcUrl: "https://api.avax.network/ext/bc/C/rpc",
-    blockExplorer: "https://snowtrace.io",
-    contractAddress: "0xE6311C46841d6953D3EBc035CDdCC2f10C9d821c",
-    logo: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/avalanchec/info/logo.png",
-    isTestnet: false,
-  },
-  monad: {
-    chainId: 10143,
-    chainIdHex: "0x279f",
-    name: "Monad Testnet",
-    shortName: "MONAD",
-    nativeCurrency: { name: "Monad", symbol: "MON", decimals: 18 },
-    rpcUrl: "https://testnet-rpc.monad.xyz",
-    blockExplorer: "https://testnet.monadexplorer.com",
-    contractAddress: "0xE6311C46841d6953D3EBc035CDdCC2f10C9d821c",
-    logo: "",
-    isTestnet: true,
-  },
-} as const;
-
-interface ChainConfigBase {
-  chainId: number;
-  chainIdHex: string;
-  name: string;
-  shortName: string;
-  nativeCurrency: { name: string; symbol: string; decimals: number };
-  rpcUrl: string;
-  blockExplorer: string;
-  contractAddress: string;
-  governorAddress?: string;
-  logo: string;
-  isTestnet: boolean;
-}
-
-interface ChainConfigWithFallbacks extends ChainConfigBase {
-  rpcUrls: string[];
-}
-
-type ChainConfig = ChainConfigBase | ChainConfigWithFallbacks;
-
-export type ChainId = keyof typeof CHAIN_CONFIG;
+export {
+  CHAIN_CONFIG,
+  getAvailableChains,
+  getChainKeyFromNumericChainId,
+  getNetworkIdFromChainKey,
+};
+export type { ChainId };
 
 // Default chain for Bitxen
 export const DEFAULT_CHAIN: ChainId = "bscTestnet";
-
-// Get list of available chains
-export function getAvailableChains(): ChainId[] {
-  const chains = Object.keys(CHAIN_CONFIG) as ChainId[];
-  // Temporary disable
-  // if (process.env.NODE_ENV === "production") {
-  //   return chains.filter((chainId) => chainId !== "bscTestnet");
-  // }
-  return chains;
-}
 
 // Get chain config by ID
 export function getChainConfig(chainId: ChainId) {
@@ -445,309 +293,10 @@ const BITXEN_ABI = {
   },
 };
 
-/**
- * Encode function call for registerData
- */
-export function encodeRegisterData(
-  dataHash: string,
-  storageURI: string,
-  provider: string,
-  fileSize: bigint,
-  contentType: string,
-  fileName: string,
-  isPermanent: boolean,
-  releaseDate: bigint,
-  commitment: string,
-  secret: string,
-): string {
-  // Function selector: keccak256("registerData((bytes32,string,bytes32,uint256,string,string,bool,uint256,bytes32,bytes32))")[0:4]
-  const selector = abiSelector("registerData((bytes32,string,bytes32,uint256,string,string,bool,uint256,bytes32,bytes32))");
-
-  // Helper for string encoding with length prefix
-  const encodeStringToBytes = (
-    str: string,
-  ): { offset: string; data: string } => {
-    const bytes = new TextEncoder().encode(str);
-    const length = bytes.length;
-    const lengthHex = length.toString(16).padStart(64, "0");
-    const dataHex = Array.from(bytes)
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-    // Pad to 32-byte boundary
-    // 32 bytes = 64 hex chars
-    const paddedData = dataHex.padEnd(Math.ceil(length / 32) * 64, "0");
-    return { offset: "", data: lengthHex + paddedData };
-  };
-
-  // dataHash (bytes32 - 32 bytes)
-  const encodedDataHash = dataHash.startsWith("0x")
-    ? dataHash.slice(2).padStart(64, "0")
-    : dataHash.padStart(64, "0");
-
-  // Tuple offset (starts at 32 bytes = 0x20)
-  const tupleOffset =
-    "0000000000000000000000000000000000000000000000000000000000000020";
-
-  // Static fields: dataHash, provider, fileSize, isPermanent, releaseDate, commitment, secret
-  // Dynamic fields: storageURI, contentType, fileName
-
-  const encodedProvider = encodeBytes32(provider);
-  const encodedFileSize = fileSize.toString(16).padStart(64, "0");
-  const encodedIsPermanent = (isPermanent ? 1 : 0)
-    .toString(16)
-    .padStart(64, "0");
-  const encodedReleaseDate = releaseDate.toString(16).padStart(64, "0");
-  const encodedCommitment = encodeBytes32(commitment);
-  const encodedSecret = encodeBytes32(secret);
-
-  // 10 fields total.
-  // Static parts:
-  // 1. dataHash (inline)
-  // 2. storageURI (offset) -> Dynamic
-  // 3. provider (inline)
-  // 4. fileSize (inline)
-  // 5. contentType (offset) -> Dynamic
-  // 6. fileName (offset) -> Dynamic
-  // 7. isPermanent (inline)
-  // 8. releaseDate (inline)
-  // 9. commitment (inline)
-  // 10. secret (inline)
-
-  // Total static size = 10 * 32 = 320 bytes = 0x140
-  const dynamicStart = 10 * 32;
-  let currentOffset = dynamicStart;
-
-  // Encode strings
-  const storageURIData = encodeStringToBytes(storageURI);
-  const contentTypeData = encodeStringToBytes(contentType);
-  const fileNameData = encodeStringToBytes(fileName);
-
-  // Calculate offsets
-  const storageURIOffset = currentOffset;
-  currentOffset += 32 + Math.ceil(new TextEncoder().encode(storageURI).length / 32) * 32;
-
-  const contentTypeOffset = currentOffset;
-  currentOffset += 32 + Math.ceil(new TextEncoder().encode(contentType).length / 32) * 32;
-
-  const fileNameOffset = currentOffset;
-
-  // Build payload
-  const encodedParams =
-    tupleOffset +
-    encodedDataHash +
-    storageURIOffset.toString(16).padStart(64, "0") +
-    encodedProvider +
-    encodedFileSize +
-    contentTypeOffset.toString(16).padStart(64, "0") +
-    fileNameOffset.toString(16).padStart(64, "0") +
-    encodedIsPermanent +
-    encodedReleaseDate +
-    encodedCommitment +
-    encodedSecret +
-    storageURIData.data +
-    contentTypeData.data +
-    fileNameData.data;
-
-  return "0x" + selector + encodedParams;
-}
-
-function bytesToHex(data: Uint8Array): string {
-  let hex = "";
-  for (let i = 0; i < data.length; i += 1) {
-    hex += data[i].toString(16).padStart(2, "0");
-  }
-  return hex;
-}
-
-function hexToBytes(hex: string): Uint8Array {
-  const normalized = hex.startsWith("0x") ? hex.slice(2) : hex;
-  if (normalized.length % 2 !== 0) {
-    throw new Error("Invalid hex string length");
-  }
-  const bytes = new Uint8Array(normalized.length / 2);
-  for (let i = 0; i < normalized.length; i += 2) {
-    bytes[i / 2] = parseInt(normalized.slice(i, i + 2), 16);
-  }
-  return bytes;
-}
-
-function abiSelector(signature: string): string {
-  const bytes = new TextEncoder().encode(signature);
-  return bytesToHex(keccak_256(bytes).slice(0, 4));
-}
-
+// ABI utilities are imported from abi-encoder.ts at the top of this file.
+// pad32Hex is only used internally below.
 function pad32Hex(hexNo0x: string): string {
   return hexNo0x.replace(/^0x/i, "").padStart(64, "0");
-}
-
-function encodeBytes32(value: string): string {
-  const normalized = value.startsWith("0x") ? value.slice(2) : value;
-  if (normalized.length !== 64) {
-    throw new Error("Invalid bytes32 length");
-  }
-  return normalized.toLowerCase();
-}
-
-function encodeUint256(value: bigint): string {
-  if (value < BigInt(0)) throw new Error("uint256 must be >= 0");
-  return value.toString(16).padStart(64, "0");
-}
-
-function encodeUint8(value: number): string {
-  if (!Number.isInteger(value) || value < 0 || value > 255) {
-    throw new Error("uint8 out of range");
-  }
-  return value.toString(16).padStart(64, "0");
-}
-
-export function encodeUpdateData(
-  dataId: string,
-  newDataHash: string,
-  newStorageURI: string,
-  newProvider: string,
-  newFileSize: bigint,
-): string {
-  const selector = abiSelector("updateData(bytes32,bytes32,string,bytes32,uint256)");
-
-  const headWords = BigInt(5);
-  const stringOffsetBytes = headWords * BigInt(32);
-
-  const uriBytes = new TextEncoder().encode(newStorageURI);
-  const uriLen = BigInt(uriBytes.length);
-  const uriHex = bytesToHex(uriBytes);
-  const uriPadBytes = (32 - (uriBytes.length % 32)) % 32;
-  const uriPaddedHex = uriHex + "0".repeat(uriPadBytes * 2);
-
-  const head =
-    encodeBytes32(dataId) +
-    encodeBytes32(newDataHash) +
-    encodeUint256(stringOffsetBytes) +
-    encodeBytes32(newProvider) +
-    encodeUint256(newFileSize);
-
-  const tail = encodeUint256(uriLen) + uriPaddedHex;
-
-  return "0x" + selector + head + tail;
-}
-
-/**
- * Encode function call for calculateFee
- */
-export function encodeCalculateFee(): string {
-  const selector = abiSelector("calculateFee()");
-  
-  // No arguments for new calculateFee
-  return "0x" + selector;
-}
-
-function decodeWord(hexNo0x: string, wordIndex: number): string {
-  const start = wordIndex * 64;
-  const end = start + 64;
-  if (end > hexNo0x.length) {
-    throw new Error("ABI decode out of bounds");
-  }
-  return hexNo0x.slice(start, end);
-}
-
-function decodeUint256Word(word: string): bigint {
-  return BigInt("0x" + word);
-}
-
-function decodeAddressWord(word: string): string {
-  return "0x" + word.slice(24);
-}
-
-function decodeBoolWord(word: string): boolean {
-  return BigInt("0x" + word) !== BigInt(0);
-}
-
-function decodeStringAtOffset(hexNo0x: string, offsetBytes: bigint): string {
-  const offset = Number(offsetBytes);
-  if (!Number.isFinite(offset) || offset < 0 || offset % 32 !== 0) {
-    throw new Error("Invalid ABI string offset");
-  }
-  const wordIndex = offset / 32;
-  const length = decodeUint256Word(decodeWord(hexNo0x, wordIndex));
-  const lengthNumber = Number(length);
-  if (!Number.isFinite(lengthNumber) || lengthNumber < 0) {
-    throw new Error("Invalid ABI string length");
-  }
-  const bytesStart = (wordIndex + 1) * 32;
-  const startHex = bytesStart * 2;
-  const endHex = startHex + lengthNumber * 2;
-  if (endHex > hexNo0x.length) {
-    throw new Error("ABI string decode out of bounds");
-  }
-  const strBytes = hexToBytes(hexNo0x.slice(startHex, endHex));
-  return new TextDecoder().decode(strBytes);
-}
-
-function decodeAbiTuple(types: string[], dataHex: string): unknown[] {
-  const rawHex = dataHex.startsWith("0x") ? dataHex.slice(2) : dataHex;
-
-  // eth_call responses for struct/tuple return types are wrapped with an outer
-  // tuple pointer: the first word is 0x0000...0020 (= 32), pointing to where
-  // the actual tuple data starts. We must detect and skip this wrapper so that
-  // field indices and dynamic string offsets are calculated correctly.
-  let hexNo0x = rawHex;
-
-  if (rawHex.length >= 64) {
-    const firstWord = BigInt("0x" + rawHex.slice(0, 64));
-    if (firstWord === BigInt(32)) {
-      // Outer tuple wrapper detected — skip 1 word (32 bytes = 64 hex chars).
-      // eth_call responses for struct/tuple return types are wrapped with this
-      // pointer so that field indices and dynamic string offsets are correct.
-      hexNo0x = rawHex.slice(64);
-    }
-  }
-
-  if (hexNo0x.length < types.length * 64) {
-    throw new Error("Invalid ABI response length");
-  }
-
-  const head: unknown[] = new Array(types.length);
-  const dynamicOffsets: Array<{ index: number; offset: bigint }> = [];
-
-  for (let i = 0; i < types.length; i += 1) {
-    const t = types[i];
-    const word = decodeWord(hexNo0x, i);
-
-    if (t === "address") {
-      head[i] = decodeAddressWord(word);
-      continue;
-    }
-    if (t === "bytes32") {
-      head[i] = "0x" + word;
-      continue;
-    }
-    if (t === "uint8") {
-      head[i] = Number(decodeUint256Word(word));
-      continue;
-    }
-    if (t === "bool") {
-      head[i] = decodeBoolWord(word);
-      continue;
-    }
-    if (t === "uint256") {
-      head[i] = decodeUint256Word(word);
-      continue;
-    }
-    if (t === "string") {
-      // Dynamic offsets in the tuple head are relative to the start of the tuple,
-      // NOT relative to the start of the full response. Since we already sliced
-      // off the outer wrapper, the offset value read from the head word is already
-      // correct relative to hexNo0x — no further adjustment needed.
-      dynamicOffsets.push({ index: i, offset: decodeUint256Word(word) });
-      continue;
-    }
-    throw new Error(`Unsupported ABI type: ${t}`);
-  }
-
-  for (const dyn of dynamicOffsets) {
-    head[dyn.index] = decodeStringAtOffset(hexNo0x, dyn.offset);
-  }
-
-  return head;
 }
 
 type BitxenDataRecordRead = {
@@ -874,14 +423,7 @@ async function ethCall(params: { rpcUrl: string; to: string; data: string }): Pr
 }
 
 
-export function getNetworkIdFromChainKey(chainKey: ChainId): number {
-  return CHAIN_CONFIG[chainKey]?.chainId || 0;
-}
-
-export function getChainKeyFromNumericChainId(chainId: number): ChainId | null {
-  const entry = Object.entries(CHAIN_CONFIG).find(([_, config]) => config.chainId === chainId);
-  return entry ? (entry[0] as ChainId) : null;
-}
+// getNetworkIdFromChainKey and getChainKeyFromNumericChainId moved to chains.ts
 
 export async function readBitxenDataRecord(params: {
   chainId: ChainId;
@@ -985,66 +527,66 @@ export async function readBitxenDataRecord(params: {
   let mapped: Partial<BitxenDataRecordRead> = {};
 
   if (variant === "new") {
-      mapped = {
-        owner: decoded[0] as string,
-        currentDataHash: decoded[1] as string,
-        currentStorageURI: decoded[2] as string,
-        currentProvider: decoded[3] as string, // was decoded as bytes32
-        createdAt: decoded[4] as bigint,
-        lastUpdatedAt: decoded[5] as bigint,
-        commitment: decoded[6] as string,
-        fileSize: decoded[7] as bigint,
-        contentType: decoded[8] as string,
-        fileName: decoded[9] as string,
-        isPermanent: decoded[10] as boolean,
-        currentVersion: decoded[11] as bigint,
-        totalVersions: decoded[12] as bigint,
-        totalFeePaid: decoded[13] as bigint,
-        releaseDate: decoded[14] as bigint,
-        isReleased: decoded[15] as boolean,
-        releaseEntropy: decoded[16] as string,
-      };
+    mapped = {
+      owner: decoded[0] as string,
+      currentDataHash: decoded[1] as string,
+      currentStorageURI: decoded[2] as string,
+      currentProvider: decoded[3] as string, // was decoded as bytes32
+      createdAt: decoded[4] as bigint,
+      lastUpdatedAt: decoded[5] as bigint,
+      commitment: decoded[6] as string,
+      fileSize: decoded[7] as bigint,
+      contentType: decoded[8] as string,
+      fileName: decoded[9] as string,
+      isPermanent: decoded[10] as boolean,
+      currentVersion: decoded[11] as bigint,
+      totalVersions: decoded[12] as bigint,
+      totalFeePaid: decoded[13] as bigint,
+      releaseDate: decoded[14] as bigint,
+      isReleased: decoded[15] as boolean,
+      releaseEntropy: decoded[16] as string,
+    };
   } else if (variant === "v2") {
-      mapped = {
-        owner: decoded[0] as string,
-        currentDataHash: decoded[1] as string,
-        currentStorageURI: decoded[2] as string,
-        currentProvider: decoded[3] as number,
-        createdAt: decoded[4] as bigint,
-        lastUpdatedAt: decoded[5] as bigint,
-        commitment: "0x" + "0".repeat(64),
-        fileSize: decoded[6] as bigint,
-        contentType: decoded[7] as string,
-        fileName: decoded[8] as string,
-        isPermanent: decoded[9] as boolean,
-        currentVersion: decoded[10] as bigint,
-        totalVersions: decoded[11] as bigint,
-        totalFeePaid: decoded[12] as bigint,
-        releaseDate: decoded[13] as bigint,
-        isReleased: decoded[14] as boolean,
-        releaseEntropy: decoded[15] as string,
-        encryptedKey: decoded[16] as string,
-      };
+    mapped = {
+      owner: decoded[0] as string,
+      currentDataHash: decoded[1] as string,
+      currentStorageURI: decoded[2] as string,
+      currentProvider: decoded[3] as number,
+      createdAt: decoded[4] as bigint,
+      lastUpdatedAt: decoded[5] as bigint,
+      commitment: "0x" + "0".repeat(64),
+      fileSize: decoded[6] as bigint,
+      contentType: decoded[7] as string,
+      fileName: decoded[8] as string,
+      isPermanent: decoded[9] as boolean,
+      currentVersion: decoded[10] as bigint,
+      totalVersions: decoded[11] as bigint,
+      totalFeePaid: decoded[12] as bigint,
+      releaseDate: decoded[13] as bigint,
+      isReleased: decoded[14] as boolean,
+      releaseEntropy: decoded[15] as string,
+      encryptedKey: decoded[16] as string,
+    };
   } else {
-      mapped = {
-        owner: decoded[0] as string,
-        currentProvider: decoded[1] as number,
-        createdAt: decoded[2] as bigint,
-        lastUpdatedAt: decoded[3] as bigint,
-        currentDataHash: decoded[4] as string,
-        commitment: decoded[5] as string,
-        currentStorageURI: decoded[6] as string,
-        fileSize: decoded[7] as bigint,
-        contentType: decoded[8] as string,
-        fileName: decoded[9] as string,
-        isPermanent: decoded[10] as boolean,
-        currentVersion: decoded[11] as bigint,
-        totalVersions: decoded[12] as bigint,
-        totalFeePaid: decoded[13] as bigint,
-        releaseDate: decoded[14] as bigint,
-        isReleased: decoded[15] as boolean,
-        releaseEntropy: "0x" + "0".repeat(64), // Default empty for legacy
-      };
+    mapped = {
+      owner: decoded[0] as string,
+      currentProvider: decoded[1] as number,
+      createdAt: decoded[2] as bigint,
+      lastUpdatedAt: decoded[3] as bigint,
+      currentDataHash: decoded[4] as string,
+      commitment: decoded[5] as string,
+      currentStorageURI: decoded[6] as string,
+      fileSize: decoded[7] as bigint,
+      contentType: decoded[8] as string,
+      fileName: decoded[9] as string,
+      isPermanent: decoded[10] as boolean,
+      currentVersion: decoded[11] as bigint,
+      totalVersions: decoded[12] as bigint,
+      totalFeePaid: decoded[13] as bigint,
+      releaseDate: decoded[14] as bigint,
+      isReleased: decoded[15] as boolean,
+      releaseEntropy: "0x" + "0".repeat(64), // Default empty for legacy
+    };
   }
 
   const isReleased = mapped.isReleased as boolean;
@@ -1054,7 +596,7 @@ export async function readBitxenDataRecord(params: {
   // HOWEVER, for vaults encrypted with "envelope" mode using a contract that generates random entropy (original BitxenEntropy),
   // the releaseEntropy in the struct will be random and NOT the key.
   // We must try to fetch the actual secret via getVaultSecret.
-  
+
   let secret = "0x" + "0".repeat(64);
   if (isReleased) {
     try {
@@ -1114,30 +656,36 @@ export async function readBitxenDataRecord(params: {
   };
 }
 
-export async function finalizeRelease(
-  chainId: ChainId,
-  contractDataId: string,
-  contractAddress?: string,
-): Promise<string> {
+// export async function finalizeRelease(
+//   chainId: ChainId,
+//   contractDataId: string,
+//   contractAddress?: string,
+// ): Promise<string> {
+
+export async function finalizeRelease(params: {
+  chainId: ChainId;
+  contractDataId: string;
+  contractAddress?: string;
+}): Promise<string> {
   if (!window.ethereum) {
     throw new Error("MetaMask not installed");
   }
 
-  const config = CHAIN_CONFIG[chainId];
+  const config = CHAIN_CONFIG[params.chainId];
   const targetAddress =
-    typeof contractAddress === "string" && contractAddress.trim().length > 0
-      ? contractAddress.trim()
+    typeof params.contractAddress === "string" && params.contractAddress.trim().length > 0
+      ? params.contractAddress.trim()
       : config.contractAddress;
 
   const userAddress = await connectMetaMask();
   const currentChainId = await getCurrentChainId();
 
   if (currentChainId !== config.chainId) {
-    await switchToChain(chainId);
+    await switchToChain(params.chainId);
   }
 
   const selector = abiSelector("finalizeRelease(bytes32)");
-  const data = "0x" + selector + encodeBytes32(contractDataId);
+  const data = "0x" + selector + encodeBytes32(params.contractDataId);
 
   const txHash = (await window.ethereum.request({
     method: "eth_sendTransaction",
@@ -1204,7 +752,7 @@ export async function calculateBitxenFee(
       to: config.contractAddress,
       data,
     });
-    
+
     if (!resultHex || resultHex === "0x") return BigInt(0);
     return BigInt(resultHex);
   } catch (error) {
@@ -1387,24 +935,24 @@ export async function dispatchHybrid(
 
     const txData = existingContractDataId
       ? encodeUpdateData(
-          existingContractDataId,
-          dataHash,
-          storageURI,
-          ARWEAVE_PROVIDER_HASH,
-          fileSize,
-        )
+        existingContractDataId,
+        dataHash,
+        storageURI,
+        ARWEAVE_PROVIDER_HASH,
+        fileSize,
+      )
       : encodeRegisterData(
-          dataHash,
-          storageURI,
-          ARWEAVE_PROVIDER_HASH,
-          fileSize,
-          "application/json",
-          `vault-${vaultId}.json`,
-          isPermanent,
-          releaseDate,
-          commitment,
-          secret,
-        );
+        dataHash,
+        storageURI,
+        ARWEAVE_PROVIDER_HASH,
+        fileSize,
+        "application/json",
+        `vault-${vaultId}.json`,
+        isPermanent,
+        releaseDate,
+        commitment,
+        secret,
+      );
 
     const registerTxHash = (await window.ethereum.request({
       method: "eth_sendTransaction",
@@ -1516,13 +1064,9 @@ function extractRegisteredDataIdFromReceipt(
   return null;
 }
 
-/**
- * Format wallet address for display
- */
-export function formatWalletAddress(address: string): string {
-  if (!address || address.length < 12) return address;
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
-}
+// formatWalletAddress moved to crypto-utils.ts
+import { formatWalletAddress } from "./crypto-utils";
+export { formatWalletAddress };
 
 /**
  * Check if wallet is connected and ready

@@ -9,8 +9,7 @@ COPY package.json package-lock.json* pnpm-lock.yaml* ./
 RUN corepack enable || true
 
 FROM base AS deps
-# Update npm and clear cache to avoid "Exit handler never called" bug
-RUN npm cache clean --force && npm install -g npm@latest
+# Use standard npm version from the image
 RUN if [ -f "pnpm-lock.yaml" ]; then pnpm install --frozen-lockfile; \
   elif [ -f "package-lock.json" ]; then npm ci || npm install; \
   else npm install; \
@@ -33,9 +32,6 @@ FROM node:22-alpine AS production
 
 ENV NODE_ENV=production
 WORKDIR /app
-
-# Update npm and clear cache to avoid "Exit handler never called" bug
-RUN npm cache clean --force && npm install -g npm@latest
 
 COPY package.json package-lock.json* pnpm-lock.yaml* ./
 

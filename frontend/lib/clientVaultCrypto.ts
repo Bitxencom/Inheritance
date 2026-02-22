@@ -79,12 +79,7 @@ async function importAesKey(rawKey: Uint8Array, alg: "AES-CBC" | "AES-GCM"): Pro
   );
 }
 
-async function sha256(data: ArrayBuffer): Promise<string> {
-  const crypto = getCrypto();
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-}
+// sha256 moved to crypto-utils.ts as sha256Hex
 
 function toBase64(data: ArrayBuffer | Uint8Array): string {
   const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
@@ -245,10 +240,9 @@ export async function deriveEffectiveAesKeyClient(
   return new Uint8Array(digest);
 }
 
-export async function sha256Hex(data: ArrayBuffer | Uint8Array): Promise<string> {
-  const buffer = data instanceof ArrayBuffer ? data : toArrayBuffer(data);
-  return sha256(buffer);
-}
+import { sha256Hex } from "./crypto-utils";
+
+export { sha256Hex };
 
 export async function encryptBytesClient(
   plain: ArrayBuffer | Uint8Array,
@@ -268,7 +262,7 @@ export async function encryptBytesClient(
     plainBuffer,
   );
 
-  const checksum = await sha256(cipherBuffer);
+  const checksum = await sha256Hex(cipherBuffer);
 
   return {
     cipherBytes: new Uint8Array(cipherBuffer),
@@ -290,7 +284,7 @@ export async function decryptBytesClient(
   const cipherBuffer = toArrayBuffer(cipherBytes);
 
   if (encrypted.checksum) {
-    const actual = await sha256(cipherBuffer);
+    const actual = await sha256Hex(cipherBuffer);
     if (actual !== encrypted.checksum) {
       throw new Error("Attachment checksum mismatch.");
     }
@@ -353,7 +347,7 @@ export async function encryptVaultPayloadClient(
     plainBuffer,
   );
 
-  const checksum = await sha256(cipherBuffer);
+  const checksum = await sha256Hex(cipherBuffer);
 
   return {
     cipherText: toBase64(cipherBuffer),
@@ -376,7 +370,7 @@ export async function decryptVaultPayloadClient(
   const cipherBuffer = toArrayBuffer(cipherBytes);
 
   if (encrypted.checksum && encrypted.checksum.length > 0) {
-    const actual = await sha256(cipherBuffer);
+    const actual = await sha256Hex(cipherBuffer);
     if (actual !== encrypted.checksum) {
       throw new Error("Vault checksum mismatch.");
     }
@@ -412,7 +406,7 @@ export async function decryptVaultPayloadRawKeyClient(
   const cipherBuffer = toArrayBuffer(cipherBytes);
 
   if (encrypted.checksum && encrypted.checksum.length > 0) {
-    const actual = await sha256(cipherBuffer);
+    const actual = await sha256Hex(cipherBuffer);
     if (actual !== encrypted.checksum) {
       throw new Error("Vault checksum mismatch.");
     }
