@@ -632,7 +632,31 @@ export function useVaultEdit({
                 if (!metadataEncKey) throw new Error("Hybrid key missing.");
                 hybridContractEncryptedKeyRef.current = metadataEncKey;
                 const wrappedKey = parseWrappedKeyV1(JSON.parse(metadataEncKey));
-                const contractSecret = typeof data.metadata?.contractSecret === "string" ? data.metadata.contractSecret : null;
+                const localVault = getVaultById(formState.vaultId);
+                let contractSecret = typeof data.releaseEntropy === "string" ? data.releaseEntropy : null;
+
+                // If not in API response, try direct blockchain fetch (since we don't store it in metadata anymore)
+                if (!contractSecret && (data.metadata?.contractDataId || localVault?.contractDataId)) {
+                    try {
+                        const targetDataId = (data.metadata?.contractDataId || localVault?.contractDataId) as string;
+                        const metaChain = data.metadata?.blockchainChain as ChainId | undefined;
+                        const targetChain = metaChain ?? (localVault?.blockchainChain as ChainId) ?? DEFAULT_CHAIN as ChainId;
+                        const targetAddr = data.metadata?.contractAddress ?? localVault?.contractAddress ?? CHAIN_CONFIG[targetChain].contractAddress;
+
+                        const blockchainRecord = await readBitxenDataRecord({
+                            chainId: targetChain,
+                            contractDataId: targetDataId,
+                            contractAddress: targetAddr
+                        });
+
+                        if (blockchainRecord.releaseEntropy && blockchainRecord.releaseEntropy !== "0x" + "0".repeat(64)) {
+                            contractSecret = blockchainRecord.releaseEntropy;
+                        }
+                    } catch (e) {
+                        console.warn("Could not fetch secret from blockchain during edit initialization", e);
+                    }
+                }
+
                 hybridContractSecretRef.current = contractSecret;
                 let unwrappingKey = vaultKey;
                 if (contractSecret) {
@@ -756,7 +780,7 @@ export function useVaultEdit({
             const qHashes = await Promise.all(nextQ.map(async v => ({ question: v.question, answerHash: await hashSecurityAnswerClient(v.answer) })));
             const metadata = {
                 trigger: bPayload.triggerRelease, beneficiaryCount: 0, securityQuestionHashes: qHashes, fractionKeyCommitments: fractionKeyCommitmentsRef.current, willType: "editable",
-                contractEncryptedKey: hybridContractEncryptedKeyRef.current, contractSecret: hybridContractSecretRef.current, blockchainChain: hybridChainRef.current, encryptionVersion: envelopePayloadKeyRef.current ? "v3-envelope" : "v2-client",
+                contractEncryptedKey: hybridContractEncryptedKeyRef.current, blockchainChain: hybridChainRef.current, encryptionVersion: envelopePayloadKeyRef.current ? "v3-envelope" : "v2-client",
             };
             const encV = await encryptVaultPayloadClient({ ...bPayload, willDetails: { ...bPayload.willDetails, title: formState.willDetails.title, content: formState.willDetails.content, documents: [...exDocs, ...newDocs] }, securityQuestions: nextQ }, envelopePayloadKeyRef.current ?? eKey);
             if (encTemp?.pqcCipherText) encV.pqcCipherText = encTemp.pqcCipherText;

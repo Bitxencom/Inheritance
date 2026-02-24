@@ -35,7 +35,7 @@ import {
 } from "./abi-encoder";
 
 // keccak_256 is still needed for ARWEAVE_PROVIDER_HASH in dispatchHybrid
-import { keccak_256 } from "@noble/hashes/sha3.js";
+import { keccak_256 } from "@noble/hashes/sha3";
 
 // Chain configurations with Bitxen contract addresses
 import {
@@ -290,6 +290,11 @@ const BITXEN_ABI = {
   finalizeRelease: {
     name: "finalizeRelease",
     inputs: [{ name: "dataId", type: "bytes32" }],
+  },
+  getVaultSecret: {
+    name: "getVaultSecret",
+    inputs: [{ name: "_dataId", type: "bytes32" }],
+    outputs: [{ name: "", type: "bytes32" }],
   },
 };
 
@@ -598,7 +603,7 @@ export async function readBitxenDataRecord(params: {
   // We must try to fetch the actual secret via getVaultSecret.
 
   let secret = "0x" + "0".repeat(64);
-  if (isReleased) {
+  {
     try {
       // Try to get the secret from the contract
       // Note: This relies on the contract having getVaultSecret function

@@ -648,7 +648,6 @@ export function useVaultCreation({
           effectiveStorageType === "bitxenArweave" && effectiveChain
             ? effectiveChain
             : undefined,
-        ...(effectiveStorageType === "bitxenArweave" && secret ? { contractSecret: secret } : {}),
       };
 
       const arweavePayload = await prepareArweavePayloadClient({

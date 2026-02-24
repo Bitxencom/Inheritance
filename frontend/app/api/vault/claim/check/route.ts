@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-const MIN_CONFIRMATION_DEPTH = 0;
+const MIN_CONFIRMATION_DEPTH = 1;
 
 const normalizeBackendBaseUrl = (value: string | undefined): string => {
   const trimmed = (value ?? "").trim();

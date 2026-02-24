@@ -26,33 +26,33 @@ export const initialEditFormState: EditFormState = {
 };
 
 export const editSteps: readonly EditWizardStep[] = [
-  { 
-    key: "vaultId", 
+  {
+    key: "vaultId",
     label: "Inheritance ID",
     description: "Enter the Inheritance ID to edit"
   },
-  { 
-    key: "securityQuestion", 
+  {
+    key: "securityQuestion",
     label: "Security Questions",
     description: "Answer security questions"
   },
-  { 
-    key: "fractionKeys", 
+  {
+    key: "fractionKeys",
     label: "Key Verification",
     description: "Enter fraction keys"
   },
-  { 
-    key: "willDetails", 
+  {
+    key: "willDetails",
     label: "Update Content",
     description: "Update vault content"
   },
-  { 
-    key: "editSecurityQuestions", 
+  {
+    key: "editSecurityQuestions",
     label: "Edit Security Questions",
     description: "Modify security questions (optional)"
   },
-  { 
-    key: "confirm", 
+  {
+    key: "confirm",
     label: "Confirm Changes",
     description: "Review and confirm changes"
   },
@@ -61,8 +61,8 @@ export const editSteps: readonly EditWizardStep[] = [
     label: "Storage",
     description: "Choose where to store your updated vault"
   },
-  { 
-    key: "payment", 
+  {
+    key: "payment",
     label: "Payment",
     description: "Complete the upload process"
   },

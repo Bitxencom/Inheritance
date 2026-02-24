@@ -9,7 +9,7 @@
  * No external dependencies beyond @noble/hashes (already in the project).
  */
 
-import { keccak_256 } from "@noble/hashes/sha3.js";
+import { keccak_256 } from "@noble/hashes/sha3";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers

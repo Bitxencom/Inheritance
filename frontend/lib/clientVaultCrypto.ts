@@ -1,7 +1,7 @@
 "use client";
 
 import { ml_kem768 } from "@noble/post-quantum/ml-kem";
-import { keccak_256 } from "@noble/hashes/sha3.js";
+import { keccak_256 } from "@noble/hashes/sha3";
 
 export type EncryptedVaultClient = {
   cipherText: string;
