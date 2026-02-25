@@ -9,6 +9,7 @@ import type { SubmissionResult } from "./types";
 import {
   checkArweaveStatus,
   getArweaveExplorerUrl,
+  updateVaultStatus,
   type PendingVaultStatus,
 } from "@/lib/vault-storage";
 import { getChainConfig, type ChainId } from "@/lib/metamaskWallet";
@@ -169,13 +170,22 @@ Save this ID safely. You will need it to find and manage your inheritance later.
 
     setIsCheckingArweave(true);
     try {
-      const result = await checkArweaveStatus(submissionResult.arweaveTxId);
+      const result = await checkArweaveStatus(submissionResult.arweaveTxId, submissionResult.vaultId || undefined);
       if (result.confirmed) {
         setArweaveStatus("confirmed");
         const confirmedAt = new Date().toISOString();
         setSubmissionResult(prev => prev ? { ...prev, confirmedAt } : prev);
+
+        // Update local storage status
+        if (submissionResult.vaultId) {
+          updateVaultStatus(submissionResult.vaultId, "confirmed", confirmedAt);
+        }
       } else {
         setArweaveStatus("pending");
+        // Update message if available (e.g. confirmation depth)
+        if (result.message) {
+          setSubmissionResult(prev => prev ? { ...prev, message: result.message || prev.message } : prev);
+        }
       }
     } catch (error) {
       console.error("Error checking blockchain storage status:", error);
@@ -198,11 +208,19 @@ Save this ID safely. You will need it to find and manage your inheritance later.
 
       isAutoCheckingRef.current = true;
       try {
-        const result = await checkArweaveStatus(txId);
+        const result = await checkArweaveStatus(txId, submissionResult.vaultId || undefined);
         if (result.confirmed) {
           setArweaveStatus("confirmed");
           const confirmedAt = new Date().toISOString();
           setSubmissionResult(prev => prev ? { ...prev, confirmedAt } : prev);
+
+          // Update local storage status
+          if (submissionResult.vaultId) {
+            updateVaultStatus(submissionResult.vaultId, "confirmed", confirmedAt);
+          }
+        } else if (result.message && result.message !== submissionResult.message) {
+          // Update message if confirmation depth changed
+          setSubmissionResult(prev => prev ? { ...prev, message: result.message || prev.message } : prev);
         }
       } catch (error) {
         console.error("Auto-check error:", error);
@@ -243,7 +261,7 @@ Save this ID safely. You will need it to find and manage your inheritance later.
                 <Clock className="h-4 w-4 relative" />
               </div>
               <div>
-                <p className={`text-sm font-bold ${arweaveStatus === "confirmed"
+                <p className={`font-bold ${arweaveStatus === "confirmed"
                   ? "text-green-700 dark:text-green-300"
                   : "text-amber-700 dark:text-amber-300"
                   }`}>
@@ -251,9 +269,9 @@ Save this ID safely. You will need it to find and manage your inheritance later.
                     ? "Inheritance Successfully Created & Confirmed"
                     : "Inheritance Created - Awaiting Confirmation"}
                 </p>
-                <div className="flex flex-col gap-0.5 mt-0.5">
-                  <p className="text-xs text-muted-foreground">
-                    Submission successful. {arweaveStatus !== "confirmed" && "Blockchain confirmation usually takes about 20 minutes."}
+                <div className="flex flex-col gap-0.5">
+                  <p className="text-sm text-muted-foreground">
+                    {submissionResult.message || (arweaveStatus !== "confirmed" ? "Blockchain confirmation usually takes about 20 minutes." : "Submission successful.")}
                   </p>
                 </div>
 

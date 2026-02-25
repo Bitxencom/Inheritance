@@ -19,7 +19,7 @@ export { default as ToolFallback } from "./tools/tool-fallback";
 export {
   VaultCreationWizardTool,
   VaultCreationWizard,
-} from "./tools/vault-wizard";
+} from "./tools/vault-creation-wizard";
 export {
   VaultClaimWizardTool,
   VaultClaimWizard,

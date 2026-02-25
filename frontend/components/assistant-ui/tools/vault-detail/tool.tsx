@@ -61,7 +61,7 @@ export const VaultDetailTool: ToolCallMessagePartComponent<{
 
     setIsCheckingStatus(true);
     try {
-      const result = await checkArweaveStatus(currentVault.arweaveTxId);
+      const result = await checkArweaveStatus(currentVault.arweaveTxId, currentVault.vaultId);
       if (result.confirmed) {
         const updated = updateVaultStatus(currentVault.vaultId, "confirmed");
         if (updated) {

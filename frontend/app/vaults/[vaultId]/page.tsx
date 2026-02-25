@@ -60,7 +60,7 @@ export default function VaultDetailsPage({ params }: { params: Promise<{ vaultId
         setVault(data);
         // Check status if tx exists
         if (data.arweaveTxId) {
-          checkStatus(data.arweaveTxId);
+          checkStatus(data.arweaveTxId, data.vaultId);
         }
       } else {
         setVault(null);
@@ -69,10 +69,10 @@ export default function VaultDetailsPage({ params }: { params: Promise<{ vaultId
     }
   }, [vaultId]);
 
-  const checkStatus = async (txId: string) => {
+  const checkStatus = async (txId: string, vId: string) => {
     setIsCheckingStatus(true);
     try {
-      const result = await checkArweaveStatus(txId);
+      const result = await checkArweaveStatus(txId, vId);
       if (vault) {
         setVault({ ...vault, status: result.confirmed ? 'confirmed' : 'pending' });
       }

@@ -532,11 +532,11 @@ export async function tryLoadHybridEncryptedVault(params: {
       chainId: discovered.chainKey,
       contractDataId: discovered.contractDataId,
       ...(discovered.contractAddress ? { contractAddress: discovered.contractAddress } : {}),
-    }));
+    })) as any;
 
   const nowSec = BigInt(Math.floor(Date.now() / 1000));
-  const releaseDate = record.releaseDate;
-  const isTimePassed = releaseDate > 0 && nowSec >= releaseDate;
+  const releaseDate = record.releaseDate as bigint;
+  const isTimePassed = releaseDate > BigInt(0) && nowSec >= releaseDate;
   const hasEntropy =
     typeof record.releaseEntropy === "string" &&
     record.releaseEntropy !== "0x0000000000000000000000000000000000000000000000000000000000000000";
@@ -636,7 +636,7 @@ export async function discoverBitxenEncryptedKeyForVault(vaultId: string): Promi
 export function extractWrappedKeyRawFromMetadata(metadata: unknown): string | null {
   if (!metadata || typeof metadata !== "object") return null;
   const meta = metadata as Record<string, unknown>;
-  const envelopeEncryptedKey = meta["envelope"]?.["encryptedKey"];
+  const envelopeEncryptedKey = (meta["envelope"] as any)?.["encryptedKey"];
   const candidates = [
     meta["contractEncryptedKey"],
     meta["encryptedKey"],

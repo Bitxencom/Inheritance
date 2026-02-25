@@ -75,7 +75,7 @@ function VaultsPageContent() {
 
     for (const inheritance of pendingVaults) {
       try {
-        const result = await checkArweaveStatus(inheritance.arweaveTxId);
+        const result = await checkArweaveStatus(inheritance.arweaveTxId, inheritance.vaultId);
         if (result.confirmed) {
           updateVaultStatus(inheritance.vaultId, "confirmed");
           hasUpdates = true;

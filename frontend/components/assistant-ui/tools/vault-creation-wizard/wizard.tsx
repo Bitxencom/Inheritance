@@ -38,7 +38,7 @@ export function VaultCreationWizard({
   onResult,
 }: VaultCreationWizardProps) {
   const {
-    isDialog, formState, setFormState, currentStep, setCurrentStep, stepError, setStepError, fieldErrors, setFieldErrors, isSubmitting, setIsSubmitting, isProcessingPayment, setIsProcessingPayment, paymentStatus, setPaymentStatus, paymentProgress, setPaymentProgress, paymentPhase, setPaymentPhase, vaultIdRef, vaultKeyRef, pqcKeyPairRef, pqcCipherTextRef, textareaRef, adjustTextareaHeight, fillWithDummyData, resetWizard, handleDocumentsChange, removeDocument, formatFileSize, isNextBlockedByAttachmentPrep, handleSecurityQuestionChange, addSecurityQuestion, removeSecurityQuestion, handleTriggerTypeChange, setPresetTriggerDate, reviewSummary, validateStep, transformPayload, submitToMCP, handleNext, handleUnifiedPayment, handlePrev
+    isDialog, formState, setFormState, currentStep, setCurrentStep, stepError, setStepError, fieldErrors, setFieldErrors, isSubmitting, setIsSubmitting, isProcessingPayment, setIsProcessingPayment, paymentStatus, setPaymentStatus, paymentProgress, setPaymentProgress, paymentPhase, setPaymentPhase, vaultIdRef, vaultKeyRef, pqcKeyPairRef, pqcCipherTextRef, textareaRef, adjustTextareaHeight, fillWithDummyData, resetWizard, handleDocumentsChange, removeDocument, formatFileSize, isNextBlockedByAttachmentPrep, handleSecurityQuestionChange, addSecurityQuestion, removeSecurityQuestion, handleWillTypeChange, handleTriggerTypeChange, setPresetTriggerDate, reviewSummary, validateStep, transformPayload, submitToMCP, handleNext, handleUnifiedPayment, handlePrev
   } = useVaultCreation({ variant, open, onOpenChange, onStepChange, onResult });
 
   const renderStepContent = () => {
@@ -70,15 +70,7 @@ export function VaultCreationWizard({
                       value={option.value}
                       checked={formState.willDetails.willType === option.value}
                       onChange={() =>
-                        setFormState((prev) => ({
-                          ...prev,
-                          willDetails: {
-                            ...prev.willDetails,
-                            willType: option.value as
-                              | "one-time"
-                              | "editable",
-                          },
-                        }))
+                        handleWillTypeChange(option.value as "one-time" | "editable")
                       }
                       className="sr-only"
                     />
@@ -300,7 +292,12 @@ export function VaultCreationWizard({
                 {[
                   { label: "Anytime", value: "manual" },
                   { label: "Specific Date", value: "date" },
-                ].map((option) => (
+                ].filter(option => {
+                  if (formState.willDetails.willType === 'editable') {
+                    return option.value === 'manual'
+                  }
+                  return true
+                }).map((option) => (
                   <label
                     key={option.value}
                     className={cn(
@@ -326,6 +323,11 @@ export function VaultCreationWizard({
                   </label>
                 ))}
               </div>
+              {formState.willDetails.willType === 'editable' && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  * Editable inheritance must use 'Anytime' trigger to ensure the owner can always access and update the content.
+                </p>
+              )}
             </div>
             {formState.triggerRelease.triggerType === "manual" && (
               <p className="rounded-md bg-muted px-4 py-3 text-sm text-muted-foreground">

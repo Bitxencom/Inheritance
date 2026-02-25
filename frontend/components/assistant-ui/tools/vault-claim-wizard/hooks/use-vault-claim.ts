@@ -15,6 +15,7 @@ import {
   decryptVaultPayloadRawKeyClient,
   unwrapKeyClient,
   deriveUnlockKey,
+  recoverWithDrand,
   type EncryptedVaultClient,
 } from "@/lib/clientVaultCrypto";
 import {
@@ -697,6 +698,8 @@ export function useVaultClaim({
         .map((value) => value.trim())
         .filter((value) => value.length > 0);
 
+      const normalizedVaultId = formState.vaultId.trim();
+
       if (fractionKeysArray.length < 3) {
         setStepError("Please provide at least 3 Fraction Keys to open the inheritance.");
         setIsSubmitting(false);
@@ -705,12 +708,23 @@ export function useVaultClaim({
 
       let combinedKey: Uint8Array;
       try {
+        // DEBUG: Log fraction keys untuk troubleshooting edited vault
+        console.log('🔑 Debug Fraction Keys:', {
+          inputKeys: fractionKeysArray.map((key, index) => ({
+            index: index + 1,
+            length: key.length,
+            prefix: key.substring(0, 8) + '...',
+            isValid: key.trim().length > 0
+          })),
+          vaultId: normalizedVaultId
+        });
+        
         combinedKey = combineSharesClient(fractionKeysArray);
-      } catch {
+        console.log('✅ Fraction keys combined successfully');
+      } catch (combineError) {
+        console.error('❌ Fraction key combination failed:', combineError);
         throw new Error("Fraction keys do not match. Make sure all 3 fraction keys are correct.");
       }
-
-      const normalizedVaultId = formState.vaultId.trim();
 
       let data: UnlockResponseLike | null = null;
       let hybridContractEncryptedKey: string | null = null;
@@ -726,11 +740,11 @@ export function useVaultClaim({
         body: JSON.stringify({
           vaultId: normalizedVaultId,
           securityQuestionAnswers: formState.securityQuestionAnswers,
-          fractionKeys: {
-            key1: formState.fractionKeys.key1,
-            key2: formState.fractionKeys.key2,
-            key3: formState.fractionKeys.key3,
-          },
+          fractionKeys: [
+            formState.fractionKeys.key1,
+            formState.fractionKeys.key2,
+            formState.fractionKeys.key3,
+          ].map((k) => k.trim()),
           arweaveTxId,
         }),
       });
@@ -1071,7 +1085,16 @@ export function useVaultClaim({
         const encryptedVaultForDecrypt = data.encryptedVault as EncryptedVaultClient;
         const attachmentKey = await deriveEffectiveAesKeyClient(encryptedVaultForDecrypt, combinedKey);
         setCombinedKeyForAttachments(attachmentKey);
+        
+        // DEBUG: Log key information for troubleshooting edited vault attachment decryption
+        console.log('🔑 Debug Keys:', {
+          attachmentKey: Array.from(attachmentKey.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(''),
+          combinedKey: Array.from(combinedKey.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(''),
+          keyMode: encryptedVaultForDecrypt.keyMode,
+          vaultVersion: (data.metadata as any)?.triggerRonde ? `ronde-${(data.metadata as any).triggerRonde}` : 'legacy'
+        });
         try {
+          console.log('here')
           if (encryptedVaultForDecrypt.keyMode === "envelope") {
             let wrappedKeyRaw = hybridContractEncryptedKey;
             if (typeof wrappedKeyRaw !== "string" || wrappedKeyRaw.trim().length === 0) {
@@ -1093,20 +1116,97 @@ export function useVaultClaim({
 
             let vaultKey = attachmentKey; // Default to combinedKey (legacy)
 
+            // Drand Time-Lock: If metadata has sealedContractSecret, we must recover it first.
+            const sealedSecret = (data.metadata as Record<string, any>)?.sealedContractSecret;
+            if (sealedSecret) {
+              setUnlockStep("Recovering secret from Drand Time-Lock...");
+              try {
+                const recoveredBytes = await recoverWithDrand(sealedSecret);
+                // The secret was sealed as a UTF-8 string in use-vault-creation.ts
+                const recoveredSecret = new TextDecoder().decode(recoveredBytes);
+                data.releaseEntropy = recoveredSecret;
+              } catch (e) {
+                console.error("Drand recovery failed:", e);
+                throw new Error("Failed to recover time-locked secret. It may not be ready yet or there was a network error.");
+              }
+            }
+            console.log('sealedSecret', sealedSecret)
+
             // Bitxen3: If we have releaseEntropy, we MUST derive the UnlockKey
             if (data.releaseEntropy && data.contractDataId && data.contractAddress && data.chainId) {
               setUnlockStep("Deriving unlock key from release entropy...");
-              vaultKey = await deriveUnlockKey(
-                attachmentKey,
-                data.releaseEntropy,
-                {
-                  contractAddress: data.contractAddress,
-                  chainId: Number(data.chainId),
+              
+              // DEBUG: Log key derivation inputs for edited vault troubleshooting
+              console.log('🔑 Debug Key Derivation:', {
+                attachmentKey: Array.from(attachmentKey.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(''),
+                combinedKey: Array.from(combinedKey.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(''),
+                releaseEntropy: data.releaseEntropy,
+                contractAddress: data.contractAddress,
+                chainId: data.chainId
+              });
+              
+              // Try with attachmentKey first (current logic)
+              try {
+                vaultKey = await deriveUnlockKey(
+                  attachmentKey,
+                  data.releaseEntropy,
+                  {
+                    contractAddress: data.contractAddress,
+                    chainId: Number(data.chainId),
+                  }
+                );
+                console.log('✅ Vault key derived with attachmentKey');
+              } catch (attachmentKeyError) {
+                console.warn('⚠️ AttachmentKey failed, trying combinedKey fallback:', attachmentKeyError);
+                
+                // Fallback: Try with combinedKey (like edit wizard uses)
+                try {
+                  vaultKey = await deriveUnlockKey(
+                    combinedKey,
+                    data.releaseEntropy,
+                    {
+                      contractAddress: data.contractAddress,
+                      chainId: Number(data.chainId),
+                    }
+                  );
+                  console.log('✅ Vault key derived with combinedKey fallback');
+                } catch (combinedKeyError) {
+                  console.error('❌ Both key derivations failed:', { attachmentKeyError, combinedKeyError });
+                  throw new Error(`Failed to derive vault key. The vault may have been edited with incompatible key derivation. Please try with the original fraction keys.`);
                 }
-              );
+              }
             }
 
-            const payloadKey = await unwrapKeyClient(wrappedKey, vaultKey);
+            // Try to unwrap with derived vault key
+            let payloadKey: Uint8Array;
+            try {
+              console.log('🔓 Trying to unwrap with vaultKey (attachmentKey-derived)');
+              payloadKey = await unwrapKeyClient(wrappedKey, vaultKey);
+              console.log('✅ Payload key unwrapped with vaultKey');
+            } catch (unwrapError) {
+              console.warn('⚠️ Unwrap with vaultKey failed, trying combinedKey fallback:', unwrapError);
+              
+              // Fallback: Try with combinedKey (for edited vault wrapped key consistency)
+              try {
+                if (!data.releaseEntropy) {
+                  throw new Error('Release entropy is required for fallback key derivation');
+                }
+                const fallbackVaultKey = await deriveUnlockKey(
+                  combinedKey,
+                  data.releaseEntropy,
+                  {
+                    contractAddress: data.contractAddress || '',
+                    chainId: Number(data.chainId || 0),
+                  }
+                );
+                console.log('🔓 Trying to unwrap with fallbackVaultKey (combinedKey-derived)');
+                payloadKey = await unwrapKeyClient(wrappedKey, fallbackVaultKey);
+                console.log('✅ Payload key unwrapped with fallbackVaultKey');
+              } catch (fallbackError) {
+                console.error('❌ Both unwrap attempts failed:', { unwrapError, fallbackError });
+                throw new Error(`Failed to decrypt vault payload. The vault may have been edited with incompatible key wrapping. Please try with the original fraction keys.`);
+              }
+            }
             decrypted = (await decryptVaultPayloadRawKeyClient(
               encryptedVaultForDecrypt,
               payloadKey,
@@ -1268,20 +1368,39 @@ export function useVaultClaim({
           throw new Error("Failed to fetch attachment from blockchain storage.");
         }
         const cipherBuffer = await response.arrayBuffer();
+        
+        // DEBUG: Log attachment decryption info
+        console.log('🔍 Debug Attachment:', {
+          docName: doc.name,
+          hasTxId: !!doc.attachment?.txId,
+          hasIv: !!doc.attachment?.iv,
+          hasChecksum: !!doc.attachment?.checksum,
+          attachmentKeyAvailable: !!combinedKeyForAttachments,
+          cipherBufferSize: cipherBuffer.byteLength
+        });
+        
         const { decryptBytesClient } = await import("@/lib/clientVaultCrypto");
-        const plainBytes = await decryptBytesClient(
-          {
-            cipherBytes: cipherBuffer,
-            iv: doc.attachment.iv,
-            checksum: typeof doc.attachment.checksum === "string" ? doc.attachment.checksum : undefined,
-          },
-          combinedKeyForAttachments,
-        );
-        const plainBuffer = plainBytes.buffer.slice(
-          plainBytes.byteOffset,
-          plainBytes.byteOffset + plainBytes.byteLength,
-        ) as ArrayBuffer;
-        blob = new Blob([plainBuffer], { type: doc.type || "application/octet-stream" });
+        
+        try {
+          const plainBytes = await decryptBytesClient(
+            {
+              cipherBytes: cipherBuffer,
+              iv: doc.attachment.iv,
+              checksum: typeof doc.attachment.checksum === "string" ? doc.attachment.checksum : undefined,
+            },
+            combinedKeyForAttachments,
+          );
+          console.log('✅ Attachment decrypted successfully');
+          const plainBuffer = plainBytes.buffer.slice(
+            plainBytes.byteOffset,
+            plainBytes.byteOffset + plainBytes.byteLength,
+          ) as ArrayBuffer;
+          blob = new Blob([plainBuffer], { type: doc.type || "application/octet-stream" });
+        } catch (decryptError) {
+          console.error('❌ Attachment decryption failed:', decryptError);
+          const errorMessage = decryptError instanceof Error ? decryptError.message : 'Unknown decryption error';
+          throw new Error(`Attachment decryption failed: ${errorMessage}`);
+        }
       }
 
       if (!blob) {

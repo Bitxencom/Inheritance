@@ -35,7 +35,9 @@ import {
   type PqcKeyPairClient,
   generateRandomSecret,
   deriveUnlockKey,
+  sealWithDrand,
 } from "@/lib/clientVaultCrypto";
+import { timestampToDrandRonde } from "@/lib/drand";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { splitKeyClient } from "@/lib/shamirClient";
 import { hashSecurityAnswerClient } from "@/lib/securityQuestionsClient";
@@ -183,14 +185,9 @@ export function useVaultCreation({
       answer: (idx + 1).toString(),
     }));
 
-    const triggerDate = faker.date
-      .future({ years: 5 })
-      .toISOString()
-      .split("T")[0];
-
     const loremParagraphs = faker.lorem.paragraphs({ min: 2, max: 3 });
 
-    setFormState({
+    const dummyState: FormState = {
       willDetails: {
         willType: "editable",
         title: `Inheritance ${faker.company.name()}`,
@@ -199,20 +196,30 @@ export function useVaultCreation({
       },
       securityQuestions,
       triggerRelease: {
-        triggerType: "date",
-        triggerDate,
+        triggerType: "manual",
+        triggerDate: undefined,
       },
-      storageType: "arweave",
+      storageType: "bitxenArweave",
       payment: {
         paymentMethod: "wander",
         selectedChain: undefined,
       },
-    });
+    };
+
+    setFormState(dummyState);
     setCurrentStep(0);
     setStepError(null);
+    setFieldErrors({}); // Clear validation errors
     setIsSubmitting(false);
-  }, []);
 
+    // Reset crypto-related refs to ensure a clean test run
+    vaultIdRef.current = null;
+    vaultKeyRef.current = null;
+    pqcKeyPairRef.current = null;
+    pqcCipherTextRef.current = null;
+
+    console.log('Dummy data filled:', dummyState);
+  }, []);
 
 
   const resetWizard = useCallback(() => {
@@ -246,6 +253,7 @@ export function useVaultCreation({
   useEffect(() => {
     const handleHotkey = (event: KeyboardEvent) => {
       if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "f") {
+        if (isSubmitting) return; // Don't trigger while submitting
         event.preventDefault();
         fillWithDummyData();
       }
@@ -253,7 +261,7 @@ export function useVaultCreation({
 
     window.addEventListener("keydown", handleHotkey);
     return () => window.removeEventListener("keydown", handleHotkey);
-  }, [fillWithDummyData]);
+  }, [fillWithDummyData, isSubmitting]);
 
   const handleDocumentsChange = (files: FileList | null) => {
     if (!files) return;
@@ -360,6 +368,30 @@ export function useVaultCreation({
     });
   };
 
+  const handleWillTypeChange = (
+    type: FormState["willDetails"]["willType"],
+  ) => {
+    setFormState((prev) => {
+      const newState = {
+        ...prev,
+        willDetails: {
+          ...prev.willDetails,
+          willType: type,
+        },
+      };
+
+      if (type === "editable") {
+        newState.triggerRelease = {
+          ...prev.triggerRelease,
+          triggerType: "manual",
+          triggerDate: undefined,
+        };
+      }
+
+      return newState;
+    });
+  };
+
   const handleTriggerTypeChange = (
     type: FormState["triggerRelease"]["triggerType"],
   ) => {
@@ -434,6 +466,10 @@ export function useVaultCreation({
       }
       case "triggerRelease": {
         const errors: Record<string, string> = {};
+
+        if (formState.willDetails.willType === "editable" && formState.triggerRelease.triggerType !== "manual") {
+          errors.triggerType = "Editable inheritance must use anytime trigger.";
+        }
 
         if (
           formState.triggerRelease.triggerType === "date" &&
@@ -601,17 +637,44 @@ export function useVaultCreation({
       encryptedVault.keyMode = "envelope";
 
       let finalVaultKey = vaultKey;
-      let secret: string | undefined;
+      let plainContractSecret: string | undefined;
+      let sealedContractSecret: string | undefined;
+      let ronde: number | undefined;
 
       if (effectiveStorageType === "bitxenArweave") {
-        secret = generateRandomSecret();
+        plainContractSecret = generateRandomSecret();
+
+        // Calculate Drand Ronde for sealing
+        let triggerMs = NaN;
+        if (payload.triggerRelease.triggerType === "date" && payload.triggerRelease.triggerDate) {
+          const now = new Date();
+          const todayStr = now.toISOString().split("T")[0];
+          const isToday = payload.triggerRelease.triggerDate === todayStr;
+
+          if (isToday) {
+            triggerMs = now.getTime() + (5 * 60 * 1000);
+          } else {
+            const [year, month, day] = payload.triggerRelease.triggerDate.split("-").map(Number);
+            triggerMs = new Date(year, month - 1, day, 0, 0, 0, 0).getTime();
+          }
+        }
+
+        const releaseSeconds = Number.isFinite(triggerMs)
+          ? Math.floor(triggerMs / 1000)
+          : Math.floor(Date.now() / 1000);
+
+        ronde = timestampToDrandRonde(releaseSeconds);
+        console.log(`🔒 Sealing secret for ronde ${ronde} (release date: ${new Date(releaseSeconds * 1000).toISOString()})`);
+
+        sealedContractSecret = await sealWithDrand(new TextEncoder().encode(plainContractSecret), ronde);
+
         const selectedChain = (effectiveChain || "bsc") as ChainId;
         const config = CHAIN_CONFIG[selectedChain];
         const contractAddress = config.contractAddress;
 
         finalVaultKey = await deriveUnlockKey(
           vaultKey,
-          secret,
+          plainContractSecret,
           {
             chainId: config.chainId,
             contractAddress: contractAddress,
@@ -632,13 +695,15 @@ export function useVaultCreation({
         })),
       );
 
-      const metadata = {
+      // Build metadata with proper scope for ronde variable
+      const metadata: any = {
         trigger: payload.triggerRelease,
         beneficiaryCount: 0,
         securityQuestionHashes,
         willType: payload.willDetails.willType,
         fractionKeyCommitments,
         contractEncryptedKey,
+        sealedContractSecret,
         encryptionVersion: "v3-envelope" as const,
         contractAddress:
           effectiveStorageType === "bitxenArweave" && effectiveChain
@@ -649,6 +714,11 @@ export function useVaultCreation({
             ? effectiveChain
             : undefined,
       };
+
+      // Add triggerRonde only for bitxenArweave storage
+      if (effectiveStorageType === "bitxenArweave" && ronde !== undefined) {
+        metadata.triggerRonde = ronde;
+      }
 
       const arweavePayload = await prepareArweavePayloadClient({
         vaultId,
@@ -703,7 +773,7 @@ export function useVaultCreation({
 
         const dataJson = JSON.stringify(arweavePayload);
         const dataHashBytes = keccak_256(new TextEncoder().encode(dataJson));
-        const dataHash = "0x" + Array.from(dataHashBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+        const dataHash = "0x" + Array.from(dataHashBytes as Uint8Array).map(b => (b as number).toString(16).padStart(2, '0')).join('');
 
         const wrappedKeyHashBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(contractEncryptedKey));
         const wrappedKeyHash = "0x" + Array.from(new Uint8Array(wrappedKeyHashBytes)).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -718,7 +788,7 @@ export function useVaultCreation({
           isPermanent,
           releaseDate,
           commitment,
-          secret,
+          secret: "0x" + "0".repeat(64), // No plaintext secret on Bitxen blockchain
           onUploadProgress: (progress) => {
             setPaymentProgress(progress);
             if (progress >= 0 && progress < 100) setPaymentPhase("upload");
@@ -764,6 +834,7 @@ export function useVaultCreation({
         title: payload.willDetails.title,
         triggerType: payload.triggerRelease.triggerType,
         triggerDate: payload.triggerRelease.triggerDate,
+        plainContractSecret,
       };
 
       console.log("✅ Inheritance created successfully:", resultData);
@@ -891,6 +962,6 @@ export function useVaultCreation({
   };
 
   return {
-    isDialog, formState, setFormState, currentStep, setCurrentStep, stepError, setStepError, fieldErrors, setFieldErrors, isSubmitting, setIsSubmitting, isProcessingPayment, setIsProcessingPayment, paymentStatus, setPaymentStatus, paymentProgress, setPaymentProgress, paymentPhase, setPaymentPhase, vaultIdRef, vaultKeyRef, pqcKeyPairRef, pqcCipherTextRef, textareaRef, adjustTextareaHeight, fillWithDummyData, resetWizard, handleDocumentsChange, removeDocument, formatFileSize, isNextBlockedByAttachmentPrep, handleSecurityQuestionChange, addSecurityQuestion, removeSecurityQuestion, handleTriggerTypeChange, setPresetTriggerDate, reviewSummary, validateStep, transformPayload, submitToMCP, handleNext, handleUnifiedPayment, handlePrev
+    isDialog, formState, setFormState, currentStep, setCurrentStep, stepError, setStepError, fieldErrors, setFieldErrors, isSubmitting, setIsSubmitting, isProcessingPayment, setIsProcessingPayment, paymentStatus, setPaymentStatus, paymentProgress, setPaymentProgress, paymentPhase, setPaymentPhase, vaultIdRef, vaultKeyRef, pqcKeyPairRef, pqcCipherTextRef, textareaRef, adjustTextareaHeight, fillWithDummyData, resetWizard, handleDocumentsChange, removeDocument, formatFileSize, isNextBlockedByAttachmentPrep, handleSecurityQuestionChange, addSecurityQuestion, removeSecurityQuestion, handleWillTypeChange, handleTriggerTypeChange, setPresetTriggerDate, reviewSummary, validateStep, transformPayload, submitToMCP, handleNext, handleUnifiedPayment, handlePrev
   };
 }

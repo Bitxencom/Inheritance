@@ -18,76 +18,102 @@ export const triggerSchema = z
         },
     );
 
-export const vaultSchema = z.object({
-    willDetails: z.object({
-        willType: z.enum(["one-time", "editable"]),
-        title: z.string(),
-        content: z.string(),
-        documents: z
+export const vaultSchema = z
+    .object({
+        willDetails: z.object({
+            willType: z.enum(["one-time", "editable"]),
+            title: z.string(),
+            content: z.string(),
+            documents: z
+                .array(
+                    z.object({
+                        name: z.string(),
+                        size: z.number(),
+                        type: z.string(),
+                        content: z.string(), // base64 encoded file content
+                    }),
+                )
+                .default([]),
+        }),
+        securityQuestions: z
             .array(
                 z.object({
-                    name: z.string(),
-                    size: z.number(),
-                    type: z.string(),
-                    content: z.string(), // base64 encoded file content
+                    question: z.string(),
+                    answer: z.string(),
                 }),
             )
             .default([]),
-    }),
-    securityQuestions: z
-        .array(
-            z.object({
-                question: z.string(),
-                answer: z.string(),
-            }),
-        )
-        .default([]),
-    beneficiaries: z
-        .array(
-            z.object({
-                fullName: z.string(),
-                email: z.string().email(),
-                dateOfBirth: z.string(),
-                relationship: z.string(),
-            }),
-        )
-        .optional()
-        .default([]),
-    triggerRelease: triggerSchema,
-    payment: z.object({
-        paymentMethod: z.enum(["wander", "metamask"]),
-    }),
-    enablePqc: z.boolean().optional().default(true),
-});
+        beneficiaries: z
+            .array(
+                z.object({
+                    fullName: z.string(),
+                    email: z.string().email(),
+                    dateOfBirth: z.string(),
+                    relationship: z.string(),
+                }),
+            )
+            .optional()
+            .default([]),
+        triggerRelease: triggerSchema,
+        payment: z.object({
+            paymentMethod: z.enum(["wander", "metamask"]),
+        }),
+        enablePqc: z.boolean().optional().default(true),
+    })
+    .refine(
+        (data) => {
+            if (data.willDetails.willType === "editable") {
+                return data.triggerRelease.triggerType === "manual";
+            }
+            return true;
+        },
+        {
+            message: "Editable inheritance must use anytime (manual) trigger type",
+            path: ["triggerRelease", "triggerType"],
+        },
+    );
 
-export const clientEncryptedSchema = z.object({
-    encryptedVault: z.object({
-        cipherText: z.string(),
-        iv: z.string(),
-        checksum: z.string(),
-        pqcCipherText: z.string().optional(),
-        alg: z.enum(["AES-CBC", "AES-GCM"]).optional(),
-        keyMode: z.enum(["pqc", "envelope"]).optional(),
-    }),
-    metadata: z.object({
-        trigger: triggerSchema,
-        beneficiaryCount: z.number(),
-        securityQuestionHashes: z.array(
-            z.object({
-                q: z.string().optional(),
-                a: z.string().optional(),
-                encryptedQuestion: z.string().optional(),
-                question: z.string().optional(),
-                answerHash: z.string().optional(),
-            }),
-        ),
-        willType: z.string(),
-        isPqcEnabled: z.boolean().optional(),
-        pqcPublicKey: z.any().optional(),
-        contractEncryptedKey: z.string().optional(),
-        encryptionVersion: z.union([z.literal("v2-client"), z.literal("v3-envelope")]),
-    }),
-});
+export const clientEncryptedSchema = z
+    .object({
+        encryptedVault: z.object({
+            cipherText: z.string(),
+            iv: z.string(),
+            checksum: z.string(),
+            pqcCipherText: z.string().optional(),
+            alg: z.enum(["AES-CBC", "AES-GCM"]).optional(),
+            keyMode: z.enum(["pqc", "envelope"]).optional(),
+        }),
+        metadata: z.object({
+            trigger: triggerSchema,
+            beneficiaryCount: z.number(),
+            securityQuestionHashes: z.array(
+                z.object({
+                    q: z.string().optional(),
+                    a: z.string().optional(),
+                    encryptedQuestion: z.string().optional(),
+                    question: z.string().optional(),
+                    answerHash: z.string().optional(),
+                }),
+            ),
+            willType: z.enum(["one-time", "editable"]),
+            isPqcEnabled: z.boolean().optional(),
+            pqcPublicKey: z.any().optional(),
+            contractEncryptedKey: z.string().optional(),
+            encryptionVersion: z.union([z.literal("v2-client"), z.literal("v3-envelope")]),
+        }),
+    })
+    .refine(
+        (data) => {
+            if (data.metadata.willType === "editable") {
+                return data.metadata.trigger.triggerType === "manual";
+            }
+            return true;
+        },
+        {
+            message: "Editable inheritance must use anytime (manual) trigger type",
+            path: ["metadata", "trigger", "triggerType"],
+        },
+    );
 
 export const unlockSchema = z.object({
     arweaveTxId: z.string().optional(),

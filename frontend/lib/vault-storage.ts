@@ -255,11 +255,40 @@ export function removeVaultKeys(vaultId: string): boolean {
 /**
  * Check Arweave transaction status using GraphQL
  */
-export async function checkArweaveStatus(txId: string): Promise<{
+export async function checkArweaveStatus(
+  txId: string,
+  vaultId?: string,
+): Promise<{
   confirmed: boolean;
   blockHeight?: number;
   timestamp?: number;
+  message?: string;
 }> {
+  // If vaultId is provided, try to use the internal API which has more robust confirmation logic
+  if (vaultId && typeof window !== "undefined") {
+    try {
+      const response = await fetch("/api/vault/claim/check", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ vaultId, arweaveTxId: txId }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          return {
+            confirmed: data.isConfirmed,
+            message: data.message,
+          };
+        }
+      }
+    } catch (error) {
+      console.error("Error calling check API, falling back to GraphQL:", error);
+    }
+  }
+
   try {
     const response = await fetch("https://arweave.net/graphql", {
       method: "POST",

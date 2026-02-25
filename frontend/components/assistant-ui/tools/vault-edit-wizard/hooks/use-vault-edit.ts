@@ -15,9 +15,9 @@ import {
     getChainConfig,
 } from "@/lib/chains";
 import {
-    readBitxenDataIdByHash,
     readBitxenDataRecord,
     dispatchHybrid,
+    connectMetaMask,
 } from "@/lib/metamaskWallet";
 import { getVaultById, updateVaultTxId } from "@/lib/vault-storage";
 import { combineSharesClient } from "@/lib/shamirClient";
@@ -29,11 +29,19 @@ import {
     encryptVaultPayloadClient,
     prepareArweavePayloadClient,
     unwrapKeyClient,
+    wrapKeyClient,
+    recoverWithDrand,
+    sealWithDrand,
+    generateRandomSecret,
+    generateVaultKey,
+    calculateCommitment,
     type EncryptedVaultClient,
     type WrappedKeyV1,
 } from "@/lib/clientVaultCrypto";
+import { timestampToDrandRonde } from "@/lib/drand";
 import { sha256Hex } from "@/lib/crypto-utils";
 import { hashSecurityAnswerClient } from "@/lib/securityQuestionsClient";
+import { keccak_256 } from "@noble/hashes/sha3.js";
 import {
     validateSecurityQuestionsApi,
     getLocalVaultErrorMessage,
@@ -174,6 +182,8 @@ export function useVaultEdit({
     const hybridContractDataIdRef = useRef<string | null>(null);
     const hybridContractEncryptedKeyRef = useRef<string | null>(null);
     const hybridContractSecretRef = useRef<string | null>(null);
+    const existingSealedSecretRef = useRef<string | null>(null);
+    const existingMetadataRef = useRef<any>(null);
 
     const adjustTextareaHeight = useCallback(() => {
         const textarea = textareaRef.current;
@@ -221,6 +231,8 @@ export function useVaultEdit({
         hybridContractDataIdRef.current = null;
         hybridContractEncryptedKeyRef.current = null;
         hybridContractSecretRef.current = null;
+        existingSealedSecretRef.current = null;
+        existingMetadataRef.current = null;
         setIsStorageAutoDetected(false);
         setPaymentProgress(null);
         setPaymentPhase(null);
@@ -574,11 +586,11 @@ export function useVaultEdit({
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     vaultId: formState.vaultId,
-                    fractionKeys: {
-                        key1: formState.fractionKeys.key1,
-                        key2: formState.fractionKeys.key2,
-                        key3: formState.fractionKeys.key3,
-                    },
+                    fractionKeys: [
+                        formState.fractionKeys.key1,
+                        formState.fractionKeys.key2,
+                        formState.fractionKeys.key3,
+                    ].map(k => k.trim()),
                     securityQuestionAnswers: formState.securityQuestionAnswers,
                     arweaveTxId: getVaultById(formState.vaultId)?.arweaveTxId,
                 }),
@@ -631,11 +643,24 @@ export function useVaultEdit({
                 const metadataEncKey = typeof data.metadata?.contractEncryptedKey === "string" ? data.metadata.contractEncryptedKey : null;
                 if (!metadataEncKey) throw new Error("Hybrid key missing.");
                 hybridContractEncryptedKeyRef.current = metadataEncKey;
-                const wrappedKey = parseWrappedKeyV1(JSON.parse(metadataEncKey));
+                const wrappedKey = JSON.parse(metadataEncKey) as WrappedKeyV1;
                 const localVault = getVaultById(formState.vaultId);
                 let contractSecret = typeof data.releaseEntropy === "string" ? data.releaseEntropy : null;
 
-                // If not in API response, try direct blockchain fetch (since we don't store it in metadata anymore)
+                // Priority 1: Check Drand Time-Lock in metadata (Recipient or Owner after release)
+                const sealedSecret = (data.metadata as Record<string, any>)?.sealedContractSecret;
+                if (!contractSecret && sealedSecret) {
+                    try {
+                        console.log("⏳ Attempting Drand recovery for contract secret...");
+                        const recoveredBytes = await recoverWithDrand(sealedSecret);
+                        // The secret was sealed as a UTF-8 string in use-vault-creation.ts
+                        contractSecret = new TextDecoder().decode(recoveredBytes);
+                    } catch (e) {
+                        console.warn("Drand recovery failed or not ready yet:", e);
+                    }
+                }
+
+                // Priority 2: Try direct blockchain fetch (Legacy or already released)
                 if (!contractSecret && (data.metadata?.contractDataId || localVault?.contractDataId)) {
                     try {
                         const targetDataId = (data.metadata?.contractDataId || localVault?.contractDataId) as string;
@@ -658,12 +683,14 @@ export function useVaultEdit({
                 }
 
                 hybridContractSecretRef.current = contractSecret;
+                existingSealedSecretRef.current = data.metadata?.sealedContractSecret || null;
+                existingMetadataRef.current = data.metadata || null;
+
                 let unwrappingKey = vaultKey;
                 if (contractSecret) {
                     const metaChain = data.metadata?.blockchainChain as ChainId | undefined;
-                    const localVault = getVaultById(formState.vaultId);
-                    const resChain = metaChain ?? (localVault?.blockchainChain as ChainId) ?? DEFAULT_CHAIN as ChainId;
-                    const resAddr = data.metadata?.contractAddress ?? localVault?.contractAddress ?? CHAIN_CONFIG[resChain].contractAddress;
+                    const resChain = metaChain ?? (getVaultById(formState.vaultId)?.blockchainChain as ChainId) ?? DEFAULT_CHAIN as ChainId;
+                    const resAddr = data.metadata?.contractAddress ?? getVaultById(formState.vaultId)?.contractAddress ?? CHAIN_CONFIG[resChain].contractAddress;
                     unwrappingKey = await deriveUnlockKey(vaultKey, contractSecret, { contractAddress: resAddr, chainId: CHAIN_CONFIG[resChain].chainId });
                 }
                 const payloadKey = await unwrapKeyClient(wrappedKey, unwrappingKey);
@@ -778,23 +805,121 @@ export function useVaultEdit({
             });
             const nextQ = formState.isEditingSecurityQuestions ? formState.editedSecurityQuestions : bPayload.securityQuestions!;
             const qHashes = await Promise.all(nextQ.map(async v => ({ question: v.question, answerHash: await hashSecurityAnswerClient(v.answer) })));
+            const isPqc = isPqcVaultRef.current;
+            const payloadKey = envelopePayloadKeyRef.current || generateVaultKey();
             const metadata = {
-                trigger: bPayload.triggerRelease, beneficiaryCount: 0, securityQuestionHashes: qHashes, fractionKeyCommitments: fractionKeyCommitmentsRef.current, willType: "editable",
-                contractEncryptedKey: hybridContractEncryptedKeyRef.current, blockchainChain: hybridChainRef.current, encryptionVersion: envelopePayloadKeyRef.current ? "v3-envelope" : "v2-client",
+                trigger: bPayload.triggerRelease,
+                beneficiaryCount: (bPayload as any).beneficiaries?.length ?? 0,
+                securityQuestionHashes: qHashes,
+                fractionKeyCommitments: fractionKeyCommitmentsRef.current,
+                willType: "editable",
+                contractEncryptedKey: hybridContractEncryptedKeyRef.current,
+                blockchainChain: hybridChainRef.current,
+                encryptionVersion: payloadKey ? "v3-envelope" : "v2-client",
+                isPqcEnabled: isPqc,
             };
-            const encV = await encryptVaultPayloadClient({ ...bPayload, willDetails: { ...bPayload.willDetails, title: formState.willDetails.title, content: formState.willDetails.content, documents: [...exDocs, ...newDocs] }, securityQuestions: nextQ }, envelopePayloadKeyRef.current ?? eKey);
-            if (encTemp?.pqcCipherText) encV.pqcCipherText = encTemp.pqcCipherText;
-            if (envelopePayloadKeyRef.current) encV.keyMode = "envelope";
+
+            const encPayload = {
+                ...bPayload,
+                willDetails: {
+                    ...bPayload.willDetails,
+                    title: formState.willDetails.title,
+                    content: formState.willDetails.content,
+                    documents: [...exDocs, ...newDocs]
+                },
+                securityQuestions: nextQ
+            };
+
+            const encV = await encryptVaultPayloadClient(encPayload, payloadKey || eKey);
+            if (isPqc && encTemp?.pqcCipherText) encV.pqcCipherText = encTemp.pqcCipherText;
+            if (payloadKey) encV.keyMode = "envelope";
             const arPayload = await prepareArweavePayloadClient({ vaultId: formState.vaultId, encryptedVault: encV, metadata });
             const effStorage = overrides?.storageType ?? formState.storageType;
             let txId: string;
             let bTxHash: string | undefined;
             let bChain: string | undefined;
             if (effStorage === "bitxenArweave") {
-                const { dispatchHybrid } = await import("@/lib/metamaskWallet");
-                const hRes = await dispatchHybrid(arPayload, formState.vaultId, (overrides?.selectedChain ?? formState.payment.selectedChain ?? DEFAULT_CHAIN) as ChainId, { onProgress: setPaymentStatus, onUploadProgress: setPaymentProgress });
-                txId = hRes.arweaveTxId; bTxHash = hRes.contractTxHash; bChain = overrides?.selectedChain ?? formState.payment.selectedChain ?? DEFAULT_CHAIN;
+                // Using top-level imports already added
+
+                const selectedChain = (overrides?.selectedChain ?? formState.payment.selectedChain ?? DEFAULT_CHAIN) as ChainId;
+                const config = CHAIN_CONFIG[selectedChain];
+
+                const tr = bPayload.triggerRelease as any;
+                let triggerMs = NaN;
+                if (tr?.triggerType === "date" && tr.triggerDate) {
+                    const now = new Date();
+                    const [y, m, d] = tr.triggerDate.split("-").map(Number);
+                    const todayStr = now.toISOString().split("T")[0];
+                    if (tr.triggerDate === todayStr) {
+                        triggerMs = now.getTime() + (5 * 60 * 1000);
+                    } else {
+                        triggerMs = new Date(y, m - 1, d, 0, 0, 0, 0).getTime();
+                    }
+                }
+                const releaseDate = Number.isFinite(triggerMs) ? BigInt(Math.floor(triggerMs / 1000)) : BigInt(0);
+                const ronde = timestampToDrandRonde(Number.isFinite(triggerMs) ? Math.floor(triggerMs / 1000) : Math.floor(Date.now() / 1000));
+                // Determine if we need to re-seal or generate a new secret
+                const existingPlainSecret = hybridContractSecretRef.current || "";
+
+                let finalSealedSecret = existingSealedSecretRef.current;
+                let finalPlainSecret = existingPlainSecret;
+
+                // If the trigger ronde changed or we don't have a sealed secret, we MUST re-seal
+                const existingRonde = existingMetadataRef.current?.triggerRonde || 0;
+                if (!finalSealedSecret || ronde !== existingRonde || !finalPlainSecret) {
+                    if (!finalPlainSecret) finalPlainSecret = generateRandomSecret();
+                    finalSealedSecret = await sealWithDrand(new TextEncoder().encode(finalPlainSecret), ronde);
+                }
+
+                const finalUnlockKey = await deriveUnlockKey(cKey, finalPlainSecret, {
+                    chainId: config.chainId,
+                    contractAddress: config.contractAddress
+                });
+
+                // Update metadata with the correct sealed secret and other hybrid fields
+                (metadata as any).sealedContractSecret = finalSealedSecret;
+                (metadata as any).blockchainChain = selectedChain;
+                (metadata as any).contractAddress = config.contractAddress;
+                (metadata as any).triggerRonde = ronde;
+
+                const newWrappedKey = await wrapKeyClient(payloadKey!, finalUnlockKey);
+                const contractEncryptedKey = JSON.stringify(newWrappedKey);
+                (metadata as any).contractEncryptedKey = contractEncryptedKey;
+
+                const newArPayload = await prepareArweavePayloadClient({
+                    vaultId: formState.vaultId,
+                    encryptedVault: encV,
+                    metadata
+                });
+
+                // Anti-Bypass Commitment calculation
+                const userAddress = await connectMetaMask();
+                const dataJson = JSON.stringify(newArPayload);
+                const dataHashBytes = keccak_256(new TextEncoder().encode(dataJson));
+                const dataHash = "0x" + Array.from(dataHashBytes as Uint8Array).map(b => (b as number).toString(16).padStart(2, '0')).join('');
+
+                const wrappedKeyHashBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(contractEncryptedKey));
+                const wrappedKeyHash = "0x" + Array.from(new Uint8Array(wrappedKeyHashBytes)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+                const commitment = calculateCommitment({
+                    dataHash,
+                    wrappedKeyHash,
+                    ownerAddress: userAddress,
+                });
+
+                const hRes = await dispatchHybrid(newArPayload, formState.vaultId, selectedChain, {
+                    onProgress: setPaymentStatus,
+                    onUploadProgress: setPaymentProgress,
+                    releaseDate,
+                    secret: "0x" + "0".repeat(64),
+                    commitment
+                });
+
+                txId = hRes.arweaveTxId;
+                bTxHash = hRes.contractTxHash;
+                bChain = selectedChain;
                 hybridContractDataIdRef.current = hRes.contractDataId;
+                // Vault storage updated below at end of function
             } else {
                 const res = await arUpload(arPayload, formState.vaultId);
                 txId = res.txId;

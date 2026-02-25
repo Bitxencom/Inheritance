@@ -1,7 +1,14 @@
 "use client";
 
 import { ml_kem768 } from "@noble/post-quantum/ml-kem";
-import { keccak_256 } from "@noble/hashes/sha3";
+import { keccak_256 } from "@noble/hashes/sha3.js";
+import * as tlock from "tlock-js";
+import { HttpChainClient, HttpCachingChain } from "drand-client";
+import { Buffer } from "buffer";
+
+const QUICKNET_URL = "https://api.drand.sh/52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971";
+const QUICKNET_CHAIN_HASH = "52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971";
+const QUICKNET_PUBLIC_KEY = "83cf0f2896adee7eb8b5f01fcad3912212c437e0073e911fb90022d3e760183c8c4b450b6a0a6c3ac6a5776a2d1064510d1fec758c921cc22b0e17e63aaf4bcb5ed66304de9cf809bd274ca73bab4af5a6e9c76a4bc09e76eae8991ef5ece45a";
 
 export type EncryptedVaultClient = {
   cipherText: string;
@@ -481,5 +488,49 @@ export function calculateCommitment(params: {
   );
 
   const hashBytes = keccak_256(combinedBytes);
-  return "0x" + Array.from(hashBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return "0x" + Array.from(hashBytes).map((b: any) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Seals a payload (e.g. specialized secret) using Drand Time-Lock for a specific ronde.
+ */
+export async function sealWithDrand(payload: Uint8Array | string, ronde: number): Promise<string> {
+  const chainClient = new HttpChainClient(new HttpCachingChain(QUICKNET_URL), {
+    disableBeaconVerification: false,
+    noCache: false,
+    chainVerificationParams: {
+      chainHash: QUICKNET_CHAIN_HASH,
+      publicKey: QUICKNET_PUBLIC_KEY,
+    }
+  });
+
+  // Ensure data is a Buffer (which is a Uint8Array subclass) as expected by tlock-js 0.9.0
+  const data = (payload instanceof Uint8Array)
+    ? Buffer.from(payload)
+    : Buffer.from(String(payload), 'utf8');
+
+  const round = Number(ronde);
+  if (isNaN(round) || round < 1) {
+    throw new Error(`Invalid Drand ronde: ${ronde}`);
+  }
+
+  const sealed = await tlock.timelockEncrypt(round, data, chainClient);
+  return sealed;
+}
+
+/**
+ * Recovers a payload from a Drand-sealed record.
+ */
+export async function recoverWithDrand(sealedRecord: string): Promise<Uint8Array> {
+  const chainClient = new HttpChainClient(new HttpCachingChain(QUICKNET_URL), {
+    disableBeaconVerification: false,
+    noCache: false,
+    chainVerificationParams: {
+      chainHash: QUICKNET_CHAIN_HASH,
+      publicKey: QUICKNET_PUBLIC_KEY,
+    }
+  });
+
+  const recovered = await tlock.timelockDecrypt(sealedRecord, chainClient);
+  return new Uint8Array(recovered);
 }

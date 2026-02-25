@@ -35,7 +35,7 @@ import {
 } from "./abi-encoder";
 
 // keccak_256 is still needed for ARWEAVE_PROVIDER_HASH in dispatchHybrid
-import { keccak_256 } from "@noble/hashes/sha3";
+import { keccak_256 } from "@noble/hashes/sha3.js";
 
 // Chain configurations with Bitxen contract addresses
 import {
