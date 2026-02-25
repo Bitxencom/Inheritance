@@ -718,7 +718,7 @@ export function useVaultClaim({
           })),
           vaultId: normalizedVaultId
         });
-        
+
         combinedKey = combineSharesClient(fractionKeysArray);
         console.log('✅ Fraction keys combined successfully');
       } catch (combineError) {
@@ -1085,7 +1085,7 @@ export function useVaultClaim({
         const encryptedVaultForDecrypt = data.encryptedVault as EncryptedVaultClient;
         const attachmentKey = await deriveEffectiveAesKeyClient(encryptedVaultForDecrypt, combinedKey);
         setCombinedKeyForAttachments(attachmentKey);
-        
+
         // DEBUG: Log key information for troubleshooting edited vault attachment decryption
         console.log('🔑 Debug Keys:', {
           attachmentKey: Array.from(attachmentKey.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(''),
@@ -1135,7 +1135,7 @@ export function useVaultClaim({
             // Bitxen3: If we have releaseEntropy, we MUST derive the UnlockKey
             if (data.releaseEntropy && data.contractDataId && data.contractAddress && data.chainId) {
               setUnlockStep("Deriving unlock key from release entropy...");
-              
+
               // DEBUG: Log key derivation inputs for edited vault troubleshooting
               console.log('🔑 Debug Key Derivation:', {
                 attachmentKey: Array.from(attachmentKey.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(''),
@@ -1144,7 +1144,7 @@ export function useVaultClaim({
                 contractAddress: data.contractAddress,
                 chainId: data.chainId
               });
-              
+
               // Try with attachmentKey first (current logic)
               try {
                 vaultKey = await deriveUnlockKey(
@@ -1158,7 +1158,7 @@ export function useVaultClaim({
                 console.log('✅ Vault key derived with attachmentKey');
               } catch (attachmentKeyError) {
                 console.warn('⚠️ AttachmentKey failed, trying combinedKey fallback:', attachmentKeyError);
-                
+
                 // Fallback: Try with combinedKey (like edit wizard uses)
                 try {
                   vaultKey = await deriveUnlockKey(
@@ -1185,7 +1185,7 @@ export function useVaultClaim({
               console.log('✅ Payload key unwrapped with vaultKey');
             } catch (unwrapError) {
               console.warn('⚠️ Unwrap with vaultKey failed, trying combinedKey fallback:', unwrapError);
-              
+
               // Fallback: Try with combinedKey (for edited vault wrapped key consistency)
               try {
                 if (!data.releaseEntropy) {
@@ -1368,7 +1368,7 @@ export function useVaultClaim({
           throw new Error("Failed to fetch attachment from blockchain storage.");
         }
         const cipherBuffer = await response.arrayBuffer();
-        
+
         // DEBUG: Log attachment decryption info
         console.log('🔍 Debug Attachment:', {
           docName: doc.name,
@@ -1378,9 +1378,9 @@ export function useVaultClaim({
           attachmentKeyAvailable: !!combinedKeyForAttachments,
           cipherBufferSize: cipherBuffer.byteLength
         });
-        
+
         const { decryptBytesClient } = await import("@/lib/clientVaultCrypto");
-        
+
         try {
           const plainBytes = await decryptBytesClient(
             {
@@ -1589,26 +1589,19 @@ ${formState.vaultContent || "No Content"}
       }
     }
 
+    if (claimSteps[currentStep].key === "success") {
+      onOpenChange?.(false);
+      return;
+    }
+
     const nextStepIndex = currentStep + 1;
     if (nextStepIndex < claimSteps.length) {
-      const nextStepKey = claimSteps[nextStepIndex].key;
-
-      const v = getVaultById(formState.vaultId);
-      const isHybrid = v?.storageType === "bitxenArweave" ||
-        (typeof v?.contractDataId === "string" && v.contractDataId.startsWith("0x"));
-
-
       if (claimSteps[currentStep].key === "unlock") {
         if (requiresFinalization) {
           await handleFinalize();
         } else {
           await submitClaim();
         }
-        return;
-      }
-
-      if (claimSteps[currentStep].key === "success") {
-        onOpenChange?.(false);
         return;
       }
 
