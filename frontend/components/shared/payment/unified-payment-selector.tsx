@@ -310,7 +310,7 @@ export function UnifiedPaymentSelector({
                   </div>
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <Coins className="h-4 w-4 text-emerald-500" />
-                    <span>Fee: 1 BITXEN + Network Fee varies (Paid by User)</span>
+                    <span>Fee: 40 BITXEN + Network Fee varies (Paid by User)</span>
                   </div>
                 </div>
 
@@ -408,7 +408,7 @@ export function UnifiedPaymentSelector({
               </div>
               <div className="flex items-center justify-between text-xs text-muted-foreground pt-3 border-t">
                 <span>Contract Fee:</span>
-                <span className="font-semibold text-emerald-600">{registrationFee || "~1.00 BITXEN"}</span>
+                <span className="font-semibold text-emerald-600">{registrationFee || "~1.00"} BITXEN</span>
               </div>
             </>
           ) : (
@@ -458,7 +458,7 @@ export function UnifiedPaymentSelector({
               </div>
               <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t">
                 <span>Contract Fee:</span>
-                <span className="font-medium text-emerald-600">{registrationFee || "~1.00 BITXEN"}</span>
+                <span className="font-medium text-emerald-600">{registrationFee || "~1.00"} BITXEN</span>
               </div>
             </>
           )}

@@ -1,8 +1,11 @@
 import { createHmac } from "crypto";
 import { Request } from "express";
 
-import { appEnv } from "../../config/env.js";
 import { verifySecurityAnswerHash } from "../../services/crypto-utils.js";
+
+// Internal HMAC key untuk komputasi claim nonce & required indexes.
+// Nilai ini statis dan tidak lagi dikonfigurasi via environment variable.
+const UNLOCK_POLICY_HMAC_KEY = "unlock-policy-v1-hmac-key";
 
 // ──────────────────────────────────────────────────
 // Unlock policy
@@ -75,7 +78,7 @@ export const computeClaimNonce = (params: {
     vaultId: string;
     latestTxId: string | null | undefined;
 }): string => {
-    const h = createHmac("sha256", appEnv.unlockPolicySecret);
+    const h = createHmac("sha256", UNLOCK_POLICY_HMAC_KEY);
     h.update(`claimNonce:v1:${params.vaultId}:${params.latestTxId ?? ""}`, "utf8");
     return toBase64Url(h.digest()).slice(0, 43);
 };
@@ -87,7 +90,7 @@ export const selectRequiredIndexes = (params: {
     const total = Math.max(0, Math.floor(params.totalQuestions));
     const target = Math.min(3, total);
     const scored = Array.from({ length: total }, (_, index) => {
-        const h = createHmac("sha256", appEnv.unlockPolicySecret);
+        const h = createHmac("sha256", UNLOCK_POLICY_HMAC_KEY);
         h.update(`requiredIndexes:v1:${params.claimNonce}:${index}`, "utf8");
         return { index, score: h.digest("hex") };
     });

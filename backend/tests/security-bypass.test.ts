@@ -14,7 +14,6 @@ vi.mock('../src/services/storage/arweave', () => ({
 // Mock env to avoid issues
 vi.mock('../src/config/env', () => ({
   appEnv: {
-    unlockPolicySecret: 'test-secret',
     shamirThreshold: 3,
     shamirTotalShares: 5,
   },
@@ -34,15 +33,15 @@ describe('Vault Security Bypass Vulnerability', () => {
 
   it('SHOULD REJECT unlock request when security questions are required but NOT provided', async () => {
     const vaultId = 'vulnerable-vault-id';
-    
+
     // 1. Mock the vault payload returned from Arweave
     // This vault has security questions configured in metadata
     const mockPayload = {
       vaultId,
-      encryptedData: { 
-        cipherText: 'encrypted-stuff', 
-        iv: 'iv', 
-        checksum: 'checksum' 
+      encryptedData: {
+        cipherText: 'encrypted-stuff',
+        iv: 'iv',
+        checksum: 'checksum'
       },
       metadata: {
         securityQuestionHashes: [
@@ -70,7 +69,7 @@ describe('Vault Security Bypass Vulnerability', () => {
     // 3. Assertions
     // IF VULNERABLE: This will be 200 OK
     // IF FIXED: This should be 400 Bad Request or 401 Unauthorized
-    
+
     console.log(`Response status: ${res.status}`);
     console.log(`Response body:`, res.body);
 
