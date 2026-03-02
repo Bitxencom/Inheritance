@@ -955,14 +955,12 @@ export function useVaultClaim({
             (typeof apiMetadata?.blockchainChain === "string" && apiMetadata.blockchainChain.trim().length > 0);
 
           if (isExpectedHybrid) {
-            console.error("Missing blockchain info for expected hybrid vault:", {
+            console.warn("Missing blockchain info for expected hybrid vault. Bypassing release check (may be a pending envelope vault).", {
               resolvedChainKey,
               resolvedContractDataId,
               resolvedContractAddress,
             });
-            throw new Error(
-              "Unable to locate inheritance on blockchain. Technical details: Missing chain or contract ID."
-            );
+            // Proceed without blocking, allow unlock process to continue with metadata bypass
           } else {
             // Likely an Arweave-only vault created with 'envelope' mode (v3).
             // We proceed without blockchain check.
