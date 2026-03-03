@@ -54,7 +54,7 @@ export const getVaultUploadCostEstimate = async (
   const payloadString = JSON.stringify(payload);
   const dataSize = new TextEncoder().encode(payloadString).length;
   const costAR = await estimateUploadCost(dataSize);
-  
+
   return {
     costAR,
     dataSizeBytes: dataSize,
@@ -97,21 +97,30 @@ export const fetchVaultPayloadById = async (
     }`,
   };
 
-  const graphqlUrl = "https://arweave.net/graphql";
+  const graphqlEndpoints = [
+    "https://arweave-search.goldsky.com/graphql",
+    "https://arweave-search.goldsky.com/graphql",
+    "https://ar-io.net/graphql",
+    "https://goldsky.com/graphql",
+    "https://arweave.dev/graphql",
+  ];
 
   let txId: string | null = null;
   let gqlError = false;
   let gqlBlockHeight: number | null = null;
 
-  // Retry logic for GraphQL query
+  // Retry logic for GraphQL query with endpoint rotation
   const maxRetries = 3;
   let attempt = 0;
   let success = false;
 
   while (attempt < maxRetries && !success) {
+    // Rotate through endpoints based on attempt count
+    const graphqlUrl = graphqlEndpoints[attempt % graphqlEndpoints.length];
+
     try {
       if (attempt > 0) {
-        console.log(`🔄 Retrying Arweave GraphQL query (attempt ${attempt + 1}/${maxRetries})...`);
+        console.log(`🔄 Retrying Arweave GraphQL query using ${graphqlUrl} (attempt ${attempt + 1}/${maxRetries})...`);
         // Add a small delay between retries
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
@@ -120,6 +129,7 @@ export const fetchVaultPayloadById = async (
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "Accept": "application/json",
         },
         body: JSON.stringify(gqlQuery),
       });
@@ -145,13 +155,10 @@ export const fetchVaultPayloadById = async (
             : null;
         success = true;
       } else {
-        console.warn(`⚠️ Blockchain GraphQL query failed: HTTP ${gqlResponse.status}`);
-        // Only mark as error if it's a server error (5xx) or strictly not 404/200 OK logic
-        // But here we rely on the response for the ID. If it fails, we can't find the ID.
-        // We continue to retry.
+        console.warn(`⚠️ Blockchain GraphQL query failed at ${graphqlUrl}: HTTP ${gqlResponse.status}`);
       }
     } catch (error) {
-      console.warn(`⚠️ Blockchain GraphQL query failed (attempt ${attempt + 1}):`, error);
+      console.warn(`⚠️ Blockchain GraphQL query failed at ${graphqlUrl} (attempt ${attempt + 1}):`, error);
     }
     attempt++;
   }
@@ -161,7 +168,7 @@ export const fetchVaultPayloadById = async (
   }
 
   // === NEW LOGIC: Compare with fallbackTxId or use it as fallback ===
-  
+
   // Helper to check status of a specific TxID
   const checkTxStatus = async (id: string): Promise<number> => {
     let lastNon404Status: number | null = null;
@@ -200,19 +207,19 @@ export const fetchVaultPayloadById = async (
     // This implies fallbackTxId might be NEWER (pending) or OLDER. 
     // We assume if it's in local storage and different, it likely might be a pending newer version.
     if (fallbackTxId && fallbackTxId !== txId) {
-       console.log(`ℹ️ Comparison: GraphQL TxId (${txId}) vs Local TxId (${fallbackTxId})`);
-       
-       // Check status of local fallbackTxId
-       const localStatus = await checkTxStatus(fallbackTxId);
-       
-       if (localStatus === 202 || localStatus === 0) {
-         // It is pending! Warn the user.
-         throw new Error("Newer version pending");
-       }
-       // If localStatus is 404/400, it's invalid, stick to txId from GraphQL
-       // If localStatus is 200 but different, it's weird (maybe GraphQL is lagging very much, or fork).
-       // For now, if confirmed, we could arguably prefer the one from GraphQL as "truth", 
-       // but let's stick to the secure default: use the one from GraphQL unless local is explicitly pending.
+      console.log(`ℹ️ Comparison: GraphQL TxId (${txId}) vs Local TxId (${fallbackTxId})`);
+
+      // Check status of local fallbackTxId
+      const localStatus = await checkTxStatus(fallbackTxId);
+
+      if (localStatus === 202 || localStatus === 0) {
+        // It is pending! Warn the user.
+        throw new Error("Newer version pending");
+      }
+      // If localStatus is 404/400, it's invalid, stick to txId from GraphQL
+      // If localStatus is 200 but different, it's weird (maybe GraphQL is lagging very much, or fork).
+      // For now, if confirmed, we could arguably prefer the one from GraphQL as "truth", 
+      // but let's stick to the secure default: use the one from GraphQL unless local is explicitly pending.
     }
   }
 
@@ -220,7 +227,7 @@ export const fetchVaultPayloadById = async (
   if (!txId) {
     if (fallbackTxId) {
       console.log(`⚠️ Vault ID not found via GraphQL, trying fallback TxId: ${fallbackTxId}`);
-      
+
       // If fallbackTxId starts with 0x, it's a Smart Chain transaction!
       if (fallbackTxId.startsWith("0x")) {
         return fetchVaultFromSmartChain(vaultId, fallbackTxId);
@@ -228,11 +235,11 @@ export const fetchVaultPayloadById = async (
 
       // Check status of fallbackTxId (Arweave)
       const status = await checkTxStatus(fallbackTxId);
-      
+
       if (status === 202) {
         throw new Error("Vault transaction is pending");
       }
-      
+
       if (status === 200) {
         // Confirmed! Use this ID
         txId = fallbackTxId;
@@ -244,9 +251,9 @@ export const fetchVaultPayloadById = async (
       }
     } else {
       if (gqlError) {
-         throw new Error("Connection to blockchain failed. Please try again.");
+        throw new Error("Connection to blockchain failed. Please try again.");
       }
-      
+
       // FINAL FALLBACK: If we have no txId but vaultId looks like it could be on Smart Chain
       // (This will only work if we have a way to scan logs or if vaultId IS the TxHash)
       // Since we don't have a registry yet, we can only try if vaultId is passed as the Hash
@@ -342,45 +349,99 @@ export const fetchVaultPayloadById = async (
     );
   };
 
-  const payloadJson = await fetchTxJson(txId);
+  let payloadJson = await fetchTxJson(txId);
+
+  // If payload is a string, try to parse it (some gateways return JSON as text/plain)
+  if (typeof payloadJson === "string") {
+    try {
+      payloadJson = JSON.parse(payloadJson);
+    } catch {
+      // If not JSON, check if it's Base64 and try to decode/parse
+      try {
+        const decoded = Buffer.from(payloadJson as string, "base64").toString("utf8");
+        payloadJson = JSON.parse(decoded);
+      } catch {
+        // Still not JSON, keep as string
+      }
+    }
+  }
+
+  // Handle wrapped payloads (some gateways wrap response in { data: ... })
+  if (
+    payloadJson &&
+    typeof payloadJson === "object" &&
+    "data" in payloadJson &&
+    !(("id" in payloadJson) || ("vaultId" in payloadJson))
+  ) {
+    const maybeWrapped = (payloadJson as any).data;
+    if (maybeWrapped && typeof maybeWrapped === "object") {
+      payloadJson = maybeWrapped;
+    } else if (typeof maybeWrapped === "string") {
+      try {
+        payloadJson = JSON.parse(maybeWrapped);
+      } catch {
+        try {
+          payloadJson = JSON.parse(Buffer.from(maybeWrapped, "base64").toString("utf8"));
+        } catch { /* ignore */ }
+      }
+    }
+  }
 
   // Handle obfuscated format (id, v, t, m, d) - used in newer versions
   if (
     payloadJson &&
     typeof payloadJson === "object" &&
-    "id" in payloadJson &&
-    "m" in payloadJson &&
-    "d" in payloadJson
+    (("id" in payloadJson) || ("vaultId" in payloadJson)) &&
+    (("m" in payloadJson) || ("metadata" in payloadJson)) &&
+    (("d" in payloadJson) || ("data" in payloadJson) || ("encryptedData" in payloadJson) || ("encryptedVault" in payloadJson))
   ) {
     try {
-      const obfuscated = payloadJson as { id: string; m: string; d: unknown };
+      const anyPayload = payloadJson as any;
+      const vid = anyPayload.id || anyPayload.vaultId;
+      const m = anyPayload.m || (anyPayload.metadata && typeof anyPayload.metadata === "string" ? anyPayload.metadata : anyPayload.metadata?.encryptedMetadata);
+      const d = anyPayload.d || anyPayload.data || anyPayload.encryptedData || anyPayload.encryptedVault;
+
+      if (!vid || !d) {
+        throw new Error("Missing critical fields in payload");
+      }
+
+      // If 'm' is already an object (decrypted by some middleware/process), use it
+      const metadata = typeof m === "string" ? decryptMetadata(m, vid) : m || anyPayload.metadata || {};
+
       return {
-        vaultId: obfuscated.id,
-        encryptedData: obfuscated.d,
-        metadata: decryptMetadata(obfuscated.m, obfuscated.id),
-        latestTxId: txId, // Include the latest transaction ID
+        vaultId: vid,
+        encryptedData: d,
+        metadata: metadata,
+        latestTxId: txId,
       };
     } catch (error) {
-      console.error("❌ Failed to decrypt metadata in obfuscated payload:", error);
-      throw new Error("Failed to decrypt vault metadata from blockchain storage.");
+      console.error("❌ Failed to process vault payload:", error);
+      // Fall through to legacy check if possible
     }
   }
 
-  // Handle legacy format (vaultId, encryptedData, metadata)
+  // Final check for the most basic required fields
   if (
     payloadJson &&
     typeof payloadJson === "object" &&
-    "vaultId" in payloadJson &&
-    "encryptedData" in payloadJson
+    (("vaultId" in payloadJson) || ("id" in payloadJson)) &&
+    (("encryptedData" in payloadJson) || ("d" in payloadJson) || ("data" in payloadJson))
   ) {
+    const anyPayload = payloadJson as any;
     return {
-      ...payloadJson,
-      latestTxId: txId, // Include the latest transaction ID
+      vaultId: anyPayload.vaultId || anyPayload.id,
+      encryptedData: anyPayload.encryptedData || anyPayload.d || anyPayload.data,
+      metadata: anyPayload.metadata || {},
+      latestTxId: txId,
     } as UploadPayloadInput;
   }
 
+  if (process.env.DEBUG_LOGS === "true") {
+    console.debug("❌ Invalid Arweave Payload Structure. Keys found:", Object.keys(payloadJson as any || {}));
+  }
+
   throw new Error(
-    "Vault payload structure in blockchain storage is invalid or incomplete.",
+    "Vault payload structure in blockchain storage is invalid or incomplete. Please ensure the transaction is confirmed and data is available.",
   );
 };
 
@@ -389,14 +450,14 @@ export const fetchVaultPayloadById = async (
  * This is used as a fallback when data is not on Arweave
  */
 async function fetchVaultFromSmartChain(
-  vaultId: string, 
+  vaultId: string,
   txHash: string
 ): Promise<UploadPayloadInput> {
   console.log(`🌐 Fetching vault from Smart Chain: ${txHash}`);
-  
+
   // List of RPC URLs to try (BSC as default)
   const rpcs = ["https://bsc-dataseed.binance.org/", "https://binance.llamarpc.com"];
-  
+
   for (const rpc of rpcs) {
     try {
       const response = await fetch(rpc, {
@@ -420,7 +481,7 @@ async function fetchVaultFromSmartChain(
       // Transaction found! Parse UTF-8 from hex input
       const hex = tx.input.startsWith("0x") ? tx.input.slice(2) : tx.input;
       const jsonString = Buffer.from(hex, "hex").toString("utf8");
-      
+
       const payload = JSON.parse(jsonString);
 
       // Verify it's what we expect

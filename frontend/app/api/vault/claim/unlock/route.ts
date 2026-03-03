@@ -9,7 +9,7 @@ async function findLatestArweaveTxIdForVault(vaultId: string): Promise<string | 
     const safeVaultId = typeof vaultId === "string" ? vaultId.trim() : "";
     if (!safeVaultId) return null;
 
-    const response = await fetch("https://arweave.net/graphql", {
+    const response = await fetch("https://arweave-search.goldsky.com/graphql", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -122,15 +122,15 @@ export async function POST(req: Request) {
               : await findLatestArweaveTxIdForVault(normalizedVaultId);
 
           const meta = (primary.data.metadata as Record<string, unknown>) || {};
-          
+
           // Fallback extraction from metadata
           const contractDataId = (primary.data.contractDataId as string) || (meta.contractDataId as string) || null;
           const contractAddress = (primary.data.contractAddress as string) || (meta.contractAddress as string) || null;
           const releaseEntropy = (primary.data.releaseEntropy as string) || (meta.releaseEntropy as string) || null;
-          
+
           let chainId = (primary.data.chainId as number) || null;
           if (!chainId && typeof meta.blockchainChain === "string") {
-             chainId = resolveChainId(meta.blockchainChain);
+            chainId = resolveChainId(meta.blockchainChain);
           }
 
           return NextResponse.json({
@@ -177,10 +177,10 @@ export async function POST(req: Request) {
               const contractDataId = (fb.data.contractDataId as string) || (meta.contractDataId as string) || null;
               const contractAddress = (fb.data.contractAddress as string) || (meta.contractAddress as string) || null;
               const releaseEntropy = (fb.data.releaseEntropy as string) || (meta.releaseEntropy as string) || null;
-              
+
               let chainId = (fb.data.chainId as number) || null;
               if (!chainId && typeof meta.blockchainChain === "string") {
-                 chainId = resolveChainId(meta.blockchainChain);
+                chainId = resolveChainId(meta.blockchainChain);
               }
 
               return NextResponse.json({

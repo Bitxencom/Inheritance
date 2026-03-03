@@ -60,7 +60,7 @@ export async function discoverBitxenChainInfo(params: {
 
   // Strategy 1: Query Arweave GraphQL for bitxen-index document
   try {
-    const response = await fetch("https://arweave.net/graphql", {
+    const response = await fetch("https://arweave-search.goldsky.com/graphql", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -205,7 +205,7 @@ export async function discoverBitxenChainInfo(params: {
   // Strategy 3: Fallback - if no arweaveTxId was provided/found, query for the main "doc" transaction directly.
   if (txId.length === 0) {
     try {
-      const response = await fetch("https://arweave.net/graphql", {
+      const response = await fetch("https://arweave-search.goldsky.com/graphql", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -320,7 +320,7 @@ export async function findLatestArweaveDocTxIdForVault(vaultId: string): Promise
     const safeVaultId = typeof vaultId === "string" ? vaultId.trim() : "";
     if (!safeVaultId) return null;
 
-    const response = await fetch("https://arweave.net/graphql", {
+    const response = await fetch("https://arweave-search.goldsky.com/graphql", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -448,7 +448,7 @@ export async function tryLoadHybridEncryptedVault(params: {
       try {
         const safeVaultId = typeof params.vaultId === "string" ? params.vaultId.trim() : "";
         if (!safeVaultId) return null;
-        const response = await fetch("https://arweave.net/graphql", {
+        const response = await fetch("https://arweave-search.goldsky.com/graphql", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({

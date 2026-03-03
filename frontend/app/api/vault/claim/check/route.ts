@@ -27,7 +27,7 @@ type CheckClaimRequest = {
 async function getArweaveConfirmations(txId: string): Promise<number> {
   try {
     // 1️⃣ Ambil block height transaksi
-    const gqlResponse = await fetch("https://arweave.net/graphql", {
+    const gqlResponse = await fetch("https://arweave-search.goldsky.com/graphql", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
