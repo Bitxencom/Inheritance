@@ -374,9 +374,9 @@ export function VaultEditWizard(props: VaultEditWizardProps) {
                     Upload Documents
                   </Button>
                 </div>
-                <p className="text-[10px] text-muted-foreground text-center">
+                {/* <p className="text-[10px] text-muted-foreground text-center">
                   Max 1GB total size. Large files (&gt;5MB) uploaded directly to Arweave.
-                </p>
+                </p> */}
               </div>
             </div>
           </div>
