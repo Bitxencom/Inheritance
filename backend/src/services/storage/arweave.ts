@@ -98,8 +98,7 @@ export const fetchVaultPayloadById = async (
   };
 
   const graphqlEndpoints = [
-    "https://arweave-search.goldsky.com/graphql",
-    "https://arweave-search.goldsky.com/graphql",
+    "https://arweave.net/graphql",
     "https://ar-io.net/graphql",
     "https://goldsky.com/graphql",
     "https://arweave.dev/graphql",

@@ -9,7 +9,7 @@ async function findLatestArweaveTxIdForVault(vaultId: string): Promise<string | 
     const safeVaultId = typeof vaultId === "string" ? vaultId.trim() : "";
     if (!safeVaultId) return null;
 
-    const response = await fetch("https://arweave-search.goldsky.com/graphql", {
+    const response = await fetch("https://arweave.net/graphql", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

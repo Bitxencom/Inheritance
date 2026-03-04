@@ -290,7 +290,7 @@ export async function checkArweaveStatus(
   }
 
   try {
-    const response = await fetch("https://arweave-search.goldsky.com/graphql", {
+    const response = await fetch("https://arweave.net/graphql", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
