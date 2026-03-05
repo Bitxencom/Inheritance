@@ -8,7 +8,7 @@ import { AlertMessage } from "@/components/ui/alert-message";
 import { FieldError } from "@/components/ui/field-error";
 import { ReviewSection, ReviewItem } from "@/components/ui/review-display";
 import { cn } from "@/lib/utils";
-import { FileText, X } from "lucide-react";
+import { FileText, X, Sparkles } from "lucide-react";
 
 import {
   Dialog,
@@ -509,10 +509,22 @@ export function VaultCreationWizard({
       </DialogTitle>
     </DialogHeader>
   ) : (
-    <div className="flex flex-col gap-1">
+    <div className="flex justify-between items-center gap-1">
       <h2 className="text-lg font-semibold leading-none">
         Create Inheritance
       </h2>
+      {process.env.NODE_ENV === "development" && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="w-fit h-6 gap-1.5 px-2 text-[10px] text-muted-foreground/60 hover:text-primary hover:bg-primary/5 transition-all mt-0.5"
+          onClick={fillWithDummyData}
+        >
+          <Sparkles className="size-3" />
+          <span>Shortcut: CTRL + SHIFT + F</span>
+        </Button>
+      )}
     </div>
   );
 

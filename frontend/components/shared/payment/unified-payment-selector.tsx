@@ -406,10 +406,10 @@ export function UnifiedPaymentSelector({
                   <p className="text-xs text-muted-foreground">{CHAIN_CONFIG[lockedChain]?.shortName}</p>
                 </div>
               </div>
-              <div className="flex items-center justify-between text-xs text-muted-foreground pt-3 border-t">
+              {/* <div className="flex items-center justify-between text-xs text-muted-foreground pt-3 border-t">
                 <span>Contract Fee:</span>
                 <span className="font-semibold text-emerald-600">{registrationFee || "~1.00"} BITXEN</span>
-              </div>
+              </div> */}
             </>
           ) : (
             /* Normal chain selector */
@@ -456,10 +456,10 @@ export function UnifiedPaymentSelector({
                   );
                 })}
               </div>
-              <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t">
+              {/* <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t">
                 <span>Contract Fee:</span>
                 <span className="font-medium text-emerald-600">{registrationFee || "~1.00"} BITXEN</span>
-              </div>
+              </div> */}
             </>
           )}
         </div>
