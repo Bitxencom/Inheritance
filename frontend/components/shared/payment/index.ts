@@ -4,6 +4,7 @@ export { MetaMaskWalletButton } from "./metamask-wallet-button";
 export { PaymentMethodSelector } from "./payment-method-selector"; // Legacy - used in vault-edit-wizard
 export { StorageSelector } from "./storage-selector";
 export { UnifiedPaymentSelector } from "./unified-payment-selector";
+export { MobileWalletModal, MobileWalletButton } from "./mobile-wallet-modal";
 export type { PaymentMethod } from "./payment-method-selector";
 export type { StorageType } from "./storage-selector";
 export type { PaymentMode } from "./unified-payment-selector";

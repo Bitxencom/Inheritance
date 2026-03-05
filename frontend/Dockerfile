@@ -7,7 +7,7 @@ RUN corepack enable || true
 
 FROM base AS deps
 RUN if [ -f "pnpm-lock.yaml" ]; then pnpm install; \
-  elif [ -f "package-lock.json" ]; then npm ci; \
+  elif [ -f "package-lock.json" ]; then npm install --legacy-peer-deps; \
   else npm install; \
   fi
 
@@ -48,7 +48,7 @@ WORKDIR /app
 
 COPY package.json package-lock.json* pnpm-lock.yaml* ./
 RUN if [ -f "pnpm-lock.yaml" ]; then corepack enable && pnpm install --prod; \
-  elif [ -f "package-lock.json" ]; then npm ci --omit=dev; \
+  elif [ -f "package-lock.json" ]; then npm install --omit=dev --legacy-peer-deps; \
   else npm install --omit=dev; \
   fi
 

@@ -252,7 +252,7 @@ export function useVaultCreation({
 
   useEffect(() => {
     // Only enable hotkey in development
-    if (process.env.NODE_ENV !== "development") return;
+    // if (process.env.NODE_ENV !== "development") return;
 
     const handleHotkey = (event: KeyboardEvent) => {
       if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "f") {

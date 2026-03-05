@@ -2,11 +2,13 @@
 
 import { useState, useEffect } from "react";
 import Image from "next/image";
-import { Loader2, Check, Globe, Link2, Coins, Zap, Shield } from "lucide-react";
+import { Loader2, Check, Globe, Link2, Coins, Shield } from "lucide-react";
+
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { cn } from "@/lib/utils";
+import { cn, isMobile } from "@/lib/utils";
+import { MobileWalletModal } from "@/components/shared/payment/mobile-wallet-modal";
 import {
   connectMetaMask,
   isMetaMaskInstalled,
@@ -62,6 +64,14 @@ export function UnifiedPaymentSelector({
   const [error, setError] = useState<string | null>(null);
   const [insufficientBalanceError, setInsufficientBalanceError] = useState<InsufficientBitxenError | null>(null);
 
+  // Mobile wallet modal state
+  const [isMobileDevice, setIsMobileDevice] = useState(false);
+  const [showMobileModal, setShowMobileModal] = useState(false);
+
+  useEffect(() => {
+    setIsMobileDevice(isMobile());
+  }, []);
+
   // Wallet connection states
   const [wanderAddress, setWanderAddress] = useState<string | null>(null);
   const [metaMaskAddress, setMetaMaskAddress] = useState<string | null>(null);
@@ -101,6 +111,17 @@ export function UnifiedPaymentSelector({
   }, [selectedChain, selectedMode, isMetaMaskAvailable]);
 
   const handleProceed = async () => {
+    // Di mobile (browser standar), tampilkan Mobile Wallet Modal terlebih dahulu
+    // agar user bisa memilih wallet app via deep link
+    if (isMobileDevice) {
+      setShowMobileModal(true);
+      return;
+    }
+
+    await handleProceedDesktop();
+  };
+
+  const handleProceedDesktop = async () => {
     setError(null);
     setInsufficientBalanceError(null);
     setIsConnecting(true);
@@ -151,6 +172,38 @@ export function UnifiedPaymentSelector({
       setIsConnecting(false);
       setIsAwaitingSubmit(false);
     }
+  };
+
+  /**
+   * Dipanggil setelah Wander berhasil connect via MobileWalletModal.
+   * Melanjutkan flow submit untuk mode wander/hybrid.
+   */
+  const handleMobileWanderConnected = async (address: string) => {
+    setWanderAddress(address);
+    setShowMobileModal(false);
+
+    if (selectedMode === "wander") {
+      setIsAwaitingSubmit(true);
+      try {
+        await onSubmit("wander");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Submission failed");
+      } finally {
+        setIsAwaitingSubmit(false);
+      }
+    }
+    // Untuk mode hybrid, user juga perlu EVM wallet.
+    // Setelah Wander connect, instruksikan untuk buka EVM wallet via modal.
+    // Flow akan berlanjut setelah user kembali dari wallet app dan window.ethereum tersedia.
+  };
+
+  /**
+   * Dipanggil setelah user memilih EVM wallet via Web3Modal di MobileWalletModal.
+   */
+  const handleMobileEvmSelected = (address: string) => {
+    setMetaMaskAddress(address);
+    setShowMobileModal(false);
+    setError(null);
   };
 
   const isProcessing = isConnecting || isSubmitting || isAwaitingSubmit;
@@ -222,6 +275,15 @@ export function UnifiedPaymentSelector({
 
   return (
     <div className="space-y-6">
+      {/* Mobile Wallet Modal — hanya tampil di perangkat mobile */}
+      <MobileWalletModal
+        open={showMobileModal}
+        onOpenChange={setShowMobileModal}
+        mode={selectedMode === "wander" ? "arweave-only" : "both"}
+        onWanderConnected={handleMobileWanderConnected}
+        onEvmConnected={handleMobileEvmSelected}
+      />
+
       <Dialog open={isArweaveUploadDialogOpen} onOpenChange={() => { }}>
         <DialogContent showCloseButton={false} className="max-w-md">
           <DialogHeader>
@@ -641,11 +703,15 @@ export function UnifiedPaymentSelector({
 
         {/* Helper text */}
         <p className="text-xs text-center text-muted-foreground mt-3">
-          {selectedMode === "wander"
-            ? isProcessing
-              ? "Large uploads can take time. Please keep this page open."
-              : "You will be prompted to sign one transaction in Wander Wallet."
-            : "You will sign with Wander first, then confirm in MetaMask."}
+          {isMobileDevice
+            ? selectedMode === "wander"
+              ? "On mobile, you will connect Wander via pop-up."
+              : "On mobile, you will be guided to connect both Wander and your EVM wallet app."
+            : selectedMode === "wander"
+              ? isProcessing
+                ? "Large uploads can take time. Please keep this page open."
+                : "You will be prompted to sign one transaction in Wander Wallet."
+              : "You will sign with Wander first, then confirm in MetaMask."}
         </p>
       </div>
 

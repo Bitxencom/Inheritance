@@ -32,7 +32,10 @@
     "@radix-ui/react-separator": "^1.1.7",
     "@radix-ui/react-slot": "^1.2.3",
     "@radix-ui/react-tooltip": "^1.2.8",
+    "@tanstack/react-query": "^5.90.21",
+    "@walletconnect/ethereum-provider": "^2.23.7",
     "@wanderapp/connect": "^0.1.12",
+    "@web3modal/wagmi": "^5.1.11",
     "ai": "^5.0.121",
     "arweave": "^1.15.7",
     "assistant-stream": "0.3.0",
@@ -53,6 +56,8 @@
     "tailwind-merge": "^3.3.1",
     "tlock-js": "^0.9.0",
     "tw-animate-css": "^1.3.8",
+    "viem": "^2.47.0",
+    "wagmi": "^3.5.0",
     "zustand": "^5.0.8"
   },
   "devDependencies": {
