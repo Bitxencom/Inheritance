@@ -115,11 +115,11 @@ export function MobileWalletModal({
         setIsConnectingWander(true);
         try {
             // Implement deep linking fallback to Wander app for mobile devices
-            if (typeof window !== 'undefined' && !isWanderWalletInstalled() && /iPhone|iPad|Android/i.test(navigator.userAgent)) {
-                const currentHostPath = window.location.host + window.location.pathname;
-                window.location.href = `https://wander.app/dapp/${currentHostPath}`;
-                return;
-            }
+            // if (typeof window !== 'undefined' && !isWanderWalletInstalled() && /iPhone|iPad|Android/i.test(navigator.userAgent)) {
+            //     const currentHostPath = window.location.host + window.location.pathname;
+            //     window.location.href = `https://wander.app/dapp/${currentHostPath}`;
+            //     return;
+            // }
 
             const alreadyReady = await isWanderReady();
             if (alreadyReady) {

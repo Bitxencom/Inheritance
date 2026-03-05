@@ -64,3 +64,6 @@ temp/
 # Local Dev Folder
 zzz/
 old-project/
+
+# Manual Build Script
+build-manual.sh
