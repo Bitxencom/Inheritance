@@ -30,10 +30,12 @@ import {
     ChevronRight,
     Wallet,
     ArrowRight,
+    ArrowDown,
     CheckCircle2,
+    LogOut,
 } from "lucide-react";
 import { useWeb3Modal } from "@web3modal/wagmi/react";
-import { useAccount } from "wagmi";
+import { useAccount, useDisconnect } from "wagmi";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -46,6 +48,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
     connectWanderWallet,
+    disconnectWanderWallet,
     isWalletReady as isWanderReady,
     isWanderWalletInstalled,
 } from "@/lib/wanderWallet";
@@ -60,8 +63,10 @@ export interface MobileWalletModalProps {
     onOpenChange: (open: boolean) => void;
     /** Dipanggil setelah Wander berhasil connect */
     onWanderConnected?: (address: string) => void;
-    /** Dipanggil setelah EVM wallet berhasil connect via Web3Modal */
+    /** Dipanggil setelah EVM wallet terkoneksi — modal tetap terbuka */
     onEvmConnected?: (address: string) => void;
+    /** Dipanggil saat user klik tombol Continue setelah keduanya connect (mode both) */
+    onBothConnected?: (evmAddress: string) => void;
     /**
      * Mode koneksi:
      * - "evm-only"     : Hanya menampilkan Web3Modal button
@@ -80,47 +85,30 @@ export function MobileWalletModal({
     onOpenChange,
     onWanderConnected,
     onEvmConnected,
+    onBothConnected,
     mode = "both",
 }: MobileWalletModalProps) {
     const { open: openWeb3Modal } = useWeb3Modal();
+    const { disconnect: disconnectEvm } = useDisconnect();
     const { address: evmAddress, isConnected: isEvmConnected } = useAccount();
 
     const [isConnectingWander, setIsConnectingWander] = useState(false);
     const [isConnectingEvm, setIsConnectingEvm] = useState(false);
     const [wanderAddress, setWanderAddress] = useState<string | null>(null);
     const [wanderError, setWanderError] = useState<string | null>(null);
+    const [evmError, setEvmError] = useState<string | null>(null);
 
     const showEvm = mode === "evm-only" || mode === "both";
     const showArweave = mode === "arweave-only" || mode === "both";
 
-    // Handle klik tombol EVM — membuka Web3Modal (500+ wallets, deep link, QR)
-    const handleEvmConnect = async () => {
-        setIsConnectingEvm(true);
-        try {
-            await openWeb3Modal();
-            // Web3Modal bersifat modal terpisah.
-            // useWeb3ModalAccount() akan auto-update ketika user memilih wallet.
-            // Setelah modal ditutup, cek apakah address tersedia.
-            if (evmAddress) {
-                onEvmConnected?.(evmAddress);
-            }
-        } finally {
-            setIsConnectingEvm(false);
-        }
-    };
+    // Dalam mode "both", EVM hanya aktif setelah Wander terkoneksi (sequential — sama seperti desktop)
+    const isEvmLocked = mode === "both" && !wanderAddress;
 
-    // Handle klik tombol Wander
+    // Handle klik tombol Wander — STEP 1
     const handleWanderConnect = async () => {
         setWanderError(null);
         setIsConnectingWander(true);
         try {
-            // Implement deep linking fallback to Wander app for mobile devices
-            // if (typeof window !== 'undefined' && !isWanderWalletInstalled() && /iPhone|iPad|Android/i.test(navigator.userAgent)) {
-            //     const currentHostPath = window.location.host + window.location.pathname;
-            //     window.location.href = `https://wander.app/dapp/${currentHostPath}`;
-            //     return;
-            // }
-
             const alreadyReady = await isWanderReady();
             if (alreadyReady) {
                 const { getConnectedAddress } = await import("@/lib/wanderWallet");
@@ -128,14 +116,18 @@ export function MobileWalletModal({
                 if (addr) {
                     setWanderAddress(addr);
                     onWanderConnected?.(addr);
-                    onOpenChange(false);
+                    if (mode !== "both") {
+                        onOpenChange(false);
+                    }
                     return;
                 }
             }
             const address = await connectWanderWallet();
             setWanderAddress(address);
             onWanderConnected?.(address);
-            onOpenChange(false);
+            if (mode !== "both") {
+                onOpenChange(false);
+            }
         } catch (err) {
             setWanderError(
                 err instanceof Error ? err.message : "Failed to connect Wander Wallet"
@@ -145,17 +137,57 @@ export function MobileWalletModal({
         }
     };
 
-    // Setelah EVM wallet connect via Web3Modal, beritahu parent dan tutup modal
-    const handleEvmConfirm = () => {
+    // Handle klik tombol EVM — STEP 2 (hanya aktif setelah Wander connect)
+    const handleEvmConnect = async () => {
+        setEvmError(null);
+        setIsConnectingEvm(true);
+        try {
+            await openWeb3Modal();
+            // Di mode "evm-only", langsung konfirmasi setelah connect.
+            // Di mode "both", biarkan modal tetap terbuka — user harus klik tombol "Continue"
+            // setelah keduanya terkoneksi (lihat handleBothConnected).
+            if (mode !== "both" && evmAddress) {
+                onEvmConnected?.(evmAddress);
+                onOpenChange(false);
+            }
+        } catch (err) {
+            setEvmError(err instanceof Error ? err.message : "Failed to connect EVM wallet");
+        } finally {
+            setIsConnectingEvm(false);
+        }
+    };
+
+    // Konfirmasi setelah keduanya connect — panggil onBothConnected (yg submit) bukan onEvmConnected
+    const handleBothConnected = () => {
         if (evmAddress) {
-            onEvmConnected?.(evmAddress);
+            onBothConnected?.(evmAddress);
             onOpenChange(false);
         }
     };
 
+    // Disconnect Wander — juga reset EVM lock chain kalau mode both
+    const handleWanderDisconnect = async () => {
+        try {
+            await disconnectWanderWallet();
+        } catch {
+            // ignore
+        }
+        setWanderAddress(null);
+        setWanderError(null);
+    };
+
+    // Disconnect EVM wallet
+    const handleEvmDisconnect = () => {
+        disconnectEvm();
+        setEvmError(null);
+    };
+
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-w-sm p-0 overflow-hidden rounded-2xl">
+            <DialogContent
+                className="max-w-sm p-0 overflow-hidden rounded-2xl"
+                onInteractOutside={(e) => e.preventDefault()}
+            >
                 <DialogHeader className="px-5 pt-5 pb-3">
                     <DialogTitle className="flex items-center gap-2 text-base">
                         <Wallet className="h-4 w-4 text-primary" />
@@ -163,105 +195,36 @@ export function MobileWalletModal({
                     </DialogTitle>
                     <DialogDescription className="text-xs leading-relaxed">
                         {mode === "both"
-                            ? "Connect both wallets to complete the hybrid payment. EVM wallet is used for the Bitxen smart contract, Wander for Arweave storage."
+                            ? "Connect Arweave wallet first, then your EVM wallet. Both are required for hybrid payment."
                             : mode === "evm-only"
                                 ? "Connect your EVM wallet (MetaMask, Trust Wallet, etc.) to interact with the Bitxen smart contract."
                                 : "Connect your Wander wallet to upload data to Arweave."}
                     </DialogDescription>
                 </DialogHeader>
 
-                <div className="px-4 pb-5 space-y-4">
-                    {/* ─── EVM WALLET — Web3Modal Button ─── */}
-                    {showEvm && (
-                        <div className="space-y-2">
-                            {mode === "both" && (
-                                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground px-1">
-                                    EVM Chains (BSC · ETH · Polygon · Base · Arbitrum)
-                                </p>
-                            )}
+                <div className="px-4 pb-5 space-y-3">
 
-                            {isEvmConnected && evmAddress ? (
-                                /* Sudah connect — tampilkan info dan tombol konfirmasi */
-                                <div className="rounded-xl border border-green-200 bg-green-50/50 dark:border-green-900/50 dark:bg-green-950/20 p-3.5">
-                                    <div className="flex items-center gap-2.5">
-                                        <CheckCircle2 className="h-5 w-5 text-green-500 flex-shrink-0" />
-                                        <div className="flex-1 min-w-0">
-                                            <p className="text-sm font-medium text-green-700 dark:text-green-400">
-                                                EVM Wallet Connected
-                                            </p>
-                                            <p className="text-xs font-mono text-muted-foreground truncate">
-                                                {evmAddress}
-                                            </p>
-                                        </div>
-                                        {mode !== "both" && (
-                                            <Button
-                                                size="sm"
-                                                variant="outline"
-                                                onClick={handleEvmConfirm}
-                                                className="flex-shrink-0 h-7 text-xs"
-                                            >
-                                                Use
-                                                <ArrowRight className="h-3 w-3 ml-1" />
-                                            </Button>
-                                        )}
-                                    </div>
-                                </div>
-                            ) : (
-                                /* Belum connect — tombol Web3Modal */
-                                <button
-                                    onClick={handleEvmConnect}
-                                    disabled={isConnectingEvm}
-                                    className={cn(
-                                        "w-full flex items-center gap-3 px-3.5 py-3.5 rounded-xl",
-                                        "border border-border bg-card",
-                                        "hover:bg-muted/60 hover:border-primary/40 transition-all",
-                                        "text-left disabled:opacity-60 disabled:cursor-not-allowed"
-                                    )}
-                                >
-                                    {/* Logo grid kecil mewakili banyak wallet */}
-                                    <div className="h-10 w-10 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 flex-shrink-0 flex items-center justify-center shadow-sm">
-                                        <Wallet className="h-5 w-5 text-white" />
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                        <p className="text-sm font-medium">
-                                            {isConnectingEvm ? "Opening…" : "Connect EVM Wallet"}
-                                        </p>
-                                        <p className="text-xs text-muted-foreground">
-                                            MetaMask · Trust · Coinbase · 500+ wallets
-                                        </p>
-                                    </div>
-                                    {isConnectingEvm ? (
-                                        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                                    ) : (
-                                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                                    )}
-                                </button>
-                            )}
-                        </div>
-                    )}
-
-                    {/* Divider */}
-                    {showEvm && showArweave && (
-                        <div className="flex items-center gap-3">
-                            <div className="flex-1 h-px bg-border" />
-                            <span className="text-[10px] text-muted-foreground uppercase tracking-widest">
-                                and
-                            </span>
-                            <div className="flex-1 h-px bg-border" />
-                        </div>
-                    )}
-
-                    {/* ─── ARWEAVE — Wander Wallet ─── */}
+                    {/* ─── STEP 1: ARWEAVE — Wander Wallet ─── */}
                     {showArweave && (
-                        <div className="space-y-2">
+                        <div className="space-y-1.5">
                             {mode === "both" && (
-                                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground px-1">
-                                    Arweave
-                                </p>
+                                <div className="flex items-center gap-2 px-1">
+                                    <span className={cn(
+                                        "flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold shrink-0",
+                                        wanderAddress
+                                            ? "bg-purple-500 text-white"
+                                            : "bg-muted text-muted-foreground border"
+                                    )}>
+                                        {wanderAddress ? <CheckCircle2 className="h-3 w-3" /> : "1"}
+                                    </span>
+                                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                                        Arweave Storage (Wander)
+                                    </p>
+                                </div>
                             )}
 
                             {wanderAddress ? (
-                                /* Sudah connect */
+                                /* Connected */
                                 <div className="rounded-xl border border-purple-200 bg-purple-50/50 dark:border-purple-900/50 dark:bg-purple-950/20 p-3.5">
                                     <div className="flex items-center gap-2.5">
                                         <CheckCircle2 className="h-5 w-5 text-purple-500 flex-shrink-0" />
@@ -270,13 +233,20 @@ export function MobileWalletModal({
                                                 Wander Connected
                                             </p>
                                             <p className="text-xs font-mono text-muted-foreground truncate">
-                                                {wanderAddress}
+                                                {wanderAddress ? `${wanderAddress.slice(0, 8)}............${wanderAddress.slice(-8)}` : ""}
                                             </p>
                                         </div>
+                                        <button
+                                            onClick={handleWanderDisconnect}
+                                            title="Disconnect Wander"
+                                            className="flex-shrink-0 p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                                        >
+                                            <LogOut className="h-3.5 w-3.5" />
+                                        </button>
                                     </div>
                                 </div>
                             ) : (
-                                /* Belum connect */
+                                /* Not connected */
                                 <button
                                     onClick={handleWanderConnect}
                                     disabled={isConnectingWander}
@@ -298,9 +268,7 @@ export function MobileWalletModal({
                                     </div>
                                     <div className="flex-1 min-w-0">
                                         <p className="text-sm font-medium">
-                                            {isConnectingWander
-                                                ? "Connecting…"
-                                                : "Connect Wander Wallet"}
+                                            {isConnectingWander ? "Connecting…" : "Connect Wander Wallet"}
                                         </p>
                                         <p className="text-xs text-muted-foreground">
                                             Arweave permanent storage
@@ -315,9 +283,123 @@ export function MobileWalletModal({
                             )}
 
                             {wanderError && (
-                                <p className="text-xs text-destructive text-center px-2 pt-1">
-                                    {wanderError}
-                                </p>
+                                <p className="text-xs text-destructive px-2 pt-0.5">{wanderError}</p>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Divider with step arrow */}
+                    {showEvm && showArweave && (
+                        <div className="flex items-center gap-3">
+                            <div className="flex-1 h-px bg-border" />
+                            <ArrowDown className={cn(
+                                "h-8 w-8 transition-colors border border-slate-200 dark:border-slate-800 rounded-full p-1",
+                                wanderAddress ? "text-primary" : "text-muted-foreground/40"
+                            )} />
+                            <div className="flex-1 h-px bg-border" />
+                        </div>
+                    )}
+
+                    {/* ─── STEP 2: EVM WALLET — Web3Modal Button ─── */}
+                    {showEvm && (
+                        <div className="space-y-1.5">
+                            {mode === "both" && (
+                                <div className="flex items-center gap-2 px-1">
+                                    <span className={cn(
+                                        "flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold shrink-0",
+                                        isEvmConnected && evmAddress
+                                            ? "bg-emerald-500 text-white"
+                                            : isEvmLocked
+                                                ? "bg-muted text-muted-foreground/40 border"
+                                                : "bg-muted text-muted-foreground border"
+                                    )}>
+                                        {isEvmConnected && evmAddress ? <CheckCircle2 className="h-3 w-3" /> : "2"}
+                                    </span>
+                                    <p className={cn(
+                                        "text-[10px] font-semibold uppercase tracking-widest",
+                                        isEvmLocked ? "text-muted-foreground/40" : "text-muted-foreground"
+                                    )}>
+                                        EVM Wallet · Bitxen Contract
+                                    </p>
+                                    {isEvmLocked && (
+                                        <span className="ml-auto text-[9px] text-muted-foreground/50 italic">
+                                            Connect Arweave first
+                                        </span>
+                                    )}
+                                </div>
+                            )}
+
+                            {isEvmConnected && evmAddress ? (
+                                /* Already connected */
+                                <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 dark:border-emerald-900/50 dark:bg-emerald-950/20 p-3.5">
+                                    <div className="flex items-center gap-2.5">
+                                        <CheckCircle2 className="h-5 w-5 text-emerald-500 flex-shrink-0" />
+                                        <div className="flex-1 min-w-0">
+                                            <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">
+                                                EVM Wallet Connected
+                                            </p>
+                                            <p className="text-xs font-mono text-muted-foreground truncate">
+                                                {evmAddress ? `${evmAddress.slice(0, 8)}............${evmAddress.slice(-8)}` : ""}
+                                            </p>
+                                        </div>
+                                        <button
+                                            onClick={handleEvmDisconnect}
+                                            title="Disconnect EVM Wallet"
+                                            className="flex-shrink-0 p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                                        >
+                                            <LogOut className="h-3.5 w-3.5" />
+                                        </button>
+                                        {mode !== "both" && (
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() => { onEvmConnected?.(evmAddress); onOpenChange(false); }}
+                                                className="flex-shrink-0 h-7 text-xs"
+                                            >
+                                                Use
+                                                <ArrowRight className="h-3 w-3 ml-1" />
+                                            </Button>
+                                        )}
+                                    </div>
+                                </div>
+                            ) : (
+                                /* Not connected */
+                                <button
+                                    onClick={handleEvmConnect}
+                                    disabled={isConnectingEvm || isEvmLocked}
+                                    className={cn(
+                                        "w-full flex items-center gap-3 px-3.5 py-3.5 rounded-xl transition-all text-left",
+                                        "border bg-card",
+                                        isEvmLocked
+                                            ? "border-border opacity-40 cursor-not-allowed"
+                                            : "border-border hover:bg-muted/60 hover:border-primary/40",
+                                        isConnectingEvm && "opacity-60 cursor-not-allowed"
+                                    )}
+                                >
+                                    <div className="h-10 w-10 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 flex-shrink-0 flex items-center justify-center shadow-sm">
+                                        <Wallet className="h-5 w-5 text-white" />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-sm font-medium">
+                                            {isConnectingEvm ? "Opening…" : "Connect EVM Wallet"}
+                                        </p>
+                                        <p className="text-xs text-muted-foreground">
+                                            MetaMask · Trust · Coinbase · 500+ wallets
+                                        </p>
+                                    </div>
+                                    {isConnectingEvm ? (
+                                        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                                    ) : (
+                                        <ChevronRight className={cn(
+                                            "h-4 w-4",
+                                            isEvmLocked ? "text-muted-foreground/30" : "text-muted-foreground"
+                                        )} />
+                                    )}
+                                </button>
+                            )}
+
+                            {evmError && (
+                                <p className="text-xs text-destructive px-2 pt-0.5">{evmError}</p>
                             )}
                         </div>
                     )}
@@ -325,11 +407,8 @@ export function MobileWalletModal({
                     {/* Konfirmasi setelah keduanya connect (mode both) */}
                     {mode === "both" && isEvmConnected && evmAddress && wanderAddress && (
                         <Button
-                            onClick={() => {
-                                onEvmConnected?.(evmAddress);
-                                onOpenChange(false);
-                            }}
-                            className="w-full"
+                            onClick={handleBothConnected}
+                            className="h-12 w-full bg-gradient-to-r from-purple-600 to-emerald-600 hover:from-purple-700 hover:to-emerald-700 mt-4"
                         >
                             <CheckCircle2 className="h-4 w-4" />
                             Both Wallets Connected — Continue
@@ -337,7 +416,7 @@ export function MobileWalletModal({
                     )}
 
                     {/* Info note */}
-                    <p className="text-[10px] text-muted-foreground text-center leading-relaxed px-2">
+                    <p className="text-[10px] text-muted-foreground text-center leading-relaxed px-2 pt-1">
                         Your private keys stay in your wallet at all times. Bitxen never
                         has access to your funds.
                     </p>
@@ -350,6 +429,8 @@ export function MobileWalletModal({
 // -------------------------------------------------------------------
 // MobileWalletButton — trigger button + modal sekaligus
 // -------------------------------------------------------------------
+
+
 
 interface MobileWalletButtonProps {
     label?: string;

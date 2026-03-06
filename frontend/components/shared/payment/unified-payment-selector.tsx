@@ -7,8 +7,9 @@ import { Loader2, Check, Globe, Link2, Coins, Shield } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { cn, isMobile } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { MobileWalletModal } from "@/components/shared/payment/mobile-wallet-modal";
+import { useDeviceDetect } from "@/hooks/use-device-detect";
 import {
   connectMetaMask,
   isMetaMaskInstalled,
@@ -65,12 +66,8 @@ export function UnifiedPaymentSelector({
   const [insufficientBalanceError, setInsufficientBalanceError] = useState<InsufficientBitxenError | null>(null);
 
   // Mobile wallet modal state
-  const [isMobileDevice, setIsMobileDevice] = useState(false);
+  const { isMobile: isMobileDevice } = useDeviceDetect();
   const [showMobileModal, setShowMobileModal] = useState(false);
-
-  useEffect(() => {
-    setIsMobileDevice(isMobile());
-  }, []);
 
   // Wallet connection states
   const [wanderAddress, setWanderAddress] = useState<string | null>(null);
@@ -114,6 +111,14 @@ export function UnifiedPaymentSelector({
     // Di mobile (browser standar), tampilkan Mobile Wallet Modal terlebih dahulu
     // agar user bisa memilih wallet app via deep link
     if (isMobileDevice) {
+      if (selectedMode === "hybrid" && wanderAddress && metaMaskAddress) {
+        await handleMobileEvmContinue(metaMaskAddress);
+        return;
+      }
+      if (selectedMode === "wander" && wanderAddress) {
+        await handleMobileWanderConnected(wanderAddress);
+        return;
+      }
       setShowMobileModal(true);
       return;
     }
@@ -180,9 +185,9 @@ export function UnifiedPaymentSelector({
    */
   const handleMobileWanderConnected = async (address: string) => {
     setWanderAddress(address);
-    setShowMobileModal(false);
 
     if (selectedMode === "wander") {
+      setShowMobileModal(false);
       setIsAwaitingSubmit(true);
       try {
         await onSubmit("wander");
@@ -192,18 +197,53 @@ export function UnifiedPaymentSelector({
         setIsAwaitingSubmit(false);
       }
     }
-    // Untuk mode hybrid, user juga perlu EVM wallet.
-    // Setelah Wander connect, instruksikan untuk buka EVM wallet via modal.
-    // Flow akan berlanjut setelah user kembali dari wallet app dan window.ethereum tersedia.
+    // Untuk mode hybrid, biarkan modal terbuka sampai EVM terkoneksi
   };
 
   /**
-   * Dipanggil setelah user memilih EVM wallet via Web3Modal di MobileWalletModal.
+   * Dipanggil saat EVM wallet terkoneksi via Web3Modal di MobileWalletModal.
+   * Hanya menyimpan address — modal tetap TERBUKA agar user bisa klik Continue.
    */
-  const handleMobileEvmSelected = (address: string) => {
+  const handleMobileEvmConnected = (address: string) => {
     setMetaMaskAddress(address);
+    setError(null);
+    // Jangan tutup modal — biarkan user melihat kedua wallet terkoneksi
+    // dan menekan tombol "Both Wallets Connected — Continue"
+  };
+
+  /**
+   * Dipanggil ketika user menekan tombol "Both Wallets Connected — Continue".
+   * Menutup modal dan memulai proses submit hybrid.
+   */
+  const handleMobileEvmContinue = async (address: string) => {
     setShowMobileModal(false);
     setError(null);
+
+    if (selectedMode === "hybrid") {
+      setIsConnecting(true);
+      setInsufficientBalanceError(null);
+      try {
+        // Cek BITXEN balance sebelum submit arweave, seperti di desktop
+        const fee = await calculateBitxenFee(selectedChain);
+        const balance = await getBitxenBalance(selectedChain, address);
+        if (balance < fee) {
+          throw new InsufficientBitxenError({ required: fee, balance, chainId: selectedChain });
+        }
+
+        setIsConnecting(false);
+        setIsAwaitingSubmit(true);
+        await onSubmit("hybrid", selectedChain);
+      } catch (err) {
+        if (err instanceof InsufficientBitxenError) {
+          setInsufficientBalanceError(err);
+        } else {
+          setError(err instanceof Error ? err.message : "Connection failed");
+        }
+      } finally {
+        setIsConnecting(false);
+        setIsAwaitingSubmit(false);
+      }
+    }
   };
 
   const isProcessing = isConnecting || isSubmitting || isAwaitingSubmit;
@@ -281,7 +321,8 @@ export function UnifiedPaymentSelector({
         onOpenChange={setShowMobileModal}
         mode={selectedMode === "wander" ? "arweave-only" : "both"}
         onWanderConnected={handleMobileWanderConnected}
-        onEvmConnected={handleMobileEvmSelected}
+        onEvmConnected={handleMobileEvmConnected}
+        onBothConnected={handleMobileEvmContinue}
       />
 
       <Dialog open={isArweaveUploadDialogOpen} onOpenChange={() => { }}>

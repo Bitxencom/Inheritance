@@ -532,6 +532,11 @@ export function VaultCreationWizard({
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
+          <div className="rounded-lg border px-4 py-3 text-sm border-red-200 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-100 mb-4">
+            <div className="flex-1">
+              <p>Failed to fetch</p>
+            </div>
+          </div>
           {TitleBlock}
           {StepContent}
         </DialogContent>

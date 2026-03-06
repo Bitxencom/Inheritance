@@ -745,35 +745,11 @@ export async function dispatchToArweave(
     //   };
     // }
 
-    const signedRaw = (await wallet.sign(transaction)) as unknown;
-    if (!signedRaw || typeof signedRaw !== "object") {
-      throw new Error("Wallet signature response is invalid");
-    }
-
-    const normalizeB64Url = (value: string) =>
-      value.trim().replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-
-    const signed = signedRaw as Record<string, unknown>;
-    const signedNormalized: Record<string, unknown> = { ...signed };
-    for (const key of ["id", "owner", "signature", "last_tx", "data_root"]) {
-      const v = signedNormalized[key];
-      if (typeof v === "string") {
-        signedNormalized[key] = normalizeB64Url(v);
-      }
-    }
-
-    const signedTx = arweave.transactions.fromRaw(signedNormalized);
-
-    (transaction as unknown as { last_tx: string }).last_tx = signedTx.last_tx;
-    transaction.reward = signedTx.reward || transaction.reward;
-    transaction.data_root = signedTx.data_root || transaction.data_root;
-    transaction.setSignature({
-      id: signedTx.id,
-      owner: signedTx.owner,
-      reward: signedTx.reward,
-      tags: signedTx.tags,
-      signature: signedTx.signature,
-    });
+    // wallet.sign() mutates the transaction object in-place (ArConnect/Wander behavior).
+    // We just call it and continue using the same `transaction` object.
+    // Do NOT rebuild the transaction from raw JSON — that would corrupt the chunk tree
+    // prepared by prepareChunks() and cause arweave.transactions.verify() to fail.
+    await wallet.sign(transaction);
 
     const txToPost = transaction;
 
@@ -817,7 +793,7 @@ export async function dispatchToArweave(
     onProgress?.(0);
 
     const relayBody = {
-      txRaw: txRawForResume ?? signedNormalized,
+      txRaw: txRawForResume,
       dataB64: baseRecord.payloadB64,
     };
 

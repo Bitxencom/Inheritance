@@ -263,3 +263,9 @@
   content: none !important;
   display: none !important;
 }
+
+/* Hide WanderConnect floating badge/button injected by the SDK.
+   We manage wallet state via our own MobileWalletModal UI. */
+#wanderConnectButtonHost {
+  display: none !important;
+}

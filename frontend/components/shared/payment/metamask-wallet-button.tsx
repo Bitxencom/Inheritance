@@ -5,7 +5,8 @@ import Image from "next/image";
 import { Loader2, ExternalLink, AlertCircle, Smartphone, Download, Coins } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { cn, isMobile } from "@/lib/utils";
+import { cn } from "@/lib/utils";
+import { useDeviceDetect } from "@/hooks/use-device-detect";
 import {
   connectMetaMask,
   isMetaMaskInstalled,
@@ -53,6 +54,7 @@ export function MetaMaskWalletButton({
 
   const chainConfig = CHAIN_CONFIG[selectedChain];
   const isInstalled = isMetaMaskInstalled();
+  const { isMobile: isMobileDevice } = useDeviceDetect();
 
   // Fetch registration fee when chain changes
   useEffect(() => {
@@ -299,7 +301,7 @@ export function MetaMaskWalletButton({
         </Button>
 
         {/* Mobile App Notice */}
-        {typeof window !== "undefined" && isMobile() && (
+        {isMobileDevice && (
           <div className="rounded-lg border bg-card p-4 text-card-foreground shadow-sm">
             <div className="flex items-start gap-3">
               <div className="rounded-full bg-primary/10 p-2 text-primary">
