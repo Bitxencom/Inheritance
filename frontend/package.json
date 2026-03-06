@@ -77,6 +77,6 @@
     "textlint-rule-common-misspellings": "^1.0.1",
     "textlint-rule-no-todo": "^2.0.1",
     "textlint-rule-write-good": "^2.0.0",
-    "typescript": "^5"
+    "typescript": "5.9.3"
   }
 }
