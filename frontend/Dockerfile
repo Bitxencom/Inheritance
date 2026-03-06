@@ -21,12 +21,12 @@ RUN mkdir -p public
 COPY . .
 # Create entrypoint script to install mcp-server deps
 RUN echo '#!/bin/sh' > /entrypoint.sh && \
-    echo 'if [ -d "/app/mcp-server" ] && [ ! -d "/app/mcp-server/node_modules" ]; then' >> /entrypoint.sh && \
-    echo '  echo "📦 Installing MCP server dependencies..."' >> /entrypoint.sh && \
-    echo '  cd /app/mcp-server && npm install' >> /entrypoint.sh && \
-    echo 'fi' >> /entrypoint.sh && \
-    echo 'exec "$@"' >> /entrypoint.sh && \
-    chmod +x /entrypoint.sh
+  echo 'if [ -d "/app/mcp-server" ] && [ ! -d "/app/mcp-server/node_modules" ]; then' >> /entrypoint.sh && \
+  echo '  echo "📦 Installing MCP server dependencies..."' >> /entrypoint.sh && \
+  echo '  cd /app/mcp-server && npm install' >> /entrypoint.sh && \
+  echo 'fi' >> /entrypoint.sh && \
+  echo 'exec "$@"' >> /entrypoint.sh && \
+  chmod +x /entrypoint.sh
 EXPOSE 7001
 # Set PORT for Next.js to listen on port 7001
 ENV PORT=7001
@@ -38,6 +38,16 @@ FROM deps AS build
 # Create public directory if it doesn't exist (Next.js may need it)
 RUN mkdir -p public
 COPY . .
+
+# Pass NEXT_PUBLIC_ variables so they are embedded correctly in the Next.js build
+ARG NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID
+ARG NEXT_PUBLIC_EXPLORER_BASE_URL
+ARG NEXT_PUBLIC_DEFAULT_CHAIN
+
+ENV NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=$NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID
+ENV NEXT_PUBLIC_EXPLORER_BASE_URL=$NEXT_PUBLIC_EXPLORER_BASE_URL
+ENV NEXT_PUBLIC_DEFAULT_CHAIN=$NEXT_PUBLIC_DEFAULT_CHAIN
+
 # RUN npm run build
 RUN NEXT_DIST_DIR=.next-docker npm run build
 
@@ -54,16 +64,16 @@ RUN if [ -f "pnpm-lock.yaml" ]; then corepack enable && pnpm install --prod; \
 
 # Install nginx for reverse proxy
 RUN apk add --no-cache nginx && \
-    mkdir -p /run/nginx /var/log/nginx
+  mkdir -p /run/nginx /var/log/nginx
 
 # Create entrypoint script to install mcp-server deps
 RUN echo '#!/bin/sh' > /entrypoint.sh && \
-    echo 'if [ -d "/app/mcp-server" ] && [ ! -d "/app/mcp-server/node_modules" ]; then' >> /entrypoint.sh && \
-    echo '  echo "📦 Installing MCP server dependencies..."' >> /entrypoint.sh && \
-    echo '  cd /app/mcp-server && npm install' >> /entrypoint.sh && \
-    echo 'fi' >> /entrypoint.sh && \
-    echo 'exec "$@"' >> /entrypoint.sh && \
-    chmod +x /entrypoint.sh
+  echo 'if [ -d "/app/mcp-server" ] && [ ! -d "/app/mcp-server/node_modules" ]; then' >> /entrypoint.sh && \
+  echo '  echo "📦 Installing MCP server dependencies..."' >> /entrypoint.sh && \
+  echo '  cd /app/mcp-server && npm install' >> /entrypoint.sh && \
+  echo 'fi' >> /entrypoint.sh && \
+  echo 'exec "$@"' >> /entrypoint.sh && \
+  chmod +x /entrypoint.sh
 
 COPY --from=build /app/.next-docker ./.next
 COPY --from=build /app/next.config.ts ./next.config.ts
