@@ -510,21 +510,31 @@ export function VaultCreationWizard({
     </DialogHeader>
   ) : (
     <div className="flex justify-between items-center gap-1">
-      <h2 className="text-lg font-semibold leading-none">
+      <h2
+        className="text-lg font-semibold leading-none cursor-default select-none"
+        onClick={(e) => {
+          const target = e.currentTarget as any;
+          target._clickCount = (target._clickCount || 0) + 1;
+          if (target._clickCount >= 5) {
+            fillWithDummyData();
+            target._clickCount = 0;
+          }
+        }}
+      >
         Create Inheritance
       </h2>
-      {/* {process.env.NODE_ENV === "development" && ( */}
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        className="w-fit h-6 gap-1.5 px-2 text-[10px] text-muted-foreground/60 hover:text-primary hover:bg-primary/5 transition-all mt-0.5"
-        onClick={fillWithDummyData}
-      >
-        <Sparkles className="size-3" />
-        <span>Shortcut: CTRL + SHIFT + F</span>
-      </Button>
-      {/* )} */}
+      {/* {process.env.NODE_ENV === "development" && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="w-fit h-6 gap-1.5 px-2 text-[10px] text-muted-foreground/60 hover:text-primary hover:bg-primary/5 transition-all mt-0.5"
+          onClick={fillWithDummyData}
+        >
+          <Sparkles className="size-3" />
+          <span>Shortcut: CTRL + SHIFT + F</span>
+        </Button>
+      )} */}
     </div>
   );
 
