@@ -102,10 +102,11 @@ export function MobileWalletModal({
     const { open: openWeb3Modal, close: closeWeb3Modal } = useWeb3Modal();
     const { open: isWeb3ModalOpen } = useWeb3ModalState();
     const { disconnect: disconnectEvm } = useDisconnect();
-    const { address: evmAddress, isConnected: isEvmConnected } = useAccount();
+    const { address: evmAddress, isConnected: isEvmConnected, isReconnecting: isEvmReconnecting } = useAccount();
 
     const [isConnectingWander, setIsConnectingWander] = useState(false);
     const [isConnectingEvm, setIsConnectingEvm] = useState(false);
+    const [isInitializingWander, setIsInitializingWander] = useState(false);
     const [wanderAddress, setWanderAddress] = useState<string | null>(null);
     const [wanderError, setWanderError] = useState<string | null>(null);
     const [evmError, setEvmError] = useState<string | null>(null);
@@ -120,21 +121,35 @@ export function MobileWalletModal({
     // Dalam mode "both", EVM hanya aktif setelah Wander terkoneksi
     const isEvmLocked = mode === "both" && !wanderAddress;
 
+    const isInitializing = isInitializingWander || (showEvm && isEvmReconnecting);
+
     // ----------------------------------------------------------------
     // Auto-Recovery Session (Wander)
     // ----------------------------------------------------------------
     // Jika modal dibuka (atau saat mount), kita cek form storage apakah user
     // sudah pernah connect sebelumnya. Jika ya, populate alamatnya.
     useEffect(() => {
-        if (open && showArweave && !wanderAddress) {
-            getConnectedAddress().then(addr => {
-                if (addr) {
-                    setWanderAddress(addr);
-                    onWanderConnected?.(addr);
-                }
-            }).catch(() => {
-                // Ignore failure during auto-recovery 
-            });
+        if (open) {
+            if (showArweave && !wanderAddress) {
+                let mounted = true;
+                setIsInitializingWander(true);
+                getConnectedAddress().then(addr => {
+                    if (mounted) {
+                        if (addr) {
+                            setWanderAddress(addr);
+                            onWanderConnected?.(addr);
+                        }
+                        setIsInitializingWander(false);
+                    }
+                }).catch(() => {
+                    if (mounted) setIsInitializingWander(false);
+                    // Ignore failure during auto-recovery 
+                });
+                return () => { mounted = false; };
+            }
+        } else {
+            // Reset state saat modal ditutup
+            setIsInitializingWander(false);
         }
     }, [open, showArweave, wanderAddress, onWanderConnected]);
 
@@ -289,243 +304,271 @@ export function MobileWalletModal({
     };
 
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-w-sm p-0 overflow-hidden rounded-2xl">
-                <DialogHeader className="px-5 pt-5 pb-3">
-                    <DialogTitle className="flex items-center gap-2 text-base">
-                        <Wallet className="h-4 w-4 text-primary" />
-                        Connect Wallet
-                    </DialogTitle>
-                    <DialogDescription className="text-xs leading-relaxed">
-                        {mode === "both"
-                            ? "Connect Arweave wallet first, then your EVM wallet. Both are required for hybrid payment."
-                            : mode === "evm-only"
-                                ? "Connect your EVM wallet (MetaMask, Trust Wallet, etc.) to interact with the Bitxen smart contract."
-                                : "Connect your Wander wallet to upload data to Arweave."}
-                    </DialogDescription>
-                </DialogHeader>
+        <>
+            <Dialog open={open} onOpenChange={onOpenChange}>
+                <DialogContent className="max-w-sm p-0 overflow-hidden rounded-2xl">
+                    <DialogHeader className="px-5 pt-5 pb-3">
+                        <DialogTitle className="flex items-center gap-2 text-base">
+                            <Wallet className="h-4 w-4 text-primary" />
+                            Connect Wallet
+                        </DialogTitle>
+                        <DialogDescription className="text-xs leading-relaxed">
+                            {mode === "both"
+                                ? "Connect Arweave wallet first, then your EVM wallet. Both are required for hybrid payment."
+                                : mode === "evm-only"
+                                    ? "Connect your EVM wallet (MetaMask, Trust Wallet, etc.) to interact with the Bitxen smart contract."
+                                    : "Connect your Wander wallet to upload data to Arweave."}
+                        </DialogDescription>
+                    </DialogHeader>
 
-                <div className="px-4 pb-5 space-y-3">
+                    <div className="px-4 pb-5 space-y-3">
+                        {isInitializing ? (
+                            <div className="flex flex-col items-center justify-center py-10 space-y-3">
+                                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                                <p className="text-sm font-medium text-muted-foreground">Checking wallet connection...</p>
+                            </div>
+                        ) : (
+                            <>
+                                {/* ─── STEP 1: ARWEAVE — Wander Wallet ─── */}
+                                {showArweave && (
+                                    <div className="space-y-1.5">
+                                        {mode === "both" && (
+                                            <div className="flex items-center gap-2 px-1">
+                                                <span className={cn(
+                                                    "flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold shrink-0",
+                                                    wanderAddress
+                                                        ? "bg-purple-500 text-white"
+                                                        : "bg-muted text-muted-foreground border"
+                                                )}>
+                                                    {wanderAddress ? <CheckCircle2 className="h-3 w-3" /> : "1"}
+                                                </span>
+                                                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                                                    Arweave Storage (Wander)
+                                                </p>
+                                            </div>
+                                        )}
 
-                    {/* ─── STEP 1: ARWEAVE — Wander Wallet ─── */}
-                    {showArweave && (
-                        <div className="space-y-1.5">
-                            {mode === "both" && (
-                                <div className="flex items-center gap-2 px-1">
-                                    <span className={cn(
-                                        "flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold shrink-0",
-                                        wanderAddress
-                                            ? "bg-purple-500 text-white"
-                                            : "bg-muted text-muted-foreground border"
-                                    )}>
-                                        {wanderAddress ? <CheckCircle2 className="h-3 w-3" /> : "1"}
-                                    </span>
-                                    <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-                                        Arweave Storage (Wander)
-                                    </p>
-                                </div>
-                            )}
-
-                            {wanderAddress ? (
-                                /* Connected */
-                                <div className="rounded-xl border border-purple-200 bg-purple-50/50 dark:border-purple-900/50 dark:bg-purple-950/20 p-3.5">
-                                    <div className="flex items-center gap-2.5">
-                                        <CheckCircle2 className="h-5 w-5 text-purple-500 flex-shrink-0" />
-                                        <div className="flex-1 min-w-0">
-                                            <p className="text-sm font-medium text-purple-700 dark:text-purple-400">
-                                                Wander Connected
-                                            </p>
-                                            <p className="text-xs font-mono text-muted-foreground truncate">
-                                                {`${wanderAddress.slice(0, 4)}......${wanderAddress.slice(-4)}`}
-                                            </p>
-                                        </div>
-                                        <button
-                                            onClick={handleWanderDisconnect}
-                                            title="Disconnect Wander"
-                                            className="flex-shrink-0 p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                                        >
-                                            <LogOut className="h-3.5 w-3.5" />
-                                        </button>
-                                    </div>
-                                </div>
-                            ) : (
-                                /* Not connected */
-                                <button
-                                    onClick={handleWanderConnect}
-                                    disabled={isConnectingWander}
-                                    className={cn(
-                                        "w-full flex items-center gap-3 px-3.5 py-3.5 rounded-xl",
-                                        "border border-purple-200 bg-purple-50/30 dark:border-purple-900/50 dark:bg-purple-950/10",
-                                        "hover:bg-purple-100/60 hover:border-purple-400 dark:hover:bg-purple-900/30 transition-all",
-                                        "text-left disabled:opacity-60 disabled:cursor-not-allowed"
-                                    )}
-                                >
-                                    <div className="h-10 w-10 rounded-full bg-white dark:bg-purple-900 flex-shrink-0 p-2 shadow-sm">
-                                        <Image
-                                            src={WanderLogo}
-                                            alt="Wander Wallet"
-                                            width={40}
-                                            height={40}
-                                            className="h-full w-full object-contain"
-                                        />
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                        <p className="text-sm font-medium">
-                                            {isConnectingWander ? "Connecting…" : "Connect Wander Wallet"}
-                                        </p>
-                                        <p className="text-xs text-muted-foreground">
-                                            Arweave permanent storage
-                                        </p>
-                                    </div>
-                                    {isConnectingWander ? (
-                                        <Loader2 className="h-4 w-4 animate-spin text-purple-500" />
-                                    ) : (
-                                        <ChevronRight className="h-4 w-4 text-purple-400" />
-                                    )}
-                                </button>
-                            )}
-
-                            {wanderError && (
-                                <p className="text-xs text-destructive px-2 pt-0.5">{wanderError}</p>
-                            )}
-                        </div>
-                    )}
-
-                    {/* Divider with step arrow */}
-                    {showEvm && showArweave && (
-                        <div className="flex items-center gap-3">
-                            <div className="flex-1 h-px bg-border" />
-                            <ArrowDown className={cn(
-                                "h-8 w-8 transition-colors border border-slate-200 dark:border-slate-800 rounded-full p-1",
-                                wanderAddress ? "text-primary" : "text-muted-foreground/40"
-                            )} />
-                            <div className="flex-1 h-px bg-border" />
-                        </div>
-                    )}
-
-                    {/* ─── STEP 2: EVM WALLET — Web3Modal Button ─── */}
-                    {showEvm && (
-                        <div className="space-y-1.5">
-                            {mode === "both" && (
-                                <div className="flex items-center gap-2 px-1">
-                                    <span className={cn(
-                                        "flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold shrink-0",
-                                        isEvmConnected && evmAddress
-                                            ? "bg-emerald-500 text-white"
-                                            : isEvmLocked
-                                                ? "bg-muted text-muted-foreground/40 border"
-                                                : "bg-muted text-muted-foreground border"
-                                    )}>
-                                        {isEvmConnected && evmAddress ? <CheckCircle2 className="h-3 w-3" /> : "2"}
-                                    </span>
-                                    <p className={cn(
-                                        "text-[10px] font-semibold uppercase tracking-widest",
-                                        isEvmLocked ? "text-muted-foreground/40" : "text-muted-foreground"
-                                    )}>
-                                        EVM Wallet · Bitxen Contract
-                                    </p>
-                                    {isEvmLocked && (
-                                        <span className="ml-auto text-[9px] text-muted-foreground/50 italic">
-                                            Connect Arweave first
-                                        </span>
-                                    )}
-                                </div>
-                            )}
-
-                            {isEvmConnected && evmAddress ? (
-                                /* Already connected */
-                                <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 dark:border-emerald-900/50 dark:bg-emerald-950/20 p-3.5">
-                                    <div className="flex items-center gap-2.5">
-                                        <CheckCircle2 className="h-5 w-5 text-emerald-500 flex-shrink-0" />
-                                        <div className="flex-1 min-w-0">
-                                            <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">
-                                                EVM Wallet Connected
-                                            </p>
-                                            <p className="text-xs font-mono text-muted-foreground truncate">
-                                                {`${evmAddress.slice(0, 4)}......${evmAddress.slice(-4)}`}
-                                            </p>
-                                        </div>
-                                        <button
-                                            onClick={handleEvmDisconnect}
-                                            title="Disconnect EVM Wallet"
-                                            className="flex-shrink-0 p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                                        >
-                                            <LogOut className="h-3.5 w-3.5" />
-                                        </button>
-                                        {mode !== "both" && (
-                                            <Button
-                                                size="sm"
-                                                variant="outline"
-                                                onClick={() => { onEvmConnected?.(evmAddress); onOpenChange(false); }}
-                                                className="flex-shrink-0 h-7 text-xs"
+                                        {wanderAddress ? (
+                                            /* Connected */
+                                            <div className="rounded-xl border border-purple-200 bg-purple-50/50 dark:border-purple-900/50 dark:bg-purple-950/20 p-3.5">
+                                                <div className="flex items-center gap-2.5">
+                                                    <CheckCircle2 className="h-5 w-5 text-purple-500 flex-shrink-0" />
+                                                    <div className="flex-1 min-w-0">
+                                                        <p className="text-sm font-medium text-purple-700 dark:text-purple-400">
+                                                            Wander Connected
+                                                        </p>
+                                                        <p className="text-xs font-mono text-muted-foreground truncate">
+                                                            {`${wanderAddress.slice(0, 4)}......${wanderAddress.slice(-4)}`}
+                                                        </p>
+                                                    </div>
+                                                    <button
+                                                        onClick={handleWanderDisconnect}
+                                                        title="Disconnect Wander"
+                                                        className="flex-shrink-0 p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                                                    >
+                                                        <LogOut className="h-3.5 w-3.5" />
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            /* Not connected */
+                                            <button
+                                                onClick={handleWanderConnect}
+                                                disabled={isConnectingWander}
+                                                className={cn(
+                                                    "w-full flex items-center gap-3 px-3.5 py-3.5 rounded-xl",
+                                                    "border border-purple-200 bg-purple-50/30 dark:border-purple-900/50 dark:bg-purple-950/10",
+                                                    "hover:bg-purple-100/60 hover:border-purple-400 dark:hover:bg-purple-900/30 transition-all",
+                                                    "text-left disabled:opacity-60 disabled:cursor-not-allowed"
+                                                )}
                                             >
-                                                Use
-                                                <ArrowRight className="h-3 w-3 ml-1" />
-                                            </Button>
+                                                <div className="h-10 w-10 rounded-full bg-white dark:bg-purple-900 flex-shrink-0 p-2 shadow-sm">
+                                                    <Image
+                                                        src={WanderLogo}
+                                                        alt="Wander Wallet"
+                                                        width={40}
+                                                        height={40}
+                                                        className="h-full w-full object-contain"
+                                                    />
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                    <p className="text-sm font-medium">
+                                                        {isConnectingWander ? "Connecting…" : "Connect Wander Wallet"}
+                                                    </p>
+                                                    <p className="text-xs text-muted-foreground">
+                                                        Arweave permanent storage
+                                                    </p>
+                                                </div>
+                                                {isConnectingWander ? (
+                                                    <Loader2 className="h-4 w-4 animate-spin text-purple-500" />
+                                                ) : (
+                                                    <ChevronRight className="h-4 w-4 text-purple-400" />
+                                                )}
+                                            </button>
+                                        )}
+
+                                        {wanderError && (
+                                            <p className="text-xs text-destructive px-2 pt-0.5">{wanderError}</p>
                                         )}
                                     </div>
-                                </div>
-                            ) : (
-                                /* Not connected */
-                                <button
-                                    onClick={handleEvmConnect}
-                                    disabled={isConnectingEvm || isEvmLocked}
-                                    className={cn(
-                                        "w-full flex items-center gap-3 px-3.5 py-3.5 rounded-xl transition-all text-left",
-                                        "border bg-card",
-                                        isEvmLocked
-                                            ? "border-border opacity-40 cursor-not-allowed"
-                                            : "border-border hover:bg-muted/60 hover:border-primary/40",
-                                        isConnectingEvm && "opacity-60 cursor-not-allowed"
-                                    )}
-                                >
-                                    <div className="h-10 w-10 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 flex-shrink-0 flex items-center justify-center shadow-sm">
-                                        <Wallet className="h-5 w-5 text-white" />
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                        <p className="text-sm font-medium">
-                                            {isConnectingEvm ? "Opening…" : "Connect EVM Wallet"}
-                                        </p>
-                                        <p className="text-xs text-muted-foreground">
-                                            MetaMask · Trust · Coinbase · 500+ wallets
-                                        </p>
-                                    </div>
-                                    {isConnectingEvm ? (
-                                        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                                    ) : (
-                                        <ChevronRight className={cn(
-                                            "h-4 w-4",
-                                            isEvmLocked ? "text-muted-foreground/30" : "text-muted-foreground"
+                                )}
+
+                                {/* Divider with step arrow */}
+                                {showEvm && showArweave && (
+                                    <div className="flex items-center gap-3">
+                                        <div className="flex-1 h-px bg-border" />
+                                        <ArrowDown className={cn(
+                                            "h-8 w-8 transition-colors border border-slate-200 dark:border-slate-800 rounded-full p-1",
+                                            wanderAddress ? "text-primary" : "text-muted-foreground/40"
                                         )} />
-                                    )}
-                                </button>
-                            )}
+                                        <div className="flex-1 h-px bg-border" />
+                                    </div>
+                                )}
 
-                            {evmError && (
-                                <p className="text-xs text-destructive px-2 pt-0.5">{evmError}</p>
-                            )}
+                                {/* ─── STEP 2: EVM WALLET — Web3Modal Button ─── */}
+                                {showEvm && (
+                                    <div className="space-y-1.5">
+                                        {mode === "both" && (
+                                            <div className="flex items-center gap-2 px-1">
+                                                <span className={cn(
+                                                    "flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold shrink-0",
+                                                    isEvmConnected && evmAddress
+                                                        ? "bg-emerald-500 text-white"
+                                                        : isEvmLocked
+                                                            ? "bg-muted text-muted-foreground/40 border"
+                                                            : "bg-muted text-muted-foreground border"
+                                                )}>
+                                                    {isEvmConnected && evmAddress ? <CheckCircle2 className="h-3 w-3" /> : "2"}
+                                                </span>
+                                                <p className={cn(
+                                                    "text-[10px] font-semibold uppercase tracking-widest",
+                                                    isEvmLocked ? "text-muted-foreground/40" : "text-muted-foreground"
+                                                )}>
+                                                    EVM Wallet · Bitxen Contract
+                                                </p>
+                                                {isEvmLocked && (
+                                                    <span className="ml-auto text-[9px] text-muted-foreground/50 italic">
+                                                        Connect Arweave first
+                                                    </span>
+                                                )}
+                                            </div>
+                                        )}
+
+                                        {isEvmConnected && evmAddress ? (
+                                            /* Already connected */
+                                            <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 dark:border-emerald-900/50 dark:bg-emerald-950/20 p-3.5">
+                                                <div className="flex items-center gap-2.5">
+                                                    <CheckCircle2 className="h-5 w-5 text-emerald-500 flex-shrink-0" />
+                                                    <div className="flex-1 min-w-0">
+                                                        <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">
+                                                            EVM Wallet Connected
+                                                        </p>
+                                                        <p className="text-xs font-mono text-muted-foreground truncate">
+                                                            {`${evmAddress.slice(0, 4)}......${evmAddress.slice(-4)}`}
+                                                        </p>
+                                                    </div>
+                                                    <button
+                                                        onClick={handleEvmDisconnect}
+                                                        title="Disconnect EVM Wallet"
+                                                        className="flex-shrink-0 p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                                                    >
+                                                        <LogOut className="h-3.5 w-3.5" />
+                                                    </button>
+                                                    {mode !== "both" && (
+                                                        <Button
+                                                            size="sm"
+                                                            variant="outline"
+                                                            onClick={() => { onEvmConnected?.(evmAddress); onOpenChange(false); }}
+                                                            className="flex-shrink-0 h-7 text-xs"
+                                                        >
+                                                            Use
+                                                            <ArrowRight className="h-3 w-3 ml-1" />
+                                                        </Button>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            /* Not connected */
+                                            <button
+                                                onClick={handleEvmConnect}
+                                                disabled={isConnectingEvm || isEvmLocked}
+                                                className={cn(
+                                                    "w-full flex items-center gap-3 px-3.5 py-3.5 rounded-xl transition-all text-left",
+                                                    "border bg-card",
+                                                    isEvmLocked
+                                                        ? "border-border opacity-40 cursor-not-allowed"
+                                                        : "border-border hover:bg-muted/60 hover:border-primary/40",
+                                                    isConnectingEvm && "opacity-60 cursor-not-allowed"
+                                                )}
+                                            >
+                                                <div className="h-10 w-10 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 flex-shrink-0 flex items-center justify-center shadow-sm">
+                                                    <Wallet className="h-5 w-5 text-white" />
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                    <p className="text-sm font-medium">
+                                                        {isConnectingEvm ? "Opening…" : "Connect EVM Wallet"}
+                                                    </p>
+                                                    <p className="text-xs text-muted-foreground">
+                                                        MetaMask · Trust · Coinbase · 500+ wallets
+                                                    </p>
+                                                </div>
+                                                {isConnectingEvm ? (
+                                                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                                                ) : (
+                                                    <ChevronRight className={cn(
+                                                        "h-4 w-4",
+                                                        isEvmLocked ? "text-muted-foreground/30" : "text-muted-foreground"
+                                                    )} />
+                                                )}
+                                            </button>
+                                        )}
+
+                                        {evmError && (
+                                            <p className="text-xs text-destructive px-2 pt-0.5">{evmError}</p>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* Konfirmasi setelah keduanya connect (mode both) */}
+                                {mode === "both" && isEvmConnected && evmAddress && wanderAddress && (
+                                    <Button
+                                        onClick={handleBothConnected}
+                                        className="h-12 w-full bg-gradient-to-r from-purple-600 to-emerald-600 hover:from-purple-700 hover:to-emerald-700 mt-4"
+                                    >
+                                        <CheckCircle2 className="h-4 w-4" />
+                                        Both Wallets Connected — Continue
+                                    </Button>
+                                )}
+
+                                {/* Info note */}
+                                <p className="text-[10px] text-muted-foreground text-center leading-relaxed px-2 pt-1">
+                                    Your private keys stay in your wallet at all times. Bitxen never
+                                    has access to your funds.
+                                </p>
+                            </>
+                        )}
+                    </div>
+                </DialogContent>
+            </Dialog>
+
+            {/* OVERLAY SPINNER KETIKA POPUP WANDER BELUM MUNCUL */}
+            {isConnectingWander && !open && (
+                <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-white animate-in fade-in duration-200">
+                    <div className="flex flex-col justify-center items-center gap-4 bg-card p-6 rounded-2xl shadow-xl border border-border outline-none w-full h-full">
+                        <div className="relative flex items-center justify-center w-12 h-12">
+                            <span className="absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-20 animate-ping"></span>
+                            <div className="relative flex items-center justify-center w-12 h-12 rounded-full bg-purple-100 dark:bg-purple-900/30">
+                                <Loader2 className="h-6 w-6 animate-spin text-purple-600 dark:text-purple-400" />
+                            </div>
                         </div>
-                    )}
-
-                    {/* Konfirmasi setelah keduanya connect (mode both) */}
-                    {mode === "both" && isEvmConnected && evmAddress && wanderAddress && (
-                        <Button
-                            onClick={handleBothConnected}
-                            className="h-12 w-full bg-gradient-to-r from-purple-600 to-emerald-600 hover:from-purple-700 hover:to-emerald-700 mt-4"
-                        >
-                            <CheckCircle2 className="h-4 w-4" />
-                            Both Wallets Connected — Continue
-                        </Button>
-                    )}
-
-                    {/* Info note */}
-                    <p className="text-[10px] text-muted-foreground text-center leading-relaxed px-2 pt-1">
-                        Your private keys stay in your wallet at all times. Bitxen never
-                        has access to your funds.
-                    </p>
+                        <div className="text-center space-y-1">
+                            <h3 className="font-semibold text-foreground tracking-tight">Preparing...</h3>
+                            <p className="text-xs text-muted-foreground">Please wait a moment</p>
+                        </div>
+                    </div>
                 </div>
-            </DialogContent>
-        </Dialog>
+            )}
+        </>
     );
 }
 

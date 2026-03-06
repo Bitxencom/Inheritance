@@ -218,31 +218,6 @@ export async function initializeWanderConnect(): Promise<string> {
     });
   }
 
-  // Force open UI immediately to trigger sign-in popup
-  const tryOpen = () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if (wanderConnectInstance && typeof (wanderConnectInstance as any).open === 'function') {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (wanderConnectInstance as any).open();
-        return true;
-      } catch (e) {
-        console.warn('Failed to auto-open Wander Connect UI:', e);
-        return false;
-      }
-    }
-    return false;
-  };
-
-  if (!tryOpen()) {
-    // Retry a few times if immediate open fails
-    let retries = 0;
-    const interval = setInterval(() => {
-      if (tryOpen() || retries > 5) clearInterval(interval);
-      retries++;
-    }, 500);
-  }
-
   // Wait for wallet loaded event — dengan cancel detection
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -263,10 +238,8 @@ export async function initializeWanderConnect(): Promise<string> {
       finish(() => reject(new Error('Wander Connect initialization timed out. Please try again.')));
     }, 5 * 60 * 1000);
 
-    // Polling `isOpen` pada wanderConnectInstance.
-    // Wander menutup popup dengan menyembunyikan elemen (CSS class removal),
-    // bukan menghapusnya dari DOM — sehingga MutationObserver tidak efektif.
-    // Setelah 600ms (beri waktu SDK inject + render), polling dimulai:
+    // Cek apakah dialog ditutup user (cancelled)
+    // Walaupun Promise dari wallet.connect() hang, kita bs detect via getter isOpen:
     //   1. Tunggu isOpen === true  (konfirmasi popup benar-benar terbuka)
     //   2. Jika lalu jadi false    (user tutup X)  → reject → dialog reopen
     setTimeout(() => {
@@ -298,16 +271,47 @@ export async function initializeWanderConnect(): Promise<string> {
           return;
         }
 
-        // connect() menampilkan dialog izin di dalam iframe Wander
-        await wallet.connect(WANDER_CONFIG.permissions, WANDER_CONFIG.appInfo);
+        console.log('[Wander Wallet] Calling wallet.connect()...');
+        // wallet.connect() mengirim pesan ke iframe SDK dengan hasNewConnectRequest=true.
+        // Karena instance selalu fresh di mobile (di-destroy sebelumnya),
+        // SDK akan otomatis memanggil _open("embedded_request") → halaman konfirmasi.
+        const connectPromise = wallet.connect(WANDER_CONFIG.permissions, WANDER_CONFIG.appInfo);
 
-        const address = await wallet.getActiveAddress();
+        // Tambahkan fallback timeout 3 detik untuk mobile jika SDK gagal auto-open.
+        // Terkadang saat fresh instance, pesannya terlalu cepat sebelum iframe siap,
+        // sehingga SDK tidak pernah auto-membuka panel.
+        const isMobile = typeof navigator !== 'undefined' && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+        if (isMobile) {
+          await new Promise<void>((res) => {
+            let elapsed = 0;
+            const check = setInterval(() => {
+              elapsed += 100;
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const sdk = wanderConnectInstance as any;
+
+              if (sdk?.isOpen) {
+                console.log('[Wander Wallet] SDK auto-opened successfully.');
+                clearInterval(check);
+                res();
+              } else if (elapsed > 3000) {
+                console.warn('[Wander Wallet] SDK failed to auto-open after 3s. Applying fallback .open().');
+                if (typeof sdk?.open === 'function') {
+                  try { sdk.open(); } catch (e) { /* ignore */ }
+                }
+                clearInterval(check);
+                res();
+              }
+            }, 100);
+          });
+        }
+
+        await connectPromise;
+        console.log('[Wander Wallet] wallet.connect() resolved.'); const address = await wallet.getActiveAddress();
         if (address) {
           currentConnectionMode = 'connect';
 
-          // Tutup popup Wander setelah berhasil connect
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          if (wanderConnectInstance && typeof (wanderConnectInstance as any).close === 'function') {
+          // Close UI if it's still open (sometimes hanging when auto-approved)
+          if (wanderConnectInstance) {
             try {
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               (wanderConnectInstance as any).close();
@@ -325,8 +329,13 @@ export async function initializeWanderConnect(): Promise<string> {
       }
     };
 
-    if (getArweaveWallet()) {
-      // Jika wallet sudah di-inject (misal pada retries/attempt ke-2),
+    // Cek apakah extension atau instance SDK yang sudah ready
+    const isExtension = getArweaveWallet() && !wanderConnectInstance;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sdkReady = wanderConnectInstance && (wanderConnectInstance as any).isWalletReady;
+
+    if (isExtension || sdkReady) {
+      // Jika wallet sudah siap (extension native, ATAU SDK iframe sudah terisi),
       // event 'arweaveWalletLoaded' tidak akan ter-dispatch lagi.
       // Maka kita langsung eksekusi handler-nya:
       handleWalletLoaded();
@@ -351,6 +360,22 @@ export async function destroyWanderConnect(): Promise<void> {
     }
     wanderConnectInstance = null;
     currentConnectionMode = 'none';
+
+    // PENTING: Jika kita menghancurkan instance SDK (misalnya karena kita butuh fresh state di mobile),
+    // kita HARUS menghapus `window.arweaveWallet` yang di-inject oleh SDK sebelumnya.
+    // Alasannya: konstruktor WanderConnect SDK memiliki bug/fitur dimana jika `window.arweaveWallet`
+    // sudah ada (dari instance lama), ia TIDAK akan me-re-inject API, sehingga metode wallet.connect()
+    // akan mencoba mengirim postMessage ke Iframe yang sudah dihancurkan (hang/dead).
+    if (typeof window !== 'undefined' && 'arweaveWallet' in window) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        delete (window as any).arweaveWallet;
+      } catch (e) {
+        // Fallback jika tidak bisa di-delete
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (window as any).arweaveWallet = undefined;
+      }
+    }
   }
 }
 
@@ -366,9 +391,26 @@ export async function connectWanderWallet(): Promise<string> {
   // saat iframe load pertama, sehingga cek itu akan selalu true setelah attempt
   // pertama — menyebabkan attempt ke-2 masuk ke path extension yg salah (hang).
   if (wanderConnectInstance) {
-    const address = await initializeWanderConnect();
-    if (typeof localStorage !== 'undefined') localStorage.setItem(WANDER_STORAGE_KEY, address);
-    return address;
+    // Pada mobile, silentlyInitializeWanderConnect() (dari auto-recovery) membuat
+    // instance dengan state internal (authInfo, openReason, dll) yang terkontaminasi.
+    // Akibatnya, wallet.connect() di dalam initializeWanderConnect() langsung resolve
+    // tanpa memunculkan halaman konfirmasi — user malah melihat dashboard.
+    // Solusi: destroy instance lama agar initializeWanderConnect() buat fresh instance.
+    const isMobile = typeof navigator !== 'undefined' && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+    if (isMobile) {
+      // Destroy staled instance, then fall through to re-initialize below
+      // but we MUST bypass the extension check because window.arweaveWallet 
+      // is still globally defined by the now-dead SDK.
+      await destroyWanderConnect();
+
+      const address = await initializeWanderConnect();
+      if (typeof localStorage !== 'undefined') localStorage.setItem(WANDER_STORAGE_KEY, address);
+      return address;
+    } else {
+      const address = await initializeWanderConnect();
+      if (typeof localStorage !== 'undefined') localStorage.setItem(WANDER_STORAGE_KEY, address);
+      return address;
+    }
   }
 
   // Pertama kali: jika native extension tersedia, gunakan extension

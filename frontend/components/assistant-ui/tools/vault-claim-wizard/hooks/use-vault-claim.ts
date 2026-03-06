@@ -865,18 +865,18 @@ export function useVaultClaim({
         let resolvedContractAddress: string | null = null;
 
         // Source 1: localVault
-        if (
-          typeof localVault?.blockchainChain === "string" &&
-          typeof localVault?.contractDataId === "string" &&
-          localVault.contractDataId.startsWith("0x")
-        ) {
-          resolvedChainKey = localVault.blockchainChain as ChainId;
-          resolvedContractDataId = localVault.contractDataId;
-          resolvedContractAddress =
-            typeof localVault.contractAddress === "string" && localVault.contractAddress.trim().length > 0
-              ? localVault.contractAddress.trim()
-              : null;
-        }
+        // if (
+        //   typeof localVault?.blockchainChain === "string" &&
+        //   typeof localVault?.contractDataId === "string" &&
+        //   localVault.contractDataId.startsWith("0x")
+        // ) {
+        //   resolvedChainKey = localVault.blockchainChain as ChainId;
+        //   resolvedContractDataId = localVault.contractDataId;
+        //   resolvedContractAddress =
+        //     typeof localVault.contractAddress === "string" && localVault.contractAddress.trim().length > 0
+        //       ? localVault.contractAddress.trim()
+        //       : null;
+        // }
 
         // Source 2: data from API (e.g. hybrid vault path already resolved chain info)
         {
