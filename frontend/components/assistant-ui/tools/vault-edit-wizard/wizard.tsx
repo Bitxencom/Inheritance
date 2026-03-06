@@ -604,8 +604,8 @@ export function VaultEditWizard(props: VaultEditWizardProps) {
                             const config = getChainConfig(chain);
                             window.open(`${config.blockExplorer}/tx/${latestTxId}`, "_blank");
                           } else {
-                            const explorerBaseUrl = process.env.NEXT_PUBLIC_EXPLORER_BASE_URL || "http://localhost:3021";
-                            window.open(`${explorerBaseUrl}/explorer/arweave/tx/${latestTxId}`, "_blank");
+                            const explorerBaseUrl = process.env.NEXT_PUBLIC_EXPLORER_BASE_URL || "https://viewblock.io/arweave/tx/";
+                            window.open(`${explorerBaseUrl}/${latestTxId}`, "_blank");
                           }
                         }}
                       >

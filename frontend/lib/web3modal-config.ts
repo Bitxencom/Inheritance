@@ -61,9 +61,14 @@ export const supportedChains = [
 
 // Wagmi config menggunakan defaultWagmiConfig dari Web3Modal
 // Ini secara otomatis menambahkan WalletConnect, MetaMask, Coinbase connectors
+import { cookieStorage, createStorage } from "wagmi";
+
 export const wagmiConfig = defaultWagmiConfig({
     chains: supportedChains,
     projectId,
     metadata: web3ModalMetadata,
     ssr: true, // Next.js SSR support
+    storage: createStorage({
+        storage: cookieStorage
+    })
 });

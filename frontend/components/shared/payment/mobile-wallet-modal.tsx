@@ -30,7 +30,7 @@
  *  - Cancel detection via MutationObserver di wanderWallet.ts.
  */
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
 import {
     Loader2,
@@ -41,7 +41,7 @@ import {
     CheckCircle2,
     LogOut,
 } from "lucide-react";
-import { useWeb3Modal } from "@web3modal/wagmi/react";
+import { useWeb3Modal, useWeb3ModalState } from "@web3modal/wagmi/react";
 import { useAccount, useDisconnect } from "wagmi";
 
 import { Button } from "@/components/ui/button";
@@ -59,6 +59,10 @@ import {
     isWalletReady as isWanderReady,
 } from "@/lib/wanderWallet";
 import WanderLogo from "@/assets/logo/wander.svg";
+import {
+    clearWalletConnectStorage,
+    isWalletConnectStaleSessionError,
+} from "@/lib/walletconnect-storage";
 
 // -------------------------------------------------------------------
 // Types
@@ -94,7 +98,8 @@ export function MobileWalletModal({
     onBothConnected,
     mode = "both",
 }: MobileWalletModalProps) {
-    const { open: openWeb3Modal } = useWeb3Modal();
+    const { open: openWeb3Modal, close: closeWeb3Modal } = useWeb3Modal();
+    const { open: isWeb3ModalOpen } = useWeb3ModalState();
     const { disconnect: disconnectEvm } = useDisconnect();
     const { address: evmAddress, isConnected: isEvmConnected } = useAccount();
 
@@ -103,6 +108,10 @@ export function MobileWalletModal({
     const [wanderAddress, setWanderAddress] = useState<string | null>(null);
     const [wanderError, setWanderError] = useState<string | null>(null);
     const [evmError, setEvmError] = useState<string | null>(null);
+
+    // Guard ref: mencegah useEffect re-open dialog secara tidak sengaja.
+    // Hanya di-set true ketika user memang menekan tombol Connect EVM Wallet.
+    const didOpenWeb3Modal = useRef(false);
 
     const showEvm = mode === "evm-only" || mode === "both";
     const showArweave = mode === "arweave-only" || mode === "both";
@@ -172,20 +181,69 @@ export function MobileWalletModal({
     const handleEvmConnect = async () => {
         setEvmError(null);
         setIsConnectingEvm(true);
+
+        // Seperti Wander, kita harus menutup Radix <Dialog> dulu agar event listener
+        // dari WalletConnect/Web3Modal (seperti app-switch visibilitychange, deep-link dll)
+        // tidak terblokir oleh focus trap (aria-modal) dari Radix.
+        onOpenChange(false);
+        await new Promise<void>((resolve) => setTimeout(resolve, 250));
+
         try {
+            // Tandai bahwa Web3Modal memang sengaja dibuka dari user — dipakai oleh useEffect di bawah
+            didOpenWeb3Modal.current = true;
             await openWeb3Modal();
-            // Di mode "evm-only", langsung konfirmasi setelah connect.
-            // Di mode "both", biarkan modal tetap terbuka — user harus klik "Continue".
-            if (mode !== "both" && evmAddress) {
-                onEvmConnected?.(evmAddress);
-                onOpenChange(false);
-            }
+            // Modal Web3Modal terbuka. State perubahan akan ditangani oleh useEffect `isWeb3ModalOpen`
         } catch (err) {
-            setEvmError(err instanceof Error ? err.message : "Failed to connect EVM wallet");
+            // Jika openWeb3Modal() langsung throw, reset flag
+            didOpenWeb3Modal.current = false;
+
+            if (isWalletConnectStaleSessionError(err)) {
+                // Stale session: hapus data WC lama dari localStorage dan coba sekali lagi
+                console.warn("[EVM Connect] Stale WalletConnect session detected. Clearing storage and retrying…", err);
+                clearWalletConnectStorage();
+                try {
+                    didOpenWeb3Modal.current = true;
+                    await openWeb3Modal();
+                } catch (retryErr) {
+                    didOpenWeb3Modal.current = false;
+                    setEvmError(
+                        retryErr instanceof Error
+                            ? retryErr.message
+                            : "Failed to connect EVM wallet after clearing stale session"
+                    );
+                    onOpenChange(true);
+                }
+            } else {
+                setEvmError(err instanceof Error ? err.message : "Failed to connect EVM wallet");
+                // Kembalikan ke dialog kita jika terjadi fallback error open
+                onOpenChange(true);
+            }
         } finally {
             setIsConnectingEvm(false);
         }
     };
+
+    // Re-open Radix Dialog ketika Web3Modal ditutup — HANYA jika Web3Modal sebelumnya
+    // benar-benar dibuka oleh user (didOpenWeb3Modal.current === true).
+    // Ini mencegah loop: tanpa guard ini, kondisi !isWeb3ModalOpen && !open terpenuhi
+    // sejak awal, sehingga setiap kali user menutup dialog utama akan langsung reopen.
+    useEffect(() => {
+        if (!isWeb3ModalOpen && !open && mode === "both" && wanderAddress && didOpenWeb3Modal.current) {
+            // Reset flag agar tidak trigger lagi
+            didOpenWeb3Modal.current = false;
+            const t = setTimeout(() => onOpenChange(true), 200);
+            return () => clearTimeout(t);
+        }
+    }, [isWeb3ModalOpen, mode, open, onOpenChange, wanderAddress]);
+
+    // Force close Web3Modal jika EVM sudah terkoneksi tapi modal dari Web3Modal masih tersangkut terbuka.
+    // BUG mobile: Deep link redirect terkadang membuat fallback UI "Continue in MetaMask" stuck 
+    // meskipun Wagmi secara pasif sudah berhasil menghidrasi state `isConnected` dari localStorage/cookie.
+    useEffect(() => {
+        if (isEvmConnected && isWeb3ModalOpen) {
+            closeWeb3Modal();
+        }
+    }, [isEvmConnected, isWeb3ModalOpen, closeWeb3Modal]);
 
     // Konfirmasi setelah keduanya connect — panggil onBothConnected
     const handleBothConnected = () => {

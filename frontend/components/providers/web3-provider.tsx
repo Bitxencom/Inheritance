@@ -7,12 +7,18 @@
  * Wajib membungkus komponen yang menggunakan hook wagmi atau <w3m-button />.
  *
  * Letakkan di app/layout.tsx sebagai wrapper global.
+ *
+ * Fitur tambahan:
+ *  - Auto-clear stale WalletConnect V2 sessions saat startup.
+ *    Stale session terjadi ketika URL origin berubah (misal Ngrok restart)
+ *    atau session di relay server sudah expired. Tanpa ini, error
+ *    "session topic doesn't exist" akan muncul setiap kali reconnect.
  */
 
 import { createWeb3Modal } from "@web3modal/wagmi/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WagmiProvider, type State } from "wagmi";
-import { ReactNode, useState } from "react";
+import { ReactNode, useState, useEffect } from "react";
 
 import {
     wagmiConfig,
@@ -20,6 +26,9 @@ import {
     supportedChains,
     web3ModalMetadata,
 } from "@/lib/web3modal-config";
+import {
+    clearWalletConnectStorage,
+} from "@/lib/walletconnect-storage";
 
 // createWeb3Modal harus dipanggil di luar komponen agar tidak dipanggil ulang saat re-render
 createWeb3Modal({
@@ -60,6 +69,34 @@ export function Web3ModalProvider({
 }: Web3ModalProviderProps) {
     // QueryClient untuk TanStack Query (diperlukan oleh Wagmi v3)
     const [queryClient] = useState(() => new QueryClient());
+
+    // Bersihkan stale WalletConnect sessions saat pertama kali komponen dimount.
+    // Ini mencegah error "session topic doesn't exist" yang terjadi ketika URL
+    // origin berubah (Ngrok restart) atau relay server session sudah expired.
+    //
+    // Catatan: Kita HANYA clear ketika ada indikasi session stale (ada key WC di
+    // localStorage), bukan setiap waktu, agar tidak mengganggu session yang valid.
+    useEffect(() => {
+        try {
+            // Cek apakah ada WC session di localStorage yang mungkin konflik
+            // dengan cookieStorage yang sekarang kita gunakan sebagai primary storage.
+            const hasLegacyWcStorage = Array.from({ length: localStorage.length }, (_, i) =>
+                localStorage.key(i) ?? ""
+            ).some((key) => key.startsWith("wc@2:") || key.startsWith("wagmi.store"));
+
+            if (hasLegacyWcStorage) {
+                const cleared = clearWalletConnectStorage();
+                if (cleared > 0) {
+                    console.info(
+                        "[Web3ModalProvider] Cleared stale WalletConnect sessions from localStorage.",
+                        "Reload may be needed if wallet appears disconnected."
+                    );
+                }
+            }
+        } catch {
+            // Abaikan jika localStorage tidak tersedia (SSR, private mode, dll)
+        }
+    }, []);
 
     return (
         <WagmiProvider config={wagmiConfig} initialState={initialState}>
