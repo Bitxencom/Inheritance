@@ -8,6 +8,8 @@
 
 import Arweave from 'arweave';
 
+const WANDER_STORAGE_KEY = 'bitxen_wander_address';
+
 // Re-export upload utilities from the dedicated module for consumers
 // who prefer importing from a single wallet entry point.
 export {
@@ -116,6 +118,46 @@ export function preloadWanderConnect(): void {
   script.src = '/wander-connect.js';
   script.async = true;
   document.body.appendChild(script);
+}
+
+/**
+ * Initialize Wander Connect SDK silently (in background)
+ * This injects `window.arweaveWallet` without forcing the popup to open
+ */
+export async function silentlyInitializeWanderConnect(): Promise<void> {
+  if (typeof window === 'undefined') return;
+  // If native extension is present, we don't need to do anything
+  if (getArweaveWallet() && !wanderConnectInstance) {
+    return;
+  }
+
+  // Ensure script is loaded
+  if (!window.WanderSDK) {
+    if (!document.querySelector('script[src="/wander-connect.js"]')) {
+      preloadWanderConnect();
+    }
+    // Wait for the script to load
+    await new Promise<void>((resolve) => {
+      let retries = 0;
+      const check = setInterval(() => {
+        if (window.WanderSDK || retries > 50) {
+          clearInterval(check);
+          resolve();
+        }
+        retries++;
+      }, 100);
+    });
+  }
+
+  if (window.WanderSDK && window.WanderSDK.WanderConnect) {
+    if (!wanderConnectInstance) {
+      wanderConnectInstance = new window.WanderSDK.WanderConnect({
+        clientId: WANDER_CONFIG.clientId,
+      });
+      // Give the SDK a moment to inject window.arweaveWallet via its iframe
+      await new Promise(r => setTimeout(r, 150));
+    }
+  }
 }
 
 /**
@@ -324,7 +366,9 @@ export async function connectWanderWallet(): Promise<string> {
   // saat iframe load pertama, sehingga cek itu akan selalu true setelah attempt
   // pertama — menyebabkan attempt ke-2 masuk ke path extension yg salah (hang).
   if (wanderConnectInstance) {
-    return initializeWanderConnect();
+    const address = await initializeWanderConnect();
+    if (typeof localStorage !== 'undefined') localStorage.setItem(WANDER_STORAGE_KEY, address);
+    return address;
   }
 
   // Pertama kali: jika native extension tersedia, gunakan extension
@@ -343,6 +387,7 @@ export async function connectWanderWallet(): Promise<string> {
       }
 
       currentConnectionMode = 'extension';
+      if (typeof localStorage !== 'undefined') localStorage.setItem(WANDER_STORAGE_KEY, address);
       return address;
     } catch (error) {
       if ((error as Error).message?.includes('User cancelled')) {
@@ -353,7 +398,9 @@ export async function connectWanderWallet(): Promise<string> {
   }
 
   // No extension available, use Wander Connect (embedded wallet)
-  return initializeWanderConnect();
+  const address = await initializeWanderConnect();
+  if (typeof localStorage !== 'undefined') localStorage.setItem(WANDER_STORAGE_KEY, address);
+  return address;
 }
 
 /**
@@ -390,6 +437,21 @@ export async function getConnectedAddress(): Promise<string | null> {
     }
   }
 
+  // Auto-recovery fallback via localStorage
+  if (typeof localStorage !== 'undefined') {
+    const savedAddress = localStorage.getItem(WANDER_STORAGE_KEY);
+    if (savedAddress) {
+      // Silently init WanderConnect so window.arweaveWallet becomes available for future dispatch
+      try {
+        await silentlyInitializeWanderConnect();
+      } catch (e) {
+        console.warn('Silent init failed', e);
+      }
+      currentConnectionMode = wanderConnectInstance ? 'connect' : (getArweaveWallet() ? 'extension' : 'none');
+      return savedAddress;
+    }
+  }
+
   return null;
 }
 
@@ -397,6 +459,9 @@ export async function getConnectedAddress(): Promise<string | null> {
  * Disconnect from Wander Wallet
  */
 export async function disconnectWanderWallet(): Promise<void> {
+  if (typeof localStorage !== 'undefined') {
+    localStorage.removeItem(WANDER_STORAGE_KEY);
+  }
   try {
     if (isWanderWalletInstalled()) {
       await getArweaveWallet()!.disconnect();
@@ -426,6 +491,11 @@ export async function isWalletReady(): Promise<boolean> {
 
       const address = await wallet.getActiveAddress();
       return !!address;
+    }
+
+    // Auto-recovery check
+    if (typeof localStorage !== 'undefined' && localStorage.getItem(WANDER_STORAGE_KEY)) {
+      return true;
     }
   } catch {
     return false;
@@ -788,9 +858,17 @@ export async function dispatchToArweave(
     await transaction.prepareChunks(effectivePayloadBytes);
     onStatus?.("Waiting for wallet signature...");
 
-    const wallet = getArweaveWallet();
+    let wallet = getArweaveWallet();
     if (!wallet) {
-      throw new Error('Wallet not connected. Please connect your wallet to proceed.');
+      // Attempt silent recovery initialization before throwing
+      if (typeof localStorage !== 'undefined' && localStorage.getItem(WANDER_STORAGE_KEY)) {
+        await silentlyInitializeWanderConnect();
+        wallet = getArweaveWallet();
+      }
+
+      if (!wallet) {
+        throw new Error('Wallet not connected. Please connect your wallet to proceed.');
+      }
     }
 
     // Force direct transaction for all sizes to ensure instant visibility on gateway

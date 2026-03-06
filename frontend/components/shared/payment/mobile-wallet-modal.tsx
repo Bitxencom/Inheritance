@@ -57,6 +57,7 @@ import {
     connectWanderWallet,
     disconnectWanderWallet,
     isWalletReady as isWanderReady,
+    getConnectedAddress
 } from "@/lib/wanderWallet";
 import WanderLogo from "@/assets/logo/wander.svg";
 import {
@@ -120,6 +121,24 @@ export function MobileWalletModal({
     const isEvmLocked = mode === "both" && !wanderAddress;
 
     // ----------------------------------------------------------------
+    // Auto-Recovery Session (Wander)
+    // ----------------------------------------------------------------
+    // Jika modal dibuka (atau saat mount), kita cek form storage apakah user
+    // sudah pernah connect sebelumnya. Jika ya, populate alamatnya.
+    useEffect(() => {
+        if (open && showArweave && !wanderAddress) {
+            getConnectedAddress().then(addr => {
+                if (addr) {
+                    setWanderAddress(addr);
+                    onWanderConnected?.(addr);
+                }
+            }).catch(() => {
+                // Ignore failure during auto-recovery 
+            });
+        }
+    }, [open, showArweave, wanderAddress, onWanderConnected]);
+
+    // ----------------------------------------------------------------
     // Handle klik tombol Wander — STEP 1
     // ----------------------------------------------------------------
     const handleWanderConnect = async () => {
@@ -139,7 +158,6 @@ export function MobileWalletModal({
             // Cek apakah wallet sudah connect sebelumnya
             const alreadyReady = await isWanderReady();
             if (alreadyReady) {
-                const { getConnectedAddress } = await import("@/lib/wanderWallet");
                 const addr = await getConnectedAddress();
                 if (addr) {
                     setWanderAddress(addr);
