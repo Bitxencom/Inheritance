@@ -123,14 +123,22 @@ export function preloadWanderConnect(): void {
  * This is used when browser extension is not available (e.g., mobile browser)
  */
 export async function initializeWanderConnect(): Promise<string> {
-  // If already initialized and wallet is ready, return address
+  // Early return hanya jika wallet SUDAH connect (punya permission ACCESS_ADDRESS).
+  // Jangan early return hanya karena window.arweaveWallet ada — Wander Connect SDK
+  // meng-inject arweaveWallet saat iframe load, sebelum user approve connection.
   if (wanderConnectInstance && getArweaveWallet()) {
     try {
-      const address = await getArweaveWallet()!.getActiveAddress();
-      currentConnectionMode = 'connect';
-      return address;
+      const permissions = await getArweaveWallet()!.getPermissions();
+      if (permissions.includes('ACCESS_ADDRESS')) {
+        const address = await getArweaveWallet()!.getActiveAddress();
+        if (address) {
+          currentConnectionMode = 'connect';
+          return address;
+        }
+      }
+      // Wallet ada tapi belum approve — lanjut buka popup
     } catch {
-      // Failed to get address, maybe disconnected. Continue to re-init.
+      // Failed to check permissions. Continue to re-init.
     }
   }
 
@@ -161,12 +169,12 @@ export async function initializeWanderConnect(): Promise<string> {
     throw new Error('Wander Connect SDK loaded but object is missing.');
   }
 
-  const WanderConnect = window.WanderSDK.WanderConnect;
-
-  // Create new Wander Connect instance
-  wanderConnectInstance = new WanderConnect({
-    clientId: WANDER_CONFIG.clientId,
-  });
+  // Create new Wander Connect instance hanya jika belum ada
+  if (!wanderConnectInstance) {
+    wanderConnectInstance = new window.WanderSDK.WanderConnect({
+      clientId: WANDER_CONFIG.clientId,
+    });
+  }
 
   // Force open UI immediately to trigger sign-in popup
   const tryOpen = () => {
@@ -193,53 +201,96 @@ export async function initializeWanderConnect(): Promise<string> {
     }, 500);
   }
 
-  // Wait for wallet loaded event
+  // Wait for wallet loaded event — dengan cancel detection
   return new Promise((resolve, reject) => {
-    // Timeout after 5 minutes
+    let settled = false;
+    let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+    // Bersihkan semua resource dan settle promise satu kali saja
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (pollInterval) clearInterval(pollInterval);
+      window.removeEventListener('arweaveWalletLoaded', handleWalletLoaded);
+      fn();
+    };
+
+    // Timeout 5 menit
     const timeout = setTimeout(() => {
-      reject(new Error('Wander Connect initialization timed out. Please try again.'));
+      finish(() => reject(new Error('Wander Connect initialization timed out. Please try again.')));
     }, 5 * 60 * 1000);
 
-    // Listen for wallet loaded event
-    const handleWalletLoaded = async (e: Event) => {
-      clearTimeout(timeout);
-      window.removeEventListener('arweaveWalletLoaded', handleWalletLoaded);
+    // Polling `isOpen` pada wanderConnectInstance.
+    // Wander menutup popup dengan menyembunyikan elemen (CSS class removal),
+    // bukan menghapusnya dari DOM — sehingga MutationObserver tidak efektif.
+    // Setelah 600ms (beri waktu SDK inject + render), polling dimulai:
+    //   1. Tunggu isOpen === true  (konfirmasi popup benar-benar terbuka)
+    //   2. Jika lalu jadi false    (user tutup X)  → reject → dialog reopen
+    setTimeout(() => {
+      let confirmedOpen = false;
 
+      pollInterval = setInterval(() => {
+        if (settled) { clearInterval(pollInterval!); return; }
+
+        // WanderConnect.isOpen adalah getter: return this.openReason !== null
+        // Saat user tutup popup (X button), SDK set openReason = null → isOpen = false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const isOpenNow = (wanderConnectInstance as any)?.isOpen === true;
+
+        if (isOpenNow) {
+          confirmedOpen = true; // popup terbuka terkonfirmasi
+        } else if (confirmedOpen) {
+          // Dulu terbuka, sekarang tidak → user menutup popup
+          finish(() => reject(new Error('Wander wallet connection was cancelled.')));
+        }
+      }, 300);
+    }, 600);
+
+    // Handler saat arweaveWallet siap (Wander SDK inject wallet ke window)
+    const handleWalletLoaded = async (_e?: Event) => {
       try {
-        // Always try to connect forcefully to trigger popup
         const wallet = getArweaveWallet();
-        if (wallet) {
-          // Force connect to trigger popup
-          await wallet.connect(WANDER_CONFIG.permissions, WANDER_CONFIG.appInfo);
+        if (!wallet) {
+          finish(() => reject(new Error('Wallet not available after initialization.')));
+          return;
+        }
 
-          const address = await wallet.getActiveAddress();
-          if (address) {
-            currentConnectionMode = 'connect';
+        // connect() menampilkan dialog izin di dalam iframe Wander
+        await wallet.connect(WANDER_CONFIG.permissions, WANDER_CONFIG.appInfo);
 
-            // Close the Wander Connect popup automatically after successful connection
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            if (wanderConnectInstance && typeof (wanderConnectInstance as any).close === 'function') {
-              try {
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                (wanderConnectInstance as any).close();
-              } catch (e) {
-                console.warn('Failed to close Wander Connect UI:', e);
-              }
+        const address = await wallet.getActiveAddress();
+        if (address) {
+          currentConnectionMode = 'connect';
+
+          // Tutup popup Wander setelah berhasil connect
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if (wanderConnectInstance && typeof (wanderConnectInstance as any).close === 'function') {
+            try {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (wanderConnectInstance as any).close();
+            } catch (e) {
+              console.warn('Failed to close Wander Connect UI:', e);
             }
-
-            resolve(address);
-          } else {
-            reject(new Error('Unable to get wallet address.'));
           }
+
+          finish(() => resolve(address));
         } else {
-          reject(new Error('Wallet not available after initialization.'));
+          finish(() => reject(new Error('Unable to get wallet address.')));
         }
       } catch (error) {
-        reject(error);
+        finish(() => reject(error instanceof Error ? error : new Error(String(error))));
       }
     };
 
-    window.addEventListener('arweaveWalletLoaded', handleWalletLoaded);
+    if (getArweaveWallet()) {
+      // Jika wallet sudah di-inject (misal pada retries/attempt ke-2),
+      // event 'arweaveWalletLoaded' tidak akan ter-dispatch lagi.
+      // Maka kita langsung eksekusi handler-nya:
+      handleWalletLoaded();
+    } else {
+      window.addEventListener('arweaveWalletLoaded', handleWalletLoaded as EventListener);
+    }
   });
 }
 
@@ -267,7 +318,16 @@ export async function destroyWanderConnect(): Promise<void> {
  * - Falls back to Wander Connect (embedded wallet) if not
  */
 export async function connectWanderWallet(): Promise<string> {
-  // If extension is available, use it
+  // PENTING: Jika wanderConnectInstance sudah ada, berarti kita sudah tahu
+  // wallet ini adalah Wander Connect SDK (bukan native extension). Bypass
+  // isWanderWalletInstalled() check karena SDK meng-inject window.arweaveWallet
+  // saat iframe load pertama, sehingga cek itu akan selalu true setelah attempt
+  // pertama — menyebabkan attempt ke-2 masuk ke path extension yg salah (hang).
+  if (wanderConnectInstance) {
+    return initializeWanderConnect();
+  }
+
+  // Pertama kali: jika native extension tersedia, gunakan extension
   if (isWanderWalletInstalled()) {
     try {
       const wallet = getArweaveWallet()!;

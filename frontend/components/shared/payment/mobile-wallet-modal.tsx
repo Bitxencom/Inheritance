@@ -21,6 +21,13 @@
  *  │  Arweave                                        │
  *  │   └─ Wander Wallet (WanderConnect SDK)          │
  *  └─────────────────────────────────────────────────┘
+ *
+ * Mobile fixes:
+ *  - Dialog ditutup dulu sebelum membuka Wander popup, karena Radix aria-modal
+ *    memblokir touch events di luar dialog (termasuk iframe Wander di body).
+ *  - Delay 250ms setelah dialog close agar animasi & repaint selesai → tidak blank.
+ *  - Dialog reopen otomatis setelah Wander selesai (sukses/cancel/error).
+ *  - Cancel detection via MutationObserver di wanderWallet.ts.
  */
 
 import { useState } from "react";
@@ -50,7 +57,6 @@ import {
     connectWanderWallet,
     disconnectWanderWallet,
     isWalletReady as isWanderReady,
-    isWanderWalletInstalled,
 } from "@/lib/wanderWallet";
 import WanderLogo from "@/assets/logo/wander.svg";
 
@@ -101,14 +107,27 @@ export function MobileWalletModal({
     const showEvm = mode === "evm-only" || mode === "both";
     const showArweave = mode === "arweave-only" || mode === "both";
 
-    // Dalam mode "both", EVM hanya aktif setelah Wander terkoneksi (sequential — sama seperti desktop)
+    // Dalam mode "both", EVM hanya aktif setelah Wander terkoneksi
     const isEvmLocked = mode === "both" && !wanderAddress;
 
+    // ----------------------------------------------------------------
     // Handle klik tombol Wander — STEP 1
+    // ----------------------------------------------------------------
     const handleWanderConnect = async () => {
         setWanderError(null);
         setIsConnectingWander(true);
+
+        // CRITICAL (mobile fix): Radix <Dialog> menerapkan aria-modal yang memblokir
+        // semua pointer/touch events di luar dialog — termasuk iframe Wander Connect
+        // yang dirender langsung di <body>. Tutup dialog kita dulu, baru buka Wander.
+        onOpenChange(false);
+
+        // Tunggu animasi close dialog (~150ms) + margin ~100ms agar browser selesai
+        // melepaskan aria-modal DOM lock dan repaint. Tanpa ini, iframe Wander blank.
+        await new Promise<void>((resolve) => setTimeout(resolve, 250));
+
         try {
+            // Cek apakah wallet sudah connect sebelumnya
             const alreadyReady = await isWanderReady();
             if (alreadyReady) {
                 const { getConnectedAddress } = await import("@/lib/wanderWallet");
@@ -116,36 +135,47 @@ export function MobileWalletModal({
                 if (addr) {
                     setWanderAddress(addr);
                     onWanderConnected?.(addr);
-                    if (mode !== "both") {
-                        onOpenChange(false);
+                    // Reopen dialog jika mode both untuk lanjut ke step EVM
+                    if (mode === "both") {
+                        onOpenChange(true);
                     }
                     return;
                 }
             }
+
+            // Buka Wander popup — promise resolve saat user approve,
+            // reject saat user cancel atau error (via MutationObserver di wanderWallet.ts)
             const address = await connectWanderWallet();
             setWanderAddress(address);
             onWanderConnected?.(address);
-            if (mode !== "both") {
-                onOpenChange(false);
+
+            // Reopen dialog jika mode both untuk lanjut ke step EVM
+            if (mode === "both") {
+                onOpenChange(true);
             }
         } catch (err) {
-            setWanderError(
-                err instanceof Error ? err.message : "Failed to connect Wander Wallet"
-            );
+            // Wander cancelled atau error — tampilkan pesan dan reopen dialog
+            const msg = err instanceof Error ? err.message : "Failed to connect Wander Wallet";
+            // Jangan tampilkan pesan "cancelled" sebagai error yang menakutkan
+            if (!msg.toLowerCase().includes("cancel")) {
+                setWanderError(msg);
+            }
+            onOpenChange(true);
         } finally {
             setIsConnectingWander(false);
         }
     };
 
+    // ----------------------------------------------------------------
     // Handle klik tombol EVM — STEP 2 (hanya aktif setelah Wander connect)
+    // ----------------------------------------------------------------
     const handleEvmConnect = async () => {
         setEvmError(null);
         setIsConnectingEvm(true);
         try {
             await openWeb3Modal();
             // Di mode "evm-only", langsung konfirmasi setelah connect.
-            // Di mode "both", biarkan modal tetap terbuka — user harus klik tombol "Continue"
-            // setelah keduanya terkoneksi (lihat handleBothConnected).
+            // Di mode "both", biarkan modal tetap terbuka — user harus klik "Continue".
             if (mode !== "both" && evmAddress) {
                 onEvmConnected?.(evmAddress);
                 onOpenChange(false);
@@ -157,7 +187,7 @@ export function MobileWalletModal({
         }
     };
 
-    // Konfirmasi setelah keduanya connect — panggil onBothConnected (yg submit) bukan onEvmConnected
+    // Konfirmasi setelah keduanya connect — panggil onBothConnected
     const handleBothConnected = () => {
         if (evmAddress) {
             onBothConnected?.(evmAddress);
@@ -165,7 +195,7 @@ export function MobileWalletModal({
         }
     };
 
-    // Disconnect Wander — juga reset EVM lock chain kalau mode both
+    // Disconnect Wander
     const handleWanderDisconnect = async () => {
         try {
             await disconnectWanderWallet();
@@ -184,10 +214,7 @@ export function MobileWalletModal({
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent
-                className="max-w-sm p-0 overflow-hidden rounded-2xl"
-                onInteractOutside={(e) => e.preventDefault()}
-            >
+            <DialogContent className="max-w-sm p-0 overflow-hidden rounded-2xl">
                 <DialogHeader className="px-5 pt-5 pb-3">
                     <DialogTitle className="flex items-center gap-2 text-base">
                         <Wallet className="h-4 w-4 text-primary" />
@@ -233,7 +260,7 @@ export function MobileWalletModal({
                                                 Wander Connected
                                             </p>
                                             <p className="text-xs font-mono text-muted-foreground truncate">
-                                                {wanderAddress ? `${wanderAddress.slice(0, 8)}............${wanderAddress.slice(-8)}` : ""}
+                                                {`${wanderAddress.slice(0, 4)}......${wanderAddress.slice(-4)}`}
                                             </p>
                                         </div>
                                         <button
@@ -339,7 +366,7 @@ export function MobileWalletModal({
                                                 EVM Wallet Connected
                                             </p>
                                             <p className="text-xs font-mono text-muted-foreground truncate">
-                                                {evmAddress ? `${evmAddress.slice(0, 8)}............${evmAddress.slice(-8)}` : ""}
+                                                {`${evmAddress.slice(0, 4)}......${evmAddress.slice(-4)}`}
                                             </p>
                                         </div>
                                         <button
@@ -429,8 +456,6 @@ export function MobileWalletModal({
 // -------------------------------------------------------------------
 // MobileWalletButton — trigger button + modal sekaligus
 // -------------------------------------------------------------------
-
-
 
 interface MobileWalletButtonProps {
     label?: string;
