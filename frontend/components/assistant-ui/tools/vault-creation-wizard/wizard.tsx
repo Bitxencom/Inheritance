@@ -511,13 +511,19 @@ export function VaultCreationWizard({
   ) : (
     <div className="flex justify-between items-center gap-1">
       <h2
-        className="text-lg font-semibold leading-none cursor-default select-none"
+        className="text-lg font-semibold leading-none"
         onClick={(e) => {
           const target = e.currentTarget as any;
+          const now = Date.now();
+          if (!target._firstClickAt || now - target._firstClickAt > 1000) {
+            target._firstClickAt = now;
+            target._clickCount = 0;
+          }
           target._clickCount = (target._clickCount || 0) + 1;
           if (target._clickCount >= 5) {
             fillWithDummyData();
             target._clickCount = 0;
+            target._firstClickAt = null;
           }
         }}
       >
