@@ -15,12 +15,13 @@
  *    "session topic doesn't exist" akan muncul setiap kali reconnect.
  */
 
-import { createWeb3Modal } from "@web3modal/wagmi/react";
+import { createAppKit } from "@reown/appkit/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WagmiProvider, type State } from "wagmi";
 import { ReactNode, useState, useEffect } from "react";
 
 import {
+    wagmiAdapter,
     wagmiConfig,
     projectId,
     supportedChains,
@@ -30,13 +31,14 @@ import {
     clearWalletConnectStorage,
 } from "@/lib/walletconnect-storage";
 
-// createWeb3Modal harus dipanggil di luar komponen agar tidak dipanggil ulang saat re-render
-createWeb3Modal({
-    wagmiConfig,
+// createAppKit harus dipanggil di luar komponen agar tidak dipanggil ulang saat re-render
+createAppKit({
+    adapters: [wagmiAdapter],
+    networks: supportedChains,
     projectId,
     // Tampilkan hanya chain yang relevan untuk Bitxen
     // BSC ada di urutan pertama karena itu chain utama Bitxen
-    defaultChain: supportedChains[0],
+    defaultNetwork: supportedChains[0],
     metadata: web3ModalMetadata,
     // Theming
     themeMode: "dark",
@@ -53,9 +55,11 @@ createWeb3Modal({
         "4622a2b2d6af1c9844944291e5e7351a6aa24cd7b23099efac1b2fd875da31a0",
     ],
     // Nonaktifkan fitur yang tidak relevan
-    enableOnramp: false,
-    enableSwaps: false,
-    enableAnalytics: false,
+    features: {
+        analytics: false,
+        onramp: false,
+        swaps: false,
+    }
 });
 
 interface Web3ModalProviderProps {

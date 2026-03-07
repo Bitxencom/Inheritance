@@ -6,7 +6,7 @@
 // - switchToChain(chainId) -> switches MetaMask to specified chain
 // - dispatchToBitxen(data, vaultId, chainId) -> stores data on blockchain
 //
-// NOTE: Uses native window.ethereum API (no ethers dependency required)
+// NOTE: Uses native (window as any).ethereum API (no ethers dependency required)
 
 // ABI encoding/decoding utilities — pulled from abi-encoder.ts
 // Re-export for backward compatibility (consumers importing from this file still work)
@@ -64,14 +64,11 @@ export function getChainConfig(chainId: ChainId) {
 }
 
 /**
- * Check if MetaMask is installed
+ * Check if Web3 EVM provider is available (MetaMask, Trust, AppKit shim, etc.)
  */
 export function isMetaMaskInstalled(): boolean {
   if (typeof window === "undefined") return false;
-  return (
-    typeof window.ethereum !== "undefined" &&
-    window.ethereum.isMetaMask === true
-  );
+  return typeof (window as any).ethereum !== "undefined";
 }
 
 /**
@@ -79,14 +76,14 @@ export function isMetaMaskInstalled(): boolean {
  * @returns Connected wallet address
  */
 export async function connectMetaMask(): Promise<string> {
-  if (!isMetaMaskInstalled() || !window.ethereum) {
+  if (!isMetaMaskInstalled() || !(window as any).ethereum) {
     throw new Error(
       "MetaMask is not installed. Please install MetaMask to continue.",
     );
   }
 
   try {
-    const accounts = (await window.ethereum.request({
+    const accounts = (await (window as any).ethereum.request({
       method: "eth_requestAccounts",
     })) as string[];
 
@@ -111,10 +108,10 @@ export async function connectMetaMask(): Promise<string> {
  * Get currently connected address
  */
 export async function getConnectedAddress(): Promise<string | null> {
-  if (!isMetaMaskInstalled() || !window.ethereum) return null;
+  if (!isMetaMaskInstalled() || !(window as any).ethereum) return null;
 
   try {
-    const accounts = (await window.ethereum.request({
+    const accounts = (await (window as any).ethereum.request({
       method: "eth_accounts",
     })) as string[];
     return accounts[0] || null;
@@ -127,10 +124,10 @@ export async function getConnectedAddress(): Promise<string | null> {
  * Get current chain ID from MetaMask
  */
 export async function getCurrentChainId(): Promise<number | null> {
-  if (!isMetaMaskInstalled() || !window.ethereum) return null;
+  if (!isMetaMaskInstalled() || !(window as any).ethereum) return null;
 
   try {
-    const chainIdHex = await window.ethereum.request({ method: "eth_chainId" });
+    const chainIdHex = await (window as any).ethereum.request({ method: "eth_chainId" });
     return parseInt(chainIdHex as string, 16);
   } catch {
     return null;
@@ -142,14 +139,14 @@ export async function getCurrentChainId(): Promise<number | null> {
  * Will add the chain if not already in MetaMask
  */
 export async function switchToChain(chainId: ChainId): Promise<void> {
-  if (!isMetaMaskInstalled() || !window.ethereum) {
+  if (!isMetaMaskInstalled() || !(window as any).ethereum) {
     throw new Error("MetaMask is not installed.");
   }
 
   const config = CHAIN_CONFIG[chainId];
 
   try {
-    await window.ethereum.request({
+    await (window as any).ethereum.request({
       method: "wallet_switchEthereumChain",
       params: [{ chainId: config.chainIdHex }],
     });
@@ -157,7 +154,7 @@ export async function switchToChain(chainId: ChainId): Promise<void> {
     // Chain not added, try to add it
     if ((error as { code?: number }).code === 4902) {
       try {
-        await window.ethereum.request({
+        await (window as any).ethereum.request({
           method: "wallet_addEthereumChain",
           params: [
             {
@@ -411,9 +408,9 @@ async function ethCall(params: { rpcUrl: string; to: string; data: string }): Pr
   console.log("🔄 All RPCs failed, trying MetaMask...");
 
   // Fallback ke MetaMask atau RPC asli
-  if (window.ethereum) {
+  if ((window as any).ethereum) {
     try {
-      const hex = (await window.ethereum.request({
+      const hex = (await (window as any).ethereum.request({
         method: "eth_call",
         params: [{ to: params.to, data: params.data }, "latest"],
       })) as string;
@@ -672,7 +669,7 @@ export async function finalizeRelease(params: {
   contractDataId: string;
   contractAddress?: string;
 }): Promise<string> {
-  if (!window.ethereum) {
+  if (!(window as any).ethereum) {
     throw new Error("MetaMask not installed");
   }
 
@@ -692,7 +689,7 @@ export async function finalizeRelease(params: {
   const selector = abiSelector("finalizeRelease(bytes32)");
   const data = "0x" + selector + encodeBytes32(params.contractDataId);
 
-  const txHash = (await window.ethereum.request({
+  const txHash = (await (window as any).ethereum.request({
     method: "eth_sendTransaction",
     params: [
       {
@@ -887,7 +884,7 @@ export async function dispatchHybrid(
   console.log("📝 Step 2/2: Registering in Bitxen contract...");
   if (onProgress) onProgress("Step 2/2: Confirm in MetaMask (Registering)...");
 
-  if (!isMetaMaskInstalled() || !window.ethereum) {
+  if (!isMetaMaskInstalled() || !(window as any).ethereum) {
     throw new Error(
       "MetaMask is not installed. Please install MetaMask to continue.",
     );
@@ -906,7 +903,7 @@ export async function dispatchHybrid(
   }
 
   // Get connected account
-  const accounts = (await window.ethereum.request({
+  const accounts = (await (window as any).ethereum.request({
     method: "eth_accounts",
   })) as string[];
   if (!accounts || accounts.length === 0) {
@@ -959,7 +956,7 @@ export async function dispatchHybrid(
         secret,
       );
 
-    const registerTxHash = (await window.ethereum.request({
+    const registerTxHash = (await (window as any).ethereum.request({
       method: "eth_sendTransaction",
       params: [
         {
@@ -1015,11 +1012,11 @@ async function waitForTransaction(
   txHash: string,
   maxAttempts = 30,
 ): Promise<unknown | null> {
-  if (!window.ethereum) return null;
+  if (!(window as any).ethereum) return null;
 
   for (let i = 0; i < maxAttempts; i++) {
     try {
-      const receipt = await window.ethereum.request({
+      const receipt = await (window as any).ethereum.request({
         method: "eth_getTransactionReceipt",
         params: [txHash],
       });
@@ -1079,22 +1076,4 @@ export { formatWalletAddress };
 export async function isWalletReady(): Promise<boolean> {
   const address = await getConnectedAddress();
   return !!address;
-}
-
-// Type declaration for window.ethereum
-declare global {
-  interface Window {
-    ethereum?: {
-      isMetaMask?: boolean;
-      request: (args: {
-        method: string;
-        params?: unknown[];
-      }) => Promise<unknown>;
-      on?: (event: string, handler: (...args: unknown[]) => void) => void;
-      removeListener?: (
-        event: string,
-        handler: (...args: unknown[]) => void,
-      ) => void;
-    };
-  }
 }

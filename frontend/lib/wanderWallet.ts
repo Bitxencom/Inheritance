@@ -896,8 +896,6 @@ export async function dispatchToArweave(
     if (!transaction.reward || transaction.reward === "0") {
       transaction.reward = await arweave.transactions.getPrice(effectivePayloadBytes.byteLength);
     }
-    onStatus?.("Preparing upload (chunking data)...");
-    await transaction.prepareChunks(effectivePayloadBytes);
     onStatus?.("Waiting for wallet signature...");
 
     let wallet = getArweaveWallet();
@@ -925,13 +923,22 @@ export async function dispatchToArweave(
     //   };
     // }
 
-    // wallet.sign() mutates the transaction object in-place (ArConnect/Wander behavior).
-    // We just call it and continue using the same `transaction` object.
-    // Do NOT rebuild the transaction from raw JSON — that would corrupt the chunk tree
-    // prepared by prepareChunks() and cause arweave.transactions.verify() to fail.
-    await wallet.sign(transaction);
+    // wallet.sign() mutates the transaction object in-place on existing ArConnect extension.
+    // However, on @wanderapp/connect (Mobile / iframe mode), the object is cloned via postMessage
+    // so we must capture the returned signed transaction object.
+    const signedTx = await wallet.sign(transaction);
 
-    const txToPost = transaction;
+    const txToPost = (signedTx && typeof signedTx === 'object' && ('signature' in signedTx) && (signedTx as typeof transaction).signature)
+      ? (signedTx as typeof transaction)
+      : transaction;
+
+    // In some wallet SDK cases, the signature is calculated but the ID is bypassed to save CPU.
+    // According to Arweave protocol, transaction ID is the SHA-256 hash of the transaction signature.
+    if (!txToPost.id && txToPost.signature) {
+      const signatureBuffer = arweave.utils.b64UrlToBuffer(txToPost.signature);
+      const idHash = await arweave.crypto.hash(signatureBuffer);
+      txToPost.id = arweave.utils.bufferTob64Url(idHash);
+    }
 
     try {
       const isValid = await arweave.transactions.verify(txToPost);

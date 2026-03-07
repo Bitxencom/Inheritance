@@ -701,6 +701,12 @@ export function useVaultClaim({
       const normalizedVaultId = formState.vaultId.trim();
 
       if (fractionKeysArray.length < 3) {
+        const fractionKeysStepIndex = claimSteps.findIndex(
+          (step) => step.key === "fractionKeys",
+        );
+        if (fractionKeysStepIndex !== -1) {
+          setCurrentStep(fractionKeysStepIndex);
+        }
         setStepError("Please provide at least 3 Fraction Keys to open the inheritance.");
         setIsSubmitting(false);
         return;
@@ -723,7 +729,15 @@ export function useVaultClaim({
         console.log('✅ Fraction keys combined successfully');
       } catch (combineError) {
         console.error('❌ Fraction key combination failed:', combineError);
-        throw new Error("Fraction keys do not match. Make sure all 3 fraction keys are correct.");
+        const fractionKeysStepIndex = claimSteps.findIndex(
+          (step) => step.key === "fractionKeys",
+        );
+        if (fractionKeysStepIndex !== -1) {
+          setCurrentStep(fractionKeysStepIndex);
+        }
+        setStepError("Fraction keys do not match. Make sure all 3 fraction keys are correct.");
+        setIsSubmitting(false);
+        return;
       }
 
       let data: UnlockResponseLike | null = null;
@@ -1131,7 +1145,7 @@ export function useVaultClaim({
             console.log('sealedSecret', sealedSecret)
 
             // Bitxen3: If we have releaseEntropy, we MUST derive the UnlockKey
-            if (data.releaseEntropy && data.contractDataId && data.contractAddress && data.chainId) {
+            if (data.releaseEntropy && data.contractAddress && data.chainId) {
               setUnlockStep("Deriving unlock key from release entropy...");
 
               // DEBUG: Log key derivation inputs for edited vault troubleshooting
@@ -1186,18 +1200,20 @@ export function useVaultClaim({
 
               // Fallback: Try with combinedKey (for edited vault wrapped key consistency)
               try {
+                let fallbackVaultKey: Uint8Array;
                 if (!data.releaseEntropy) {
-                  throw new Error('Release entropy is required for fallback key derivation');
+                  fallbackVaultKey = combinedKey;
+                } else {
+                  fallbackVaultKey = await deriveUnlockKey(
+                    combinedKey,
+                    data.releaseEntropy,
+                    {
+                      contractAddress: data.contractAddress || '',
+                      chainId: Number(data.chainId || 0),
+                    }
+                  );
                 }
-                const fallbackVaultKey = await deriveUnlockKey(
-                  combinedKey,
-                  data.releaseEntropy,
-                  {
-                    contractAddress: data.contractAddress || '',
-                    chainId: Number(data.chainId || 0),
-                  }
-                );
-                console.log('🔓 Trying to unwrap with fallbackVaultKey (combinedKey-derived)');
+                console.log('🔓 Trying to unwrap with fallbackVaultKey');
                 payloadKey = await unwrapKeyClient(wrappedKey, fallbackVaultKey);
                 console.log('✅ Payload key unwrapped with fallbackVaultKey');
               } catch (fallbackError) {
@@ -1222,9 +1238,18 @@ export function useVaultClaim({
           console.log("[DEBUG] data.contractDataId:", data.contractDataId);
           console.log("[DEBUG] data.contractAddress:", data.contractAddress);
           console.log("[DEBUG] data.chainId:", data.chainId);
+
           if (e instanceof Error) {
             const msg = e.message.toLowerCase();
-            if (msg.includes("encrypted key") || msg.includes("unsupported encrypted key") || msg.includes("invalid encrypted key")) {
+            // Preserve explicit errors thrown from inside our try block
+            if (
+              msg.includes("encrypted key") ||
+              msg.includes("failed to recover time-locked secret") ||
+              msg.includes("incompatible") ||
+              msg.includes("checksum mismatch") ||
+              msg.includes("release entropy") ||
+              msg.includes("unsupported wrapped key")
+            ) {
               throw e;
             }
           }
@@ -1301,6 +1326,16 @@ export function useVaultClaim({
         error instanceof Error
           ? error.message
           : "Something went wrong while trying to open the inheritance.";
+
+      if (message.toLowerCase().includes("fraction keys")) {
+        const fractionKeysStepIndex = claimSteps.findIndex(
+          (step) => step.key === "fractionKeys"
+        );
+        if (fractionKeysStepIndex !== -1) {
+          setCurrentStep(fractionKeysStepIndex);
+        }
+      }
+
       setStepError(message);
       onResult?.({
         status: "error",

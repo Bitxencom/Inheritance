@@ -41,7 +41,7 @@ import {
     CheckCircle2,
     LogOut,
 } from "lucide-react";
-import { useWeb3Modal, useWeb3ModalState } from "@web3modal/wagmi/react";
+import { useAppKit, useAppKitState } from "@reown/appkit/react";
 import { useAccount, useDisconnect } from "wagmi";
 
 import { Button } from "@/components/ui/button";
@@ -99,8 +99,8 @@ export function MobileWalletModal({
     onBothConnected,
     mode = "both",
 }: MobileWalletModalProps) {
-    const { open: openWeb3Modal, close: closeWeb3Modal } = useWeb3Modal();
-    const { open: isWeb3ModalOpen } = useWeb3ModalState();
+    const { open: openAppKit, close: closeAppKit } = useAppKit();
+    const { open: isAppKitOpen } = useAppKitState();
     const { disconnect: disconnectEvm } = useDisconnect();
     const { address: evmAddress, isConnected: isEvmConnected, isReconnecting: isEvmReconnecting } = useAccount();
 
@@ -113,7 +113,7 @@ export function MobileWalletModal({
 
     // Guard ref: mencegah useEffect re-open dialog secara tidak sengaja.
     // Hanya di-set true ketika user memang menekan tombol Connect EVM Wallet.
-    const didOpenWeb3Modal = useRef(false);
+    const didOpenAppKit = useRef(false);
 
     const showEvm = mode === "evm-only" || mode === "both";
     const showArweave = mode === "arweave-only" || mode === "both";
@@ -215,30 +215,31 @@ export function MobileWalletModal({
         setEvmError(null);
         setIsConnectingEvm(true);
 
-        // Seperti Wander, kita harus menutup Radix <Dialog> dulu agar event listener
-        // dari WalletConnect/Web3Modal (seperti app-switch visibilitychange, deep-link dll)
-        // tidak terblokir oleh focus trap (aria-modal) dari Radix.
+        // PENTING: Jangan gunakan setTimeout() sebelum openAppKit().
+        // Browser mobile (iOS Safari / Android Chrome) mewajibkan deep-link (intent/wc:)
+        // dieksekusi dalam konteks siklus "User Gesture" (klik langsung) secara instan.
+        // Jika ada setTimeout, popup atau app-switch akan diblokir oleh sistem keamanan OS,
+        // mengakibatkan UI nyangkut di "Continue in MetaMask".
         onOpenChange(false);
-        await new Promise<void>((resolve) => setTimeout(resolve, 250));
 
         try {
-            // Tandai bahwa Web3Modal memang sengaja dibuka dari user — dipakai oleh useEffect di bawah
-            didOpenWeb3Modal.current = true;
-            await openWeb3Modal();
-            // Modal Web3Modal terbuka. State perubahan akan ditangani oleh useEffect `isWeb3ModalOpen`
+            // Tandai bahwa AppKit memang sengaja dibuka dari user
+            didOpenAppKit.current = true;
+            await openAppKit();
+            // Modal AppKit terbuka. State perubahan akan ditangani oleh useEffect `isAppKitOpen`
         } catch (err) {
-            // Jika openWeb3Modal() langsung throw, reset flag
-            didOpenWeb3Modal.current = false;
+            // Jika openAppKit() langsung throw, reset flag
+            didOpenAppKit.current = false;
 
             if (isWalletConnectStaleSessionError(err)) {
                 // Stale session: hapus data WC lama dari localStorage dan coba sekali lagi
                 console.warn("[EVM Connect] Stale WalletConnect session detected. Clearing storage and retrying…", err);
                 clearWalletConnectStorage();
                 try {
-                    didOpenWeb3Modal.current = true;
-                    await openWeb3Modal();
+                    didOpenAppKit.current = true;
+                    await openAppKit();
                 } catch (retryErr) {
-                    didOpenWeb3Modal.current = false;
+                    didOpenAppKit.current = false;
                     setEvmError(
                         retryErr instanceof Error
                             ? retryErr.message
@@ -256,27 +257,27 @@ export function MobileWalletModal({
         }
     };
 
-    // Re-open Radix Dialog ketika Web3Modal ditutup — HANYA jika Web3Modal sebelumnya
-    // benar-benar dibuka oleh user (didOpenWeb3Modal.current === true).
-    // Ini mencegah loop: tanpa guard ini, kondisi !isWeb3ModalOpen && !open terpenuhi
+    // Re-open Radix Dialog ketika AppKit ditutup — HANYA jika AppKit sebelumnya
+    // benar-benar dibuka oleh user (didOpenAppKit.current === true).
+    // Ini mencegah loop: tanpa guard ini, kondisi !isAppKitOpen && !open terpenuhi
     // sejak awal, sehingga setiap kali user menutup dialog utama akan langsung reopen.
     useEffect(() => {
-        if (!isWeb3ModalOpen && !open && mode === "both" && wanderAddress && didOpenWeb3Modal.current) {
+        if (!isAppKitOpen && !open && mode === "both" && wanderAddress && didOpenAppKit.current) {
             // Reset flag agar tidak trigger lagi
-            didOpenWeb3Modal.current = false;
+            didOpenAppKit.current = false;
             const t = setTimeout(() => onOpenChange(true), 200);
             return () => clearTimeout(t);
         }
-    }, [isWeb3ModalOpen, mode, open, onOpenChange, wanderAddress]);
+    }, [isAppKitOpen, mode, open, onOpenChange, wanderAddress]);
 
-    // Force close Web3Modal jika EVM sudah terkoneksi tapi modal dari Web3Modal masih tersangkut terbuka.
+    // Force close AppKit jika EVM sudah terkoneksi tapi modal dari AppKit masih tersangkut terbuka.
     // BUG mobile: Deep link redirect terkadang membuat fallback UI "Continue in MetaMask" stuck 
     // meskipun Wagmi secara pasif sudah berhasil menghidrasi state `isConnected` dari localStorage/cookie.
     useEffect(() => {
-        if (isEvmConnected && isWeb3ModalOpen) {
-            closeWeb3Modal();
+        if (isEvmConnected && isAppKitOpen) {
+            closeAppKit();
         }
-    }, [isEvmConnected, isWeb3ModalOpen, closeWeb3Modal]);
+    }, [isEvmConnected, isAppKitOpen, closeAppKit]);
 
     // Konfirmasi setelah keduanya connect — panggil onBothConnected
     const handleBothConnected = () => {

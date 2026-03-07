@@ -684,8 +684,11 @@ export async function verifyFractionKeyCommitmentsIfPresent(params: {
 
     const expected = byShareId[String(info.id)]?.trim().toLowerCase();
     if (!expected) throw new Error("Incorrect or mismatched Fraction Keys.");
+    console.log("Expected1: ", expected);
 
     const actual = (await sha256Hex(encoder.encode(trimmed))).toLowerCase();
     if (actual !== expected) throw new Error("Incorrect or mismatched Fraction Keys.");
+    console.log("Expected2: ", expected);
+
   }
 }

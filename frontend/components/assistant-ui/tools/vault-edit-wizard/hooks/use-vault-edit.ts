@@ -98,11 +98,13 @@ async function verifyFractionKeyCommitmentsIfPresent(params: {
         const expectedRaw = byShareId[String(info.id)];
         const expected = typeof expectedRaw === "string" ? expectedRaw.trim().toLowerCase() : "";
         if (!expected) {
+            console.log("expectedRaw1: ", expected);
             throw new Error("Incorrect or mismatched Fraction Keys. Make sure all keys come from the same backup.");
         }
 
         const actual = (await sha256Hex(encoder.encode(trimmed))).toLowerCase();
         if (actual !== expected) {
+            console.log("expectedRaw2: ", expected);
             throw new Error("Incorrect or mismatched Fraction Keys. Make sure all keys come from the same backup.");
         }
     }
@@ -767,7 +769,7 @@ export function useVaultEdit({
         }
     }, [initialData, open]);
 
-    const submitEdit = async (overrides?: { storageType?: "arweave" | "bitxenArweave"; selectedChain?: ChainId }) => {
+    const submitEdit = async (overrides?: { storageType?: "arweave" | "bitxenArweave"; selectedChain?: ChainId; evmAddress?: string }) => {
         setIsSubmitting(true);
         setStepError(null);
         try {
@@ -893,7 +895,9 @@ export function useVaultEdit({
                 });
 
                 // Anti-Bypass Commitment calculation
-                const userAddress = await connectMetaMask();
+                const userAddress = overrides?.evmAddress;
+                if (!userAddress) throw new Error("Missing EVM wallet address. Please reconnect your wallet.");
+
                 const dataJson = JSON.stringify(newArPayload);
                 const dataHashBytes = keccak_256(new TextEncoder().encode(dataJson));
                 const dataHash = "0x" + Array.from(dataHashBytes as Uint8Array).map(b => (b as number).toString(16).padStart(2, '0')).join('');
@@ -937,11 +941,11 @@ export function useVaultEdit({
         } finally { setIsSubmitting(false); }
     };
 
-    const handleUnifiedPayment = async (mode: PaymentMode, chainId?: ChainId) => {
+    const handleUnifiedPayment = async (mode: PaymentMode, chainId?: ChainId, evmAddress?: string) => {
         setIsProcessingPayment(true);
         const effStorage = mode === "wander" ? "arweave" : "bitxenArweave";
         setFormState(prev => ({ ...prev, storageType: effStorage, payment: { ...prev.payment, selectedChain: chainId || prev.payment.selectedChain } }));
-        await submitEdit({ storageType: effStorage, selectedChain: chainId });
+        await submitEdit({ storageType: effStorage, selectedChain: chainId, evmAddress });
         setIsProcessingPayment(false);
     };
 

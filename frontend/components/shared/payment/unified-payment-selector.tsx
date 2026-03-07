@@ -36,7 +36,7 @@ export type PaymentMode = "wander" | "hybrid";
 export type ArweavePaymentPhase = "confirm" | "upload" | "finalize";
 
 interface UnifiedPaymentSelectorProps {
-  onSubmit: (mode: PaymentMode, chainId?: ChainId) => Promise<void>;
+  onSubmit: (mode: PaymentMode, chainId?: ChainId, evmAddress?: string) => Promise<void>;
   isSubmitting?: boolean;
   paymentStatus?: string | null;
   paymentProgress?: number | null;
@@ -165,7 +165,7 @@ export function UnifiedPaymentSelector({
 
         setIsConnecting(false);
         setIsAwaitingSubmit(true);
-        await onSubmit("hybrid", selectedChain);
+        await onSubmit("hybrid", selectedChain, mmAddr);
       }
     } catch (err) {
       if (err instanceof InsufficientBitxenError) {
@@ -232,7 +232,7 @@ export function UnifiedPaymentSelector({
 
         setIsConnecting(false);
         setIsAwaitingSubmit(true);
-        await onSubmit("hybrid", selectedChain);
+        await onSubmit("hybrid", selectedChain, address);
       } catch (err) {
         if (err instanceof InsufficientBitxenError) {
           setInsufficientBalanceError(err);

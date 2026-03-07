@@ -555,8 +555,8 @@ export function VaultClaimWizard({
 
       {/* Navigation Buttons */}
       <div className={cn("flex gap-3 justify-end")}>
-        {/* Show Reset button on Step 1 if ID already verified (user came back from step 2) */}
-        {currentStep !== 0 && !initialData && claimSteps[currentStep].key !== "success" && (
+        {/* Show Previous button when not on the first or success step */}
+        {currentStep !== 0 && claimSteps[currentStep].key !== "success" && (
           <Button
             variant="outline"
             onClick={handlePrev}

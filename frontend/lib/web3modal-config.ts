@@ -17,7 +17,7 @@
  *  3. Salin Project ID ke .env.local sebagai NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID
  */
 
-import { defaultWagmiConfig } from "@web3modal/wagmi/react/config";
+import { WagmiAdapter } from "@reown/appkit-adapter-wagmi";
 import {
     mainnet,
     polygon,
@@ -25,7 +25,7 @@ import {
     bscTestnet,
     base,
     arbitrum,
-} from "wagmi/chains";
+} from "@reown/appkit/networks";
 
 // WalletConnect Project ID — WAJIB diisi dari environment variable
 export const projectId =
@@ -57,18 +57,19 @@ export const supportedChains = [
     polygon,
     base,
     arbitrum,
-] as const;
+] as [any, ...any[]];
 
-// Wagmi config menggunakan defaultWagmiConfig dari Web3Modal
+// Wagmi config menggunakan WagmiAdapter dari Reown AppKit
 // Ini secara otomatis menambahkan WalletConnect, MetaMask, Coinbase connectors
 import { cookieStorage, createStorage } from "wagmi";
 
-export const wagmiConfig = defaultWagmiConfig({
-    chains: supportedChains,
-    projectId,
-    metadata: web3ModalMetadata,
-    ssr: true, // Next.js SSR support
+export const wagmiAdapter = new WagmiAdapter({
     storage: createStorage({
         storage: cookieStorage
-    })
+    }),
+    ssr: true,
+    projectId,
+    networks: supportedChains
 });
+
+export const wagmiConfig = wagmiAdapter.wagmiConfig;

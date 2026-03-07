@@ -573,7 +573,7 @@ export function useVaultCreation({
     };
   };
 
-  const submitToMCP = async (overrides?: { storageType?: "arweave" | "bitxenArweave"; selectedChain?: ChainId }) => {
+  const submitToMCP = async (overrides?: { storageType?: "arweave" | "bitxenArweave"; selectedChain?: ChainId; evmAddress?: string }) => {
     setIsSubmitting(true);
     setStepError(null);
     setPaymentProgress(null);
@@ -581,6 +581,7 @@ export function useVaultCreation({
 
     const effectiveStorageType = overrides?.storageType ?? formState.storageType;
     const effectiveChain = overrides?.selectedChain ?? (formState.payment.selectedChain as ChainId | undefined);
+    const evmAddress = overrides?.evmAddress;
 
     setPaymentStatus(effectiveStorageType === "bitxenArweave" ? "Step 1/2: Preparing your vault..." : "Preparing your vault...");
 
@@ -771,8 +772,10 @@ export function useVaultCreation({
         // We need dataHash (hash of the encrypted vault payload) and wrappedKeyHash.
         // We must ensure dataHash matches what dispatchHybrid uses (keccak256(JSON.stringify(payload))).
 
-        const { connectMetaMask } = await import("@/lib/metamaskWallet");
-        const userAddress = await connectMetaMask();
+        const userAddress = evmAddress;
+        if (!userAddress) {
+          throw new Error("Missing EVM wallet address. Please reconnect your wallet.");
+        }
 
         const dataJson = JSON.stringify(arweavePayload);
         const dataHashBytes = keccak_256(new TextEncoder().encode(dataJson));
@@ -912,7 +915,7 @@ export function useVaultCreation({
     setCurrentStep((prev) => Math.min(prev + 1, steps.length - 1));
   };
 
-  const handleUnifiedPayment = async (mode: PaymentMode, chainId?: ChainId) => {
+  const handleUnifiedPayment = async (mode: PaymentMode, chainId?: ChainId, evmAddress?: string) => {
     try {
       setIsProcessingPayment(true);
       setPaymentProgress(null);
@@ -943,6 +946,7 @@ export function useVaultCreation({
       await submitToMCP({
         storageType: effectiveStorageType,
         selectedChain: effectiveChain,
+        evmAddress,
       });
 
     } catch (error) {
