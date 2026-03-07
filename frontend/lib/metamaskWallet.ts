@@ -214,6 +214,7 @@ export type HybridDispatchOptions = {
   onUploadProgress?: (progress: number) => void;
   contractDataId?: string;
   contractAddress?: string;
+  tags?: Record<string, string>;
 };
 
 /**
@@ -868,7 +869,10 @@ export async function dispatchHybrid(
   const arweaveResult = await dispatchToArweave(
     arweavePayload,
     vaultId,
-    undefined,
+    {
+      "Mode": "hybrid",
+      ...(options.tags || {}),
+    },
     (progress) => {
       onUploadProgress?.(progress);
     },

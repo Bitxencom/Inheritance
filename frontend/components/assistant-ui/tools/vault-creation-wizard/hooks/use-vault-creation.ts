@@ -738,7 +738,7 @@ export function useVaultCreation({
 
       if (effectiveStorageType === "arweave") {
         setPaymentStatus("Step 1/2: Preparing your vault...");
-        const dispatchResult = await arUpload(arweavePayload, vaultId);
+        const dispatchResult = await arUpload(arweavePayload, vaultId, { "Mode": "standalone" });
         txId = dispatchResult.txId;
         setPaymentStatus("Upload successful! We're saving your inheritance details...");
       } else if (effectiveStorageType === "bitxenArweave") {

@@ -24,9 +24,11 @@ type CheckClaimRequest = {
   arweaveTxId?: string | null;
 };
 
-async function getArweaveConfirmations(txId: string): Promise<number> {
+async function getArweaveDetails(txId: string): Promise<{
+  confirmationDepth: number;
+  tags: Record<string, string>;
+}> {
   try {
-    // 1️⃣ Ambil block height transaksi
     const gqlResponse = await fetch("https://arweave.net/graphql", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -37,6 +39,10 @@ async function getArweaveConfirmations(txId: string): Promise<number> {
               block {
                 height
               }
+              tags {
+                name
+                value
+              }
             }
           }
         `,
@@ -44,33 +50,37 @@ async function getArweaveConfirmations(txId: string): Promise<number> {
       })
     });
 
-    if (!gqlResponse.ok) {
-      console.log("GraphQL error");
-      return 0;
-    }
+    const result = { confirmationDepth: 0, tags: {} as Record<string, string> };
+
+    if (!gqlResponse.ok) return result;
 
     const gqlData = await gqlResponse.json();
-    const txBlockHeight =
-      gqlData?.data?.transaction?.block?.height ?? null;
+    const tx = gqlData?.data?.transaction;
 
-    // kalau belum masuk block
-    if (txBlockHeight === null) return 0;
+    // Process tags
+    if (Array.isArray(tx?.tags)) {
+      tx.tags.forEach((tag: { name: string; value: string }) => {
+        result.tags[tag.name] = tag.value;
+      });
+    }
 
-    // 2️⃣ Ambil current network height (REST API, bukan GraphQL)
+    const txBlockHeight = tx?.block?.height ?? null;
+    if (txBlockHeight === null) return result;
+
     const heightResponse = await fetch("https://arweave.net/info");
-    if (!heightResponse.ok) return 0;
+    if (!heightResponse.ok) return result;
 
     const heightData = await heightResponse.json();
     const currentHeight = heightData?.height ?? null;
 
-    if (currentHeight === null) return 0;
+    if (currentHeight !== null) {
+      result.confirmationDepth = Math.max(0, currentHeight - txBlockHeight);
+    }
 
-    // 3️⃣ Hitung confirmations
-    return Math.max(0, currentHeight - txBlockHeight);
-
+    return result;
   } catch (err) {
     console.error(err);
-    return 0;
+    return { confirmationDepth: 0, tags: {} };
   }
 }
 
@@ -135,32 +145,35 @@ export async function POST(req: Request) {
         // Check blockchain confirmation depth for all vaults
         const txId = typed.latestTxId || arweaveTxId;
         let isConfirmed = true;
-
-        if (txId) {
-          confirmationDepth = await getArweaveConfirmations(txId);
-          if (confirmationDepth >= MIN_CONFIRMATION_DEPTH) {
-            isConfirmed = true;
-          } else {
-            isConfirmed = false
-          }
-        }
-
-        // Check if vault is hybrid (for metadata purposes)
         let isHybrid = false;
+
         if (txId) {
-          try {
-            const payloadText = await fetch(`https://arweave.net/${txId}`).then(r => r.ok ? r.text() : null);
-            if (payloadText) {
-              try {
-                const payloadJson = JSON.parse(payloadText);
-                const metadata = payloadJson?.metadata || {};
-                isHybrid = !!(metadata.blockchainChain || metadata.contractAddress || metadata.contractEncryptedKey);
-              } catch (e) {
-                // Ignore JSON parse errors
+          const arDetails = await getArweaveDetails(txId);
+          confirmationDepth = arDetails.confirmationDepth;
+          isConfirmed = confirmationDepth >= MIN_CONFIRMATION_DEPTH;
+
+          // Check if vault is hybrid (Tag Check + Legacy Metadata Check Fallback)
+          const vaultMode = arDetails.tags["Mode"];
+          if (vaultMode === "hybrid") {
+            isHybrid = true;
+          } else if (vaultMode === "standalone") {
+            isHybrid = false;
+          } else {
+            // Legacy Fallback: Only if tag is missing
+            try {
+              const payloadText = await fetch(`https://arweave.net/${txId}`).then(r => r.ok ? r.text() : null);
+              if (payloadText) {
+                try {
+                  const payloadJson = JSON.parse(payloadText);
+                  const metadata = payloadJson?.metadata || {};
+                  isHybrid = !!(metadata.blockchainChain || metadata.contractAddress || metadata.contractEncryptedKey);
+                } catch (e) {
+                  // Ignore JSON parse errors
+                }
               }
+            } catch (err) {
+              // ignore fetch failures
             }
-          } catch (err) {
-            // ignore fetch failures
           }
         }
 
