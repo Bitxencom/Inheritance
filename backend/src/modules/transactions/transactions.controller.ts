@@ -377,15 +377,15 @@ export const arweaveRelayStart = async (req: Request, res: Response): Promise<vo
             try {
                 updateRelayJob(jobId, { status: "Preparing Arweave transaction..." });
                 const tx = arweave.transactions.fromRaw(body.txRaw as never);
+                tx.data = data; // CRITICAL: Ensure data buffer is attached for verify() and upload
 
                 logger.info({
                     jobId,
                     txId: tx.id,
                     txReward: tx.reward,
-                    txOwner: tx.owner?.slice(0, 10),
                     txLastTx: tx.last_tx,
-                    hasDataRoot: !!tx.data_root,
-                    dataTreeLength: tx.data_tree?.length,
+                    hasData: !!tx.data,
+                    dataLen: tx.data?.length,
                 }, "DEBUG: [ArweaveRelay] Reconstructed tx");
 
                 if (!tx.data_root && data.length > 0) {
@@ -397,6 +397,18 @@ export const arweaveRelayStart = async (req: Request, res: Response): Promise<vo
                 if (!(await arweave.transactions.verify(tx))) {
                     updateRelayJob(jobId, { done: true, error: "Invalid transaction signature" }, "error");
                     return;
+                }
+
+                // Optimization: For small transactions (< 256KB), use post() instead of chunked uploader.
+                if (data.length < 256 * 1024) {
+                    updateRelayJob(jobId, { status: "Posting transaction directly..." });
+                    const response = await arweave.transactions.post(tx);
+                    if (response.status === 200 || response.status === 202) {
+                        updateRelayJob(jobId, { progress: 100, status: "Upload successful.", done: true, txId: tx.id }, "complete");
+                        logger.info({ jobId, txId: tx.id }, "[ArweaveRelay] Post success");
+                        return;
+                    }
+                    logger.warn({ jobId, status: response.status }, "[ArweaveRelay] Direct post failed, falling back to uploader");
                 }
 
                 if (typeof (tx as unknown as { prepareChunks?: unknown }).prepareChunks === "function") {
