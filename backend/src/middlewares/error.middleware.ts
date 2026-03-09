@@ -1,6 +1,8 @@
 import { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 
+import { logger } from "../config/logger.js";
+
 /**
  * Global error handler middleware.
  * Must be registered LAST with 4 parameters so Express recognises it as an error handler.
@@ -12,7 +14,7 @@ export const globalErrorHandler = (
     res: Response,
     _next: NextFunction,
 ): void => {
-    console.error("❌ Backend error", err);
+    logger.error({ err }, "❌ Backend error");
 
     // Zod validation errors
     if (err instanceof ZodError) {

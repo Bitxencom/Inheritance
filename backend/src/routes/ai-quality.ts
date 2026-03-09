@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { aiQualityLogger } from '../services/ai-quality-logger.js';
+import { logger } from '../config/logger.js';
 
 export const aiQualityRouter = Router();
 
@@ -25,12 +26,12 @@ const logQualitySchema = z.object({
 aiQualityRouter.post('/log', async (req, res, next) => {
   try {
     const metrics = logQualitySchema.parse(req.body);
-    
+
     // Log to file (async, non-blocking)
     aiQualityLogger.logQuality(metrics).catch((err) => {
-      console.warn('⚠️ Failed to write quality log:', err);
+      logger.warn({ err }, '⚠️ Failed to write quality log');
     });
-    
+
     res.json({
       success: true,
       message: 'Quality metrics logged',

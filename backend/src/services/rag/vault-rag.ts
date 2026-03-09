@@ -3,6 +3,7 @@ import { decryptPayload } from '../crypto/aes.js';
 import { combineShares } from '../crypto/shamir.js';
 import type { VaultPayload, EncryptedVault } from '../../types/vault.js';
 import type { VaultRAGResult } from './types.js';
+import { logger } from '../../config/logger.js';
 
 export class VaultRAG {
   /**
@@ -19,16 +20,16 @@ export class VaultRAG {
   ): Promise<VaultRAGResult[]> {
     const results: VaultRAGResult[] = [];
     const queryLower = query.toLowerCase();
-    
+
     for (const vaultId of vaultIds) {
       try {
         // Fetch encrypted vault from blockchain storage
         const uploadPayload = await fetchVaultPayloadById(vaultId);
-        
+
         let content = '';
         let title = '';
         let canDecrypt = false;
-        
+
         // If fraction keys provided, decrypt to get content
         if (fractionKeys && fractionKeys.length >= 3) {
           try {
@@ -37,16 +38,16 @@ export class VaultRAG {
               uploadPayload.encryptedData as EncryptedVault,
               masterKey
             ) as VaultPayload;
-            
+
             title = decrypted.willDetails.title;
             content = decrypted.willDetails.content;
             canDecrypt = true;
           } catch (error) {
             // Decrypt failed, use metadata only
-            console.warn(`Cannot decrypt vault ${vaultId}:`, error);
+            logger.warn({ err: error }, `Cannot decrypt vault ${vaultId}`);
           }
         }
-        
+
         // If can't decrypt, use metadata
         if (!canDecrypt) {
           title = (uploadPayload.metadata?.title as string) || '';
@@ -54,10 +55,10 @@ export class VaultRAG {
           const metadataStr = JSON.stringify(uploadPayload.metadata || {});
           content = metadataStr;
         }
-        
+
         // Calculate relevance score
         const relevanceScore = this.calculateRelevance(queryLower, title, content);
-        
+
         if (relevanceScore > 0) {
           results.push({
             vaultId,
@@ -69,14 +70,14 @@ export class VaultRAG {
           });
         }
       } catch (error) {
-        console.error(`Error retrieving vault ${vaultId}:`, error);
+        logger.error({ err: error }, `Error retrieving vault ${vaultId}`);
       }
     }
-    
+
     // Sort by relevance
     return results.sort((a, b) => b.relevanceScore - a.relevanceScore);
   }
-  
+
   /**
    * Calculate relevance score for query
    */
@@ -87,20 +88,20 @@ export class VaultRAG {
   ): number {
     const titleLower = title.toLowerCase();
     const contentLower = content.toLowerCase();
-    
+
     let score = 0;
-    
+
     // Title match is more important
     if (titleLower.includes(query)) score += 10;
     if (contentLower.includes(query)) score += 5;
-    
+
     // Keyword matching
     const queryWords = query.split(/\s+/).filter(w => w.length > 2);
     queryWords.forEach(word => {
       if (titleLower.includes(word)) score += 2;
       if (contentLower.includes(word)) score += 1;
     });
-    
+
     return score;
   }
 }

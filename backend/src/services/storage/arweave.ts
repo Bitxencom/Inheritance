@@ -3,6 +3,7 @@ import { calculate } from "@metaplex/arweave-cost";
 
 // import { appEnv } from "../../config/env.js";
 import { encryptMetadata, decryptMetadata } from "../vault-service.js";
+import { logger } from "../../config/logger.js";
 
 // Always use Arweave Mainnet
 const arweave = Arweave.init({
@@ -38,7 +39,7 @@ export const estimateUploadCost = async (dataSize: number): Promise<number> => {
     const result = await calculate([dataSize]);
     return result.arweave;
   } catch (error) {
-    console.warn(`⚠️  Failed to calculate blockchain cost estimate:`, error);
+    logger.warn({ err: error }, `⚠️  Failed to calculate blockchain cost estimate`);
     return 0;
   }
 };
@@ -119,7 +120,7 @@ export const fetchVaultPayloadById = async (
 
     try {
       if (attempt > 0) {
-        console.log(`🔄 Retrying Arweave GraphQL query using ${graphqlUrl} (attempt ${attempt + 1}/${maxRetries})...`);
+        logger.info(`🔄 Retrying Arweave GraphQL query using ${graphqlUrl} (attempt ${attempt + 1}/${maxRetries})...`);
         // Add a small delay between retries
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
@@ -154,10 +155,10 @@ export const fetchVaultPayloadById = async (
             : null;
         success = true;
       } else {
-        console.warn(`⚠️ Blockchain GraphQL query failed at ${graphqlUrl}: HTTP ${gqlResponse.status}`);
+        logger.warn(`⚠️ Blockchain GraphQL query failed at ${graphqlUrl}: HTTP ${gqlResponse.status}`);
       }
     } catch (error) {
-      console.warn(`⚠️ Blockchain GraphQL query failed at ${graphqlUrl} (attempt ${attempt + 1}):`, error);
+      logger.warn({ err: error }, `⚠️ Blockchain GraphQL query failed at ${graphqlUrl} (attempt ${attempt + 1})`);
     }
     attempt++;
   }
@@ -206,7 +207,7 @@ export const fetchVaultPayloadById = async (
     // This implies fallbackTxId might be NEWER (pending) or OLDER. 
     // We assume if it's in local storage and different, it likely might be a pending newer version.
     if (fallbackTxId && fallbackTxId !== txId) {
-      console.log(`ℹ️ Comparison: GraphQL TxId (${txId}) vs Local TxId (${fallbackTxId})`);
+      logger.info(`ℹ️ Comparison: GraphQL TxId (${txId}) vs Local TxId (${fallbackTxId})`);
 
       // Check status of local fallbackTxId
       const localStatus = await checkTxStatus(fallbackTxId);
@@ -225,7 +226,7 @@ export const fetchVaultPayloadById = async (
   // Case 2: GraphQL failed or returned nothing
   if (!txId) {
     if (fallbackTxId) {
-      console.log(`⚠️ Vault ID not found via GraphQL, trying fallback TxId: ${fallbackTxId}`);
+      logger.warn(`⚠️ Vault ID not found via GraphQL, trying fallback TxId: ${fallbackTxId}`);
 
       // If fallbackTxId starts with 0x, it's a Smart Chain transaction!
       if (fallbackTxId.startsWith("0x")) {
@@ -414,7 +415,7 @@ export const fetchVaultPayloadById = async (
         latestTxId: txId,
       };
     } catch (error) {
-      console.error("❌ Failed to process vault payload:", error);
+      logger.error({ err: error }, "❌ Failed to process vault payload");
       // Fall through to legacy check if possible
     }
   }
@@ -436,7 +437,7 @@ export const fetchVaultPayloadById = async (
   }
 
   if (process.env.DEBUG_LOGS === "true") {
-    console.debug("❌ Invalid Arweave Payload Structure. Keys found:", Object.keys(payloadJson as any || {}));
+    logger.debug({ keys: Object.keys(payloadJson as any || {}) }, "❌ Invalid Arweave Payload Structure");
   }
 
   throw new Error(
@@ -452,7 +453,7 @@ async function fetchVaultFromSmartChain(
   vaultId: string,
   txHash: string
 ): Promise<UploadPayloadInput> {
-  console.log(`🌐 Fetching vault from Smart Chain: ${txHash}`);
+  logger.info(`🌐 Fetching vault from Smart Chain: ${txHash}`);
 
   // List of RPC URLs to try (BSC as default)
   const rpcs = ["https://bsc-dataseed.binance.org/", "https://binance.llamarpc.com"];
@@ -493,7 +494,7 @@ async function fetchVaultFromSmartChain(
         };
       }
     } catch (error) {
-      console.warn(`⚠️ Failed to fetch from RPC ${rpc}:`, error);
+      logger.warn({ err: error }, `⚠️ Failed to fetch from RPC ${rpc}`);
     }
   }
 

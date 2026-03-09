@@ -1,6 +1,7 @@
 import { createHash, randomUUID, pbkdf2Sync, randomBytes, createCipheriv, createDecipheriv, timingSafeEqual } from "crypto";
 
 import { appEnv } from "../config/env.js";
+import { logger } from "../config/logger.js";
 import {
   encryptPayload,
   encryptPayloadHybrid,
@@ -191,7 +192,7 @@ export const prepareVault = async (
 
   // Determine encryption mode
   const usePqc = payload.enablePqc === true;
-  
+
   let encryptedVault: EncryptedVault | HybridEncryptedVault;
   let fractionKeys: string[];
   let pqcKeyPairSerialized: SerializedPqcKeyPair | undefined;
@@ -212,7 +213,7 @@ export const prepareVault = async (
       threshold: appEnv.shamirThreshold,
     });
 
-    console.log(`🔐 Vault ${vaultId} prepared with PQC hybrid encryption (ML-KEM-768 + AES-256)`);
+    logger.info(`🔐 Vault ${vaultId} prepared with PQC hybrid encryption (ML-KEM-768 + AES-256)`);
   } else {
     // === CLASSIC MODE ===
     const key = generateAesKey();
@@ -222,7 +223,7 @@ export const prepareVault = async (
       threshold: appEnv.shamirThreshold,
     });
 
-    console.log(`🔐 Vault ${vaultId} prepared with classic encryption (AES-256 + Shamir)`);
+    logger.info(`🔐 Vault ${vaultId} prepared with classic encryption (AES-256 + Shamir)`);
   }
 
   const fractionKeyAssignments = distributeKeys(payload.beneficiaries, fractionKeys);

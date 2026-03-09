@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { logger } from '../config/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,7 +39,7 @@ export class AIQualityLogger {
    */
   private updateLogFile(): void {
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-    
+
     if (today !== this.currentDate) {
       this.currentDate = today;
       this.currentLogFile = path.join(this.logsDir, `ai-quality-${today}.log`);
@@ -52,7 +53,7 @@ export class AIQualityLogger {
     try {
       await fs.mkdir(this.logsDir, { recursive: true });
     } catch (error) {
-      console.error('❌ Error creating logs directory:', error);
+      logger.error({ err: error }, '❌ Error creating logs directory');
     }
   }
 
@@ -66,11 +67,11 @@ export class AIQualityLogger {
 
       // Format log entry as JSON (one line per entry for easy parsing)
       const logEntry = JSON.stringify(metrics);
-      
+
       // Append to today's log file
       await fs.appendFile(this.currentLogFile, logEntry + '\n', 'utf-8');
     } catch (error) {
-      console.error('❌ Error logging AI quality:', error);
+      logger.error({ err: error }, '❌ Error logging AI quality');
       // Don't throw error, logging must not disrupt main flow
     }
   }

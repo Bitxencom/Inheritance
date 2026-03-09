@@ -34,6 +34,7 @@ import {
     unlockSchema,
     verifySecurityQuestionsSchema,
 } from "./vault.schema.js";
+import { logger } from "../../config/logger.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Estimate cost (simple — data size only)
@@ -253,7 +254,7 @@ export const unlockVault = async (
             try {
                 metadata = decryptMetadata(encryptedMetadata, vaultId);
             } catch (error) {
-                console.error("❌ Failed to decrypt metadata for unlock:", error);
+                logger.error({ err: error }, "❌ Failed to decrypt metadata for unlock");
             }
         }
 
@@ -469,7 +470,7 @@ export const unlockVault = async (
                 })),
             });
         }
-        console.error("❌ Failed to unlock vault:", error);
+        logger.error({ err: error }, "❌ Failed to unlock vault");
         if (
             error instanceof Error &&
             (error.message.includes("pending") || error.message.includes("Newer version"))
@@ -602,7 +603,7 @@ export const getSecurityQuestions = async (
             message: "Security questions loaded successfully from blockchain storage.",
         });
     } catch (error) {
-        console.error("❌ Failed to load security questions for vault:", error);
+        logger.error({ err: error }, "❌ Failed to load security questions for vault");
         if (
             error instanceof Error &&
             (error.message.includes("pending") || error.message.includes("Newer version"))
@@ -748,7 +749,7 @@ export const verifySecurityQuestions = async (
                 })),
             });
         }
-        console.error("❌ Failed to validate security question answers:", error);
+        logger.error({ err: error }, "❌ Failed to validate security question answers");
         if (
             error instanceof Error &&
             (error.message.includes("pending") || error.message.includes("Newer version"))

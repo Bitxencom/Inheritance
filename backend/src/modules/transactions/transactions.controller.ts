@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 import Arweave from "arweave";
 
 import { appEnv } from "../../config/env.js";
+import { logger } from "../../config/logger.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -206,11 +207,11 @@ export const logTransaction = (req: Request, res: Response): void => {
 
         logsData.transactions.push(newLog);
         fs.writeFileSync(LOG_FILE, JSON.stringify(logsData, null, 2));
-        console.log(`📝 Transaction logged: ${txHash.slice(0, 10)}... for vault ${vaultId}`);
+        logger.info(`📝 Transaction logged: ${txHash.slice(0, 10)}... for vault ${vaultId}`);
 
         res.json({ success: true, message: "Transaction logged successfully", log: newLog });
     } catch (error) {
-        console.error("❌ Error logging transaction:", error);
+        logger.error({ err: error }, "❌ Error logging transaction");
         res.status(500).json({
             success: false,
             error: error instanceof Error ? error.message : "Failed to log transaction",
@@ -419,7 +420,7 @@ export const getAllTransactions = (_req: Request, res: Response): void => {
             transactions: logsData.transactions,
         });
     } catch (error) {
-        console.error("❌ Error reading transaction logs:", error);
+        logger.error({ err: error }, "❌ Error reading transaction logs");
         res.status(500).json({ success: false, error: "Failed to read transaction logs" });
     }
 };
@@ -435,7 +436,7 @@ export const getTransactionsByVault = (req: Request, res: Response): void => {
         const vaultTransactions = logsData.transactions.filter((tx) => tx.vaultId === vaultId);
         res.json({ success: true, vaultId, count: vaultTransactions.length, transactions: vaultTransactions });
     } catch (error) {
-        console.error("❌ Error reading transaction logs:", error);
+        logger.error({ err: error }, "❌ Error reading transaction logs");
         res.status(500).json({ success: false, error: "Failed to read transaction logs" });
     }
 };
@@ -449,7 +450,7 @@ export const clearTransactions = (_req: Request, res: Response): void => {
         fs.writeFileSync(LOG_FILE, JSON.stringify({ transactions: [] }, null, 2));
         res.json({ success: true, message: "All transaction logs cleared" });
     } catch (error) {
-        console.error("❌ Error clearing transaction logs:", error);
+        logger.error({ err: error }, "❌ Error clearing transaction logs");
         res.status(500).json({ success: false, error: "Failed to clear transaction logs" });
     }
 };
