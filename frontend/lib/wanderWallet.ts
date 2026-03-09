@@ -233,10 +233,10 @@ export async function initializeWanderConnect(): Promise<string> {
       fn();
     };
 
-    // Timeout 5 menit
+    // Timeout 90 detik (sebelumnya 5 menit, terlalu lama)
     const timeout = setTimeout(() => {
-      finish(() => reject(new Error('Wander Connect initialization timed out. Please try again.')));
-    }, 5 * 60 * 1000);
+      finish(() => reject(new Error('Wander Connect initialization timed out. Please try again or check if popups are blocked.')));
+    }, 15 * 1000);
 
     // Cek apakah dialog ditutup user (cancelled)
     // Walaupun Promise dari wallet.connect() hang, kita bs detect via getter isOpen:

@@ -185,9 +185,19 @@ export function MobileWalletModal({
                 }
             }
 
+            // AUTO-RECOVERY SAFETY: Seringkali popup Wander muncul tapi UI "Preparing"
+            // kita malah menutupi atau membuat user bingung. Kita pasang timer 
+            // agar overlay "Preparing" otomatis hilang setelah 8 detik meskipun 
+            // proses connect masih pending (user sedang memilih wallet/approve).
+            const safetyTimer = setTimeout(() => {
+                setIsConnectingWander(false);
+            }, 8000);
+
             // Buka Wander popup — promise resolve saat user approve,
             // reject saat user cancel atau error (via MutationObserver di wanderWallet.ts)
             const address = await connectWanderWallet();
+
+            clearTimeout(safetyTimer);
             setWanderAddress(address);
             onWanderConnected?.(address);
 
@@ -553,19 +563,31 @@ export function MobileWalletModal({
             </Dialog>
 
             {/* OVERLAY SPINNER KETIKA POPUP WANDER BELUM MUNCUL */}
-            {isConnectingWander && !open && (
-                <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-white animate-in fade-in duration-200">
-                    <div className="flex flex-col justify-center items-center gap-4 bg-card p-6 rounded-2xl shadow-xl border border-border outline-none w-full h-full">
-                        <div className="relative flex items-center justify-center w-12 h-12">
+            {isConnectingWander && !open && !wanderAddress && (
+                <div className="fixed inset-0 z-[80] flex flex-col items-center justify-center bg-background/60 backdrop-blur-sm animate-in fade-in duration-300 pointer-events-none">
+                    <div className="flex flex-col justify-center items-center gap-5 bg-card p-8 rounded-3xl shadow-2xl border border-border outline-none w-[280px] pointer-events-auto animate-in zoom-in-95 duration-300">
+                        <div className="relative flex items-center justify-center w-14 h-14">
                             <span className="absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-20 animate-ping"></span>
-                            <div className="relative flex items-center justify-center w-12 h-12 rounded-full bg-purple-100 dark:bg-purple-900/30">
-                                <Loader2 className="h-6 w-6 animate-spin text-purple-600 dark:text-purple-400" />
+                            <div className="relative flex items-center justify-center w-14 h-14 rounded-full bg-purple-100 dark:bg-purple-900/30">
+                                <Loader2 className="h-7 w-7 animate-spin text-purple-600 dark:text-purple-400" />
                             </div>
                         </div>
-                        <div className="text-center space-y-1">
-                            <h3 className="font-semibold text-foreground tracking-tight">Preparing...</h3>
-                            <p className="text-xs text-muted-foreground">Please wait a moment</p>
+                        <div className="text-center space-y-2">
+                            <h3 className="font-semibold text-foreground tracking-tight text-lg">Preparing...</h3>
+                            <p className="text-xs text-muted-foreground px-4 leading-relaxed">
+                                Opening Wander Wallet. Please check for a popup.
+                            </p>
                         </div>
+
+                        {/* Fallback button if stuck */}
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setIsConnectingWander(false)}
+                            className="text-[10px] text-muted-foreground hover:text-foreground mt-2"
+                        >
+                            Cancel or Retry
+                        </Button>
                     </div>
                 </div>
             )}
