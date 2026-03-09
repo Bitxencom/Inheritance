@@ -528,6 +528,11 @@ export async function isWalletReady(): Promise<boolean> {
       const hasAllPermissions = WANDER_CONFIG.permissions.every(p => permissions.includes(p));
 
       if (!hasAllPermissions) {
+        // Mobile edge case: SDK just re-initialized, permissions not yet hydrated.
+        // Fallback to localStorage before returning false.
+        if (typeof localStorage !== 'undefined' && localStorage.getItem(WANDER_STORAGE_KEY)) {
+          return true;
+        }
         return false;
       }
 
@@ -540,6 +545,10 @@ export async function isWalletReady(): Promise<boolean> {
       return true;
     }
   } catch {
+    // On error, still try localStorage as last resort
+    if (typeof localStorage !== 'undefined' && localStorage.getItem(WANDER_STORAGE_KEY)) {
+      return true;
+    }
     return false;
   }
   return false;
@@ -734,7 +743,21 @@ export async function dispatchToArweave(
   onProgress?: (progress: number) => void,
   onStatus?: (status: string) => void,
 ): Promise<DispatchResult> {
-  const isReady = await isWalletReady();
+  let isReady = await isWalletReady();
+
+  // Mobile recovery: jika wallet belum ready tapi ada data di localStorage,
+  // coba silent init WanderConnect agar arweaveWallet tersedia sebelum throw.
+  if (!isReady && typeof localStorage !== 'undefined' && localStorage.getItem(WANDER_STORAGE_KEY)) {
+    try {
+      await silentlyInitializeWanderConnect();
+      // Tambah jeda agar SDK sempat inject window.arweaveWallet
+      await new Promise(r => setTimeout(r, 300));
+      isReady = await isWalletReady();
+    } catch {
+      // ignore recovery errors — will throw below if still not ready
+    }
+  }
+
   if (!isReady) {
     throw new Error('Wallet not connected. Please connect your wallet to proceed.');
   }

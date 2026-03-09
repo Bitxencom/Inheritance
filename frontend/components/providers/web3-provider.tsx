@@ -32,6 +32,13 @@ import {
 } from "@/lib/walletconnect-storage";
 
 // createAppKit harus dipanggil di luar komponen agar tidak dipanggil ulang saat re-render
+console.log(
+    "[Reown AppKit] Initializing with origin:",
+    typeof window !== "undefined" ? window.location.origin : "(SSR)",
+    "| projectId:", projectId ? projectId.slice(0, 8) + "..." : "(MISSING)",
+    "| metadata.url:", web3ModalMetadata.url
+);
+
 createAppKit({
     adapters: [wagmiAdapter],
     networks: supportedChains,
