@@ -272,13 +272,13 @@ export function MobileWalletModal({
     // Ini mencegah loop: tanpa guard ini, kondisi !isAppKitOpen && !open terpenuhi
     // sejak awal, sehingga setiap kali user menutup dialog utama akan langsung reopen.
     useEffect(() => {
-        if (!isAppKitOpen && !open && mode === "both" && wanderAddress && didOpenAppKit.current) {
+        if (!isAppKitOpen && !open && didOpenAppKit.current) {
             // Reset flag agar tidak trigger lagi
             didOpenAppKit.current = false;
             const t = setTimeout(() => onOpenChange(true), 200);
             return () => clearTimeout(t);
         }
-    }, [isAppKitOpen, mode, open, onOpenChange, wanderAddress]);
+    }, [isAppKitOpen, open, onOpenChange]);
 
     // Force close AppKit jika EVM sudah terkoneksi tapi modal dari AppKit masih tersangkut terbuka.
     // BUG mobile: Deep link redirect terkadang membuat fallback UI "Continue in MetaMask" stuck 
