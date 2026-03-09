@@ -267,18 +267,40 @@ export function MobileWalletModal({
         }
     };
 
-    // Re-open Radix Dialog ketika AppKit ditutup — HANYA jika AppKit sebelumnya
-    // benar-benar dibuka oleh user (didOpenAppKit.current === true).
-    // Ini mencegah loop: tanpa guard ini, kondisi !isAppKitOpen && !open terpenuhi
-    // sejak awal, sehingga setiap kali user menutup dialog utama akan langsung reopen.
+    // Re-open Radix Dialog ketika AppKit ditutup.
+    // Kami melacak transisi dari `true` ke `false` untuk mencegah trigger instan
+    // ketika AppKit dipanggil dan statenya belum sinkron.
+    const wasAppKitOpen = useRef(false);
     useEffect(() => {
-        if (!isAppKitOpen && !open && didOpenAppKit.current) {
-            // Reset flag agar tidak trigger lagi
+        if (isAppKitOpen) {
+            wasAppKitOpen.current = true;
+        } else if (!isAppKitOpen && wasAppKitOpen.current) {
+            wasAppKitOpen.current = false;
             didOpenAppKit.current = false;
-            const t = setTimeout(() => onOpenChange(true), 200);
-            return () => clearTimeout(t);
+
+            // AppKit baru saja ditutup (user cancel atau connect success).
+            // Re-open dialog jika saat ini tertutup.
+            if (!open) {
+                const t = setTimeout(() => onOpenChange(true), 300);
+                return () => clearTimeout(t);
+            }
         }
     }, [isAppKitOpen, open, onOpenChange]);
+
+    // Safety net: Re-open modal secara otomatis BILA EVM baru saja berstatus connected !
+    // Sangat berguna di mobile untuk deep-link redirect karena AppKit 
+    // terkadang tidak mendaftarkan "open" state dengan sempurna.
+    const prevEvmConnected = useRef(isEvmConnected);
+    useEffect(() => {
+        if (!prevEvmConnected.current && isEvmConnected) {
+            // State berubah jadi connected!
+            if (!open) {
+                const t = setTimeout(() => onOpenChange(true), 400);
+                return () => clearTimeout(t);
+            }
+        }
+        prevEvmConnected.current = isEvmConnected;
+    }, [isEvmConnected, open, onOpenChange]);
 
     // Force close AppKit jika EVM sudah terkoneksi tapi modal dari AppKit masih tersangkut terbuka.
     // BUG mobile: Deep link redirect terkadang membuat fallback UI "Continue in MetaMask" stuck 

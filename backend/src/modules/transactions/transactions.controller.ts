@@ -116,46 +116,100 @@ interface TransactionLogFile {
 // Arweave chunk upload helper (shared between relay endpoints)
 // ─────────────────────────────────────────────────────────────────────────────
 const MAX_CHUNK_RETRIES = 8;
+const CHUNK_TIMEOUT_MS = 60_000; // 60s per chunk — cukup untuk jaringan lambat
+
+type ArweaveUploader = {
+    isComplete: boolean;
+    uploadedChunks: number;
+    totalChunks: number;
+    pctComplete: number;
+    lastResponseStatus: number;
+    lastResponseError: string;
+    uploadChunk: () => Promise<void>;
+};
 
 async function uploadWithRetry(
-    uploader: unknown,
+    _uploader: unknown,
     onProgress?: (pct: number) => void,
+    jobId?: string,
 ): Promise<number> {
-    while (!(uploader as { isComplete: boolean }).isComplete) {
-        let attempt = 0;
-        while (true) {
-            try {
-                await (uploader as { uploadChunk: () => Promise<void> }).uploadChunk();
-                const u = uploader as { lastResponseStatus?: number; lastResponseError?: string };
-                if (u.lastResponseStatus && u.lastResponseStatus !== 200 && u.lastResponseStatus !== 202) {
-                    throw new Error(`Chunk upload failed with status ${u.lastResponseStatus}: ${u.lastResponseError || ""}`);
-                }
-                break;
-            } catch (e) {
-                attempt += 1;
-                if (attempt >= MAX_CHUNK_RETRIES) throw e;
-                const backoffMs = Math.min(10_000, 500 * Math.pow(2, attempt - 1));
-                await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    const uploader = _uploader as ArweaveUploader;
+    let outerAttempts = 0;
+
+    while (!uploader.isComplete) {
+        const prevChunkIndex = uploader.uploadedChunks;
+
+        // Race uploadChunk() vs timeout so it never hangs forever
+        let timedOut = false;
+        try {
+            await Promise.race([
+                uploader.uploadChunk(),
+                new Promise<never>((_, reject) =>
+                    setTimeout(() => {
+                        timedOut = true;
+                        reject(new Error(`uploadChunk timed out after ${CHUNK_TIMEOUT_MS / 1000}s`));
+                    }, CHUNK_TIMEOUT_MS),
+                ),
+            ]);
+        } catch (e) {
+            outerAttempts += 1;
+            const reason = e instanceof Error ? e.message : String(e);
+            logger.warn(
+                { jobId, outerAttempts, timedOut, status: uploader.lastResponseStatus, err: reason },
+                `[ArweaveRelay] uploadChunk error (attempt ${outerAttempts}/${MAX_CHUNK_RETRIES})`,
+            );
+
+            if (outerAttempts >= MAX_CHUNK_RETRIES) {
+                throw new Error(`Arweave upload gave up after ${MAX_CHUNK_RETRIES} retries: ${reason}`);
             }
+
+            const backoffMs = Math.min(20_000, 1_000 * Math.pow(2, outerAttempts - 1));
+            logger.info({ jobId, backoffMs }, `[ArweaveRelay] Backing off ${backoffMs}ms before retry`);
+            await new Promise((r) => setTimeout(r, backoffMs));
+            continue;
         }
 
+        // Check if chunk actually advanced (200 = chunkIndex++, else library silent retry)
+        const currentChunkIndex = uploader.uploadedChunks;
+        const chunkAdvanced = currentChunkIndex > prevChunkIndex;
+
+        if (!chunkAdvanced && !uploader.isComplete) {
+            // Chunk did not advance — library got non-200 internally
+            outerAttempts += 1;
+            logger.warn(
+                { jobId, outerAttempts, status: uploader.lastResponseStatus, error: uploader.lastResponseError },
+                `[ArweaveRelay] Chunk did not advance (status ${uploader.lastResponseStatus}: ${uploader.lastResponseError}) — attempt ${outerAttempts}/${MAX_CHUNK_RETRIES}`,
+            );
+
+            if (outerAttempts >= MAX_CHUNK_RETRIES) {
+                throw new Error(
+                    `Arweave chunk upload stuck at chunk ${currentChunkIndex}/${uploader.totalChunks} after ${MAX_CHUNK_RETRIES} retries. Last status: ${uploader.lastResponseStatus}, error: ${uploader.lastResponseError}`,
+                );
+            }
+
+            const backoffMs = Math.min(20_000, 1_000 * Math.pow(2, outerAttempts - 1));
+            await new Promise((r) => setTimeout(r, backoffMs));
+            continue;
+        }
+
+        // Chunk advanced successfully
+        outerAttempts = 0;
+
         const pct =
-            typeof (uploader as { pctComplete?: unknown }).pctComplete === "number"
-                ? (uploader as { pctComplete: number }).pctComplete
-                : typeof (uploader as { uploadedChunks?: unknown }).uploadedChunks === "number" &&
-                    typeof (uploader as { totalChunks?: unknown }).totalChunks === "number" &&
-                    (uploader as { totalChunks: number }).totalChunks > 0
-                    ? ((uploader as { uploadedChunks: number }).uploadedChunks /
-                        (uploader as { totalChunks: number }).totalChunks) *
-                    100
+            typeof uploader.pctComplete === "number"
+                ? uploader.pctComplete
+                : uploader.totalChunks > 0
+                    ? (uploader.uploadedChunks / uploader.totalChunks) * 100
                     : 0;
 
+        logger.info(
+            { jobId, chunk: `${uploader.uploadedChunks}/${uploader.totalChunks}`, pct: pct.toFixed(1) },
+            `[ArweaveRelay] Chunk uploaded`,
+        );
         onProgress?.(Math.max(0, Math.min(100, pct)));
     }
 
-    return typeof (uploader as { lastResponseStatus?: unknown }).lastResponseStatus === "number"
-        ? (uploader as { lastResponseStatus: number }).lastResponseStatus
-        : 200;
+    return typeof uploader.lastResponseStatus === "number" ? uploader.lastResponseStatus : 200;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -323,6 +377,12 @@ export const arweaveRelayStart = async (req: Request, res: Response): Promise<vo
                 updateRelayJob(jobId, { status: "Preparing Arweave transaction..." });
                 const tx = arweave.transactions.fromRaw(body.txRaw as never);
 
+                if (!tx.data_root && data.length > 0) {
+                    logger.warn({ jobId }, "[ArweaveRelay] Missing data_root in Format 2 transaction");
+                    updateRelayJob(jobId, { done: true, error: "Missing data_root in signed transaction" }, "error");
+                    return;
+                }
+
                 if (!(await arweave.transactions.verify(tx))) {
                     updateRelayJob(jobId, { done: true, error: "Invalid transaction signature" }, "error");
                     return;
@@ -335,8 +395,11 @@ export const arweaveRelayStart = async (req: Request, res: Response): Promise<vo
 
                 updateRelayJob(jobId, { status: "Uploading to Arweave..." });
                 const uploader = await arweave.transactions.getUploader(tx, data);
-                const lastStatus = await uploadWithRetry(uploader, (pct) =>
-                    updateRelayJob(jobId, { progress: pct }, "progress"),
+                logger.info({ jobId, totalChunks: (uploader as ArweaveUploader).totalChunks }, "[ArweaveRelay] Starting upload");
+                const lastStatus = await uploadWithRetry(
+                    uploader,
+                    (pct) => updateRelayJob(jobId, { progress: pct }, "progress"),
+                    jobId,
                 );
 
                 if (lastStatus !== 200 && lastStatus !== 202) {
@@ -385,6 +448,7 @@ export const arweaveRelayEvents = (req: Request, res: Response): void => {
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no"); // Matikan buffering Nginx
     (res as unknown as { flushHeaders?: () => void }).flushHeaders?.();
 
     const subscribers = relayJobSubscribers.get(jobId) ?? new Set<Response>();

@@ -892,9 +892,30 @@ export async function dispatchToArweave(
     const resumed = await resumeIfPossible();
     if (resumed) return resumed;
 
+    onStatus?.("Preparing Arweave transaction...");
+    let anchor: string | undefined;
+    try {
+      anchor = await arweave.transactions.getTransactionAnchor();
+    } catch {
+      // Not a fatal error, gateway might be down, sign without it or let wallet handle
+    }
+
     const transaction = await arweave.createTransaction({
       data: effectivePayloadBytes,
+      last_tx: anchor,
     });
+
+    // Increase reward by 50% to ensure faster acceptance and avoid 400 "Insufficient Reward" 
+    // especially since there is a delay between signing and relaying.
+    if (transaction.reward && typeof transaction.reward === 'string' && /^\d+$/.test(transaction.reward)) {
+      try {
+        const rewardBigInt = BigInt(transaction.reward);
+        const boostedReward = (rewardBigInt * BigInt(150)) / BigInt(100);
+        transaction.reward = boostedReward.toString();
+      } catch {
+        // Fallback to default reward if BigInt fails
+      }
+    }
 
     const defaultTags: Record<string, string> = {
       'Content-Type': isBinaryPayload ? 'application/octet-stream' : 'application/json',
