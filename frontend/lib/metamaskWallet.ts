@@ -1012,7 +1012,7 @@ export async function dispatchHybrid(
 /**
  * Wait for transaction to be mined
  */
-async function waitForTransaction(
+export async function waitForTransaction(
   txHash: string,
   maxAttempts = 30,
 ): Promise<unknown | null> {

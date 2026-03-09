@@ -27,6 +27,7 @@ import {
 import {
   readBitxenDataRecord,
   finalizeRelease,
+  waitForTransaction,
 } from "@/lib/metamaskWallet";
 import {
   discoverBitxenChainInfo,
@@ -1676,13 +1677,26 @@ ${formState.vaultContent || "No Content"}
     setIsFinalizing(true);
     setStepError(null);
     try {
-      const entropy = await finalizeRelease(finalizeInfo);
-      setReleaseEntropy(entropy);
+      const txHash = await finalizeRelease(finalizeInfo);
+      console.log("Finalization transaction sent:", txHash);
+
+      // Wait for transaction to be mined (confirmation)
+      setUnlockProgress("⛓️ Finalizing On-Chain Release...");
+      setUnlockStep("Waiting for blockchain confirmation (this may take a minute)...");
+      await waitForTransaction(txHash);
+
+      // After confirmation, we can assume it's released.
+      // We don't set releaseEntropy here because submitClaim will fetch it from the contract record.
       setRequiresFinalization(false);
-      // Wait a bit and then retry submitClaim automatically
-      setTimeout(() => {
-        submitClaim();
-      }, 500);
+
+      // Small delay to ensure contract state is indexed/available
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // We call submitClaim. Since we're in an async function, we might still be using 
+      // an older version of submitClaim, but because we've updated requiresFinalization
+      // and the blockchain state is now 'released', the new execution of submitClaim
+      // will fetch the fresh record and succeed.
+      await submitClaim();
     } catch (e) {
       console.error("Manual finalization failed:", e);
       setStepError(e instanceof Error ? e.message : "Finalization failed.");

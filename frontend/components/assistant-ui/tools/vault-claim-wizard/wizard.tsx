@@ -528,7 +528,7 @@ export function VaultClaimWizard({
       )}
 
       {/* Progress Indicator */}
-      {isSubmitting && unlockProgress && (
+      {(isSubmitting || isFinalizing) && unlockProgress && (
         <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm dark:border-blue-800 dark:bg-blue-950 mb-4">
           <p className="font-medium text-blue-700 dark:text-blue-300 flex items-center gap-2">
             <CircleDashed className="size-4 animate-spin" />
