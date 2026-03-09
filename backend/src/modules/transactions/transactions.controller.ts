@@ -333,6 +333,7 @@ export const arweaveRelay = async (req: Request, res: Response): Promise<void> =
  * Async Arweave relay — returns jobId immediately, then uploads in background
  */
 export const arweaveRelayStart = async (req: Request, res: Response): Promise<void> => {
+    logger.info("[ArweaveRelay] POST /api/v1/transactions/arweave/relay/start called");
     try {
         const body = req.body as { gatewayUrl?: unknown; txRaw?: unknown; dataB64?: unknown };
         const gatewayUrl =
@@ -376,6 +377,16 @@ export const arweaveRelayStart = async (req: Request, res: Response): Promise<vo
             try {
                 updateRelayJob(jobId, { status: "Preparing Arweave transaction..." });
                 const tx = arweave.transactions.fromRaw(body.txRaw as never);
+
+                logger.info({
+                    jobId,
+                    txId: tx.id,
+                    txReward: tx.reward,
+                    txOwner: tx.owner?.slice(0, 10),
+                    txLastTx: tx.last_tx,
+                    hasDataRoot: !!tx.data_root,
+                    dataTreeLength: tx.data_tree?.length,
+                }, "DEBUG: [ArweaveRelay] Reconstructed tx");
 
                 if (!tx.data_root && data.length > 0) {
                     logger.warn({ jobId }, "[ArweaveRelay] Missing data_root in Format 2 transaction");
