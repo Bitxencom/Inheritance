@@ -825,6 +825,10 @@ export async function dispatchToArweave(
           while (true) {
             try {
               await (uploader as unknown as { uploadChunk: () => Promise<void> }).uploadChunk();
+              const uStatus = (uploader as unknown as { lastResponseStatus?: number }).lastResponseStatus;
+              if (uStatus && uStatus !== 200 && uStatus !== 202) {
+                throw new Error(`Upload chunk failed with status ${uStatus}`);
+              }
               break;
             } catch (e) {
               attempt += 1;

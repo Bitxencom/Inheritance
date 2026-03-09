@@ -125,6 +125,10 @@ async function uploadWithRetry(
         while (true) {
             try {
                 await (uploader as { uploadChunk: () => Promise<void> }).uploadChunk();
+                const u = uploader as { lastResponseStatus?: number; lastResponseError?: string };
+                if (u.lastResponseStatus && u.lastResponseStatus !== 200 && u.lastResponseStatus !== 202) {
+                    throw new Error(`Chunk upload failed with status ${u.lastResponseStatus}: ${u.lastResponseError || ""}`);
+                }
                 break;
             } catch (e) {
                 attempt += 1;
