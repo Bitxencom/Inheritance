@@ -115,6 +115,14 @@ export function MobileWalletModal({
     // Hanya di-set true ketika user memang menekan tombol Connect EVM Wallet.
     const didOpenAppKit = useRef(false);
 
+    // Stable callback refs — mencegah callback dari parent yang tidak di-memoize
+    // menyebabkan dependency array useEffect berubah referensi setiap render,
+    // yang akan mereset spinner "Checking wallet connection..." terus-menerus.
+    const onWanderConnectedRef = useRef(onWanderConnected);
+    const onBothConnectedRef = useRef(onBothConnected);
+    useEffect(() => { onWanderConnectedRef.current = onWanderConnected; });
+    useEffect(() => { onBothConnectedRef.current = onBothConnected; });
+
     const showEvm = mode === "evm-only" || mode === "both";
     const showArweave = mode === "arweave-only" || mode === "both";
 
@@ -128,30 +136,62 @@ export function MobileWalletModal({
     // ----------------------------------------------------------------
     // Jika modal dibuka (atau saat mount), kita cek form storage apakah user
     // sudah pernah connect sebelumnya. Jika ya, populate alamatnya.
+    // PENTING: onWanderConnected TIDAK ada di dependency array — gunakan ref di atas.
+    // Tanpa ini, setiap parent re-render akan restart effect dan loop spinner.
     useEffect(() => {
         if (open) {
             if (showArweave && !wanderAddress) {
                 let mounted = true;
                 setIsInitializingWander(true);
+                // Safety timeout: jika getConnectedAddress() hang (SDK not ready),
+                // paksa reset spinner setelah 3 detik agar UI tidak stuck.
+                const timeoutId = setTimeout(() => {
+                    if (mounted) setIsInitializingWander(false);
+                }, 3000);
                 getConnectedAddress().then(addr => {
+                    clearTimeout(timeoutId);
                     if (mounted) {
                         if (addr) {
                             setWanderAddress(addr);
-                            onWanderConnected?.(addr);
+                            onWanderConnectedRef.current?.(addr);
                         }
                         setIsInitializingWander(false);
                     }
                 }).catch(() => {
+                    clearTimeout(timeoutId);
                     if (mounted) setIsInitializingWander(false);
-                    // Ignore failure during auto-recovery 
+                    // Ignore failure during auto-recovery
                 });
-                return () => { mounted = false; };
+                return () => { mounted = false; clearTimeout(timeoutId); };
             }
         } else {
             // Reset state saat modal ditutup
             setIsInitializingWander(false);
         }
-    }, [open, showArweave, wanderAddress, onWanderConnected]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open, showArweave, wanderAddress]);
+
+    // ----------------------------------------------------------------
+    // Auto-proceed ketika kedua wallet sudah terkoneksi
+    // ----------------------------------------------------------------
+    // Jika modal dibuka dan ternyata Wander + EVM keduanya sudah connect
+    // (dari session sebelumnya), langsung panggil onBothConnected tanpa
+    // memaksa user menekan tombol "Continue" secara manual.
+    const autoProceededRef = useRef(false);
+    useEffect(() => {
+        if (!open) {
+            autoProceededRef.current = false;
+            return;
+        }
+        if (mode !== "both") return;
+        if (autoProceededRef.current) return;
+        if (isInitializing) return;
+        if (wanderAddress && isEvmConnected && evmAddress) {
+            autoProceededRef.current = true;
+            onBothConnectedRef.current?.(evmAddress);
+            onOpenChange(false);
+        }
+    }, [open, mode, isInitializing, wanderAddress, isEvmConnected, evmAddress, onOpenChange]);
 
     // ----------------------------------------------------------------
     // Handle klik tombol Wander — STEP 1
