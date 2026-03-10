@@ -939,29 +939,62 @@ export async function dispatchToArweave(
       }
     }
 
-    // Force direct transaction for all sizes to ensure instant visibility on gateway
-    // if (effectivePayloadBytes.byteLength <= 250_000 && typeof wallet.dispatch === "function") {
-    //   onStatus?.("Waiting for wallet confirmation...");
-    //   const dispatched = await wallet.dispatch(transaction as unknown as never);
-    //   onProgress?.(100);
-    //   onStatus?.("Upload successful.");
-    //   return {
-    //     txId: dispatched.id,
-    //     type: typeof dispatched.type === "string" && dispatched.type.trim().length > 0 ? dispatched.type : "DISPATCH",
-    //   };
-    // }
+    // ─── Mobile path: use wallet.dispatch() ──────────────────────────────────
+    // On mobile (Wander Connect SDK), wallet.sign() passes the transaction to an
+    // iframe via postMessage. arweave.transactions.post() then calls prepareChunks()
+    // internally which can recompute data_root differently from what the SDK signed,
+    // causing arweave.net to return 400 "Transaction verification failed".
+    //
+    // wallet.dispatch() avoids this entirely: the SDK signs AND uploads the
+    // transaction internally, so we never touch the signed tx object.
+    if (isUsingWanderConnect() && typeof wallet.dispatch === "function") {
+      onStatus?.("Waiting for wallet confirmation...");
+      onProgress?.(5);
+      try {
+        const dispatched = await (wallet as { dispatch: (t: unknown) => Promise<{ id: string; type: string }> }).dispatch(transaction);
+        onProgress?.(100);
+        onStatus?.("Upload successful.");
+        try { await idbDeleteUploadRecord(resumeKey); } catch { /* ignore */ }
+        console.log("[ArweaveUpload] dispatch() success:", dispatched);
+        return {
+          txId: dispatched.id,
+          type: typeof dispatched.type === "string" && dispatched.type.trim().length > 0
+            ? dispatched.type
+            : "DISPATCH",
+        };
+      } catch (dispatchErr) {
+        console.warn("[ArweaveUpload] dispatch() failed, falling back to sign+relay:", dispatchErr);
+        // Fall through to the sign + relay path below
+      }
+    }
 
-    // wallet.sign() mutates the transaction object in-place on existing ArConnect extension.
-    // However, on @wanderapp/connect (Mobile / iframe mode), the object is cloned via postMessage
-    // so we must capture the returned signed transaction object.
+    // ─── Desktop / dispatch fallback path: sign + relay ──────────────────────
+    // Pre-compute chunks & data_root BEFORE signing so the value is a plain string
+    // that survives any postMessage serialization (structured clone strips the
+    // internal chunks object but keeps primitive fields).
+    if (typeof (transaction as any).prepareChunks === "function") {
+      await (transaction as any).prepareChunks(effectivePayloadBytes);
+    }
+    const preSignDataRoot: string = (transaction as any).data_root ?? "";
+
+    // wallet.sign() mutates the transaction in-place (ArConnect extension) or
+    // returns a new signed object (Wander Connect SDK via postMessage).
     const signedTx = await wallet.sign(transaction);
 
     const txToPost = (signedTx && typeof signedTx === 'object' && ('signature' in signedTx) && (signedTx as typeof transaction).signature)
       ? (signedTx as typeof transaction)
       : transaction;
 
-    // In some wallet SDK cases, the signature is calculated but the ID is bypassed to save CPU.
-    // According to Arweave protocol, transaction ID is the SHA-256 hash of the transaction signature.
+    // Restore data_root if the SDK cleared it after signing.
+    if (preSignDataRoot) {
+      const postSignDataRoot: string = (txToPost as any).data_root ?? "";
+      if (!postSignDataRoot || postSignDataRoot.length < 4) {
+        console.warn("[ArweaveUpload] data_root was cleared by SDK — restoring pre-sign value");
+        (txToPost as any).data_root = preSignDataRoot;
+      }
+    }
+
+    // Recompute ID if the SDK omitted it (ID = SHA-256 of signature).
     if (!txToPost.id && txToPost.signature) {
       const signatureBuffer = arweave.utils.b64UrlToBuffer(txToPost.signature);
       const idHash = await arweave.crypto.hash(signatureBuffer);
@@ -970,31 +1003,34 @@ export async function dispatchToArweave(
 
     try {
       const isValid = await arweave.transactions.verify(txToPost);
-      if (!isValid) {
-        throw new Error("verify() returned false");
-      }
+      if (!isValid) throw new Error("verify() returned false");
     } catch (e) {
       throw new Error(
-        `Arweave signature verification failed (client-side): ${e instanceof Error ? e.message : "Unknown error"
-        }`,
+        `Arweave signature verification failed (client-side): ${e instanceof Error ? e.message : "Unknown error"}`,
       );
     }
 
-    // 3. Post transaction to the network
-    console.log("[ArweaveUpload] Final Transaction details:", {
+    console.log("[ArweaveUpload] Signed tx details:", {
       id: txToPost.id,
+      data_root: (txToPost as any).data_root,
+      preSignDataRoot,
       reward: txToPost.reward,
       anchor: txToPost.last_tx,
-      dataSize: effectivePayloadBytes.byteLength
+      dataSize: effectivePayloadBytes.byteLength,
+      hasToJSON: typeof (txToPost as any).toJSON === "function",
     });
 
     onStatus?.("Uploading to Arweave...");
+    // Serialize txRaw: prefer toJSON() → getRaw() → plain object as-is
+    // Serialize txRaw for the relay: toJSON() → getRaw() → plain object as-is.
+    // The plain-object fallback handles Wander Connect SDK returning a raw object
+    // without toJSON() — we pass it directly and the backend's fromRaw() can parse it.
     const txRawForResume =
       typeof (txToPost as unknown as { toJSON?: unknown }).toJSON === "function"
         ? (txToPost as unknown as { toJSON: () => unknown }).toJSON()
         : (txToPost as unknown as { getRaw?: unknown }).getRaw && typeof (txToPost as unknown as { getRaw: () => unknown }).getRaw === "function"
           ? (txToPost as unknown as { getRaw: () => unknown }).getRaw()
-          : null;
+          : txToPost; // fallback: use plain object directly
 
     const baseRecord: ArweaveUploadResumeRecord = {
       key: resumeKey,

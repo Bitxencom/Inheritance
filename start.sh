@@ -34,6 +34,7 @@ show_help() {
     echo "  -r, --rebuild    Force rebuild Docker images"
     echo "  -c, --no-cache   Rebuild without cache"
     echo "  --down           Stop all containers"
+    echo "  clean            Stop containers and remove volumes/orphans"
     echo ""
     echo "Examples:"
     echo "  ./start.sh dev           # Development mode"
@@ -41,6 +42,7 @@ show_help() {
     echo "  ./start.sh dev -r        # Rebuild and run"
     echo "  ./start.sh prod -c -d    # Rebuild without cache, detached"
     echo "  ./start.sh --down        # Stop containers"
+    echo "  ./start.sh clean         # Full cleanup (removes volumes)"
     echo ""
 }
 
@@ -51,6 +53,7 @@ DETACHED=""
 REBUILD=""
 NO_CACHE=false
 DO_DOWN=false
+DO_CLEAN=false
 
 # Parse arguments
 for arg in "$@"; do
@@ -78,6 +81,9 @@ for arg in "$@"; do
             ;;
         --down)
             DO_DOWN=true
+            ;;
+        clean|--clean)
+            DO_CLEAN=true
             ;;
     esac
 done
@@ -122,6 +128,14 @@ if [ "$DO_DOWN" = true ]; then
     exit 0
 fi
 
+# Handle clean
+if [ "$DO_CLEAN" = true ]; then
+    info "Cleaning containers, volumes, and orphans for project: $PROJECT_NAME"
+    docker compose $COMPOSE_ARGS down -v --remove-orphans
+    success "Environment cleaned"
+    exit 0
+fi
+
 # Display configuration
 echo ""
 info "Configuration from $ENV_FILE:"
@@ -131,9 +145,21 @@ echo "  BACKEND_IMAGE:  $BACKEND_IMAGE"
 echo "  FRONTEND_IMAGE: $FRONTEND_IMAGE"
 echo ""
 
-# Stop existing containers first
-info "Stopping existing containers for project: $PROJECT_NAME"
-docker compose $COMPOSE_ARGS down 2>/dev/null || true
+# Stop and remove existing containers (thoroughly)
+info "Ensuring a clean state for project: $PROJECT_NAME"
+# Attempt to stop compose project if it exists
+docker compose $COMPOSE_ARGS down --remove-orphans 2>/dev/null || true
+
+# Force remove any containers that might conflict by name (handles cases where project name changed)
+# Use docker stop and rm explicitly for the fixed container names
+for service in "backend" "frontend" "nginx"; do
+    CONTAINER_NAME="${PROJECT_NAME}-${service}"
+    if [ "$(docker ps -aq -f name=^/${CONTAINER_NAME}$)" ]; then
+        info "Removing conflicting container: ${CONTAINER_NAME}"
+        docker stop "${CONTAINER_NAME}" 2>/dev/null || true
+        docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
+    fi
+done
 
 # Handle --no-cache (build without cache first)
 if [ "$NO_CACHE" = true ]; then

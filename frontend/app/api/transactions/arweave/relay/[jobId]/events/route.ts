@@ -4,7 +4,7 @@ const backendBaseUrl =
 export const runtime = "nodejs";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ jobId: string }> },
 ) {
   const { jobId } = await context.params;
@@ -14,6 +14,8 @@ export async function GET(
       headers: {
         Accept: "text/event-stream",
       },
+      cache: "no-store",
+      signal: request.signal,
     },
   );
 

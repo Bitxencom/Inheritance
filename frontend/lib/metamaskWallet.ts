@@ -72,6 +72,35 @@ export function isMetaMaskInstalled(): boolean {
 }
 
 /**
+ * Get EVM provider — prefers window.ethereum (injected wallet / desktop),
+ * falls back to the active Wagmi connector provider (WalletConnect / mobile).
+ * Returns null if no provider is available.
+ */
+export async function getEVMProvider(): Promise<{ request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } | null> {
+  // Prefer injected provider (MetaMask extension, DApp browser)
+  if (typeof window !== "undefined" && typeof (window as any).ethereum !== "undefined") {
+    return (window as any).ethereum as { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> };
+  }
+
+  // Fallback: try to get provider from active Wagmi connector (WalletConnect on mobile)
+  try {
+    const { wagmiConfig } = await import("@/lib/web3modal-config");
+    const { getAccount } = await import("@wagmi/core");
+    const account = getAccount(wagmiConfig);
+    if (account.connector) {
+      const provider = await account.connector.getProvider() as { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } | undefined;
+      if (provider && typeof provider.request === "function") {
+        return provider;
+      }
+    }
+  } catch (err) {
+    console.warn("[getEVMProvider] Could not get wagmi connector provider:", err);
+  }
+
+  return null;
+}
+
+/**
  * Connect to MetaMask wallet
  * @returns Connected wallet address
  */
@@ -884,13 +913,14 @@ export async function dispatchHybrid(
 
   console.log(`✅ Arweave upload complete: ${arweaveTxId}`);
 
-  // Step 2: Register in Bitxen Contract via MetaMask
+  // Step 2: Register in Bitxen Contract via MetaMask / EVM wallet
   console.log("📝 Step 2/2: Registering in Bitxen contract...");
-  if (onProgress) onProgress("Step 2/2: Confirm in MetaMask (Registering)...");
+  if (onProgress) onProgress("Step 2/2: Confirm in wallet (Registering)...");
 
-  if (!isMetaMaskInstalled() || !(window as any).ethereum) {
+  const evmProvider = await getEVMProvider();
+  if (!evmProvider) {
     throw new Error(
-      "MetaMask is not installed. Please install MetaMask to continue.",
+      "No EVM wallet found. Please connect MetaMask or another EVM wallet to continue.",
     );
   }
 
@@ -901,18 +931,39 @@ export async function dispatchHybrid(
       : config.contractAddress;
 
   // Ensure we're on the correct chain
-  const currentChainId = await getCurrentChainId();
-  if (currentChainId !== config.chainId) {
-    await switchToChain(chainId);
+  const currentChainIdHex = await evmProvider.request({ method: "eth_chainId" }) as string;
+  const currentChainIdNum = parseInt(currentChainIdHex, 16);
+  if (currentChainIdNum !== config.chainId) {
+    try {
+      await evmProvider.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: config.chainIdHex }],
+      });
+    } catch (switchErr) {
+      if ((switchErr as { code?: number }).code === 4902) {
+        await evmProvider.request({
+          method: "wallet_addEthereumChain",
+          params: [{
+            chainId: config.chainIdHex,
+            chainName: config.name,
+            nativeCurrency: config.nativeCurrency,
+            rpcUrls: [config.rpcUrl],
+            blockExplorerUrls: [config.blockExplorer],
+          }],
+        });
+      } else {
+        throw switchErr;
+      }
+    }
   }
 
   // Get connected account
-  const accounts = (await (window as any).ethereum.request({
+  const accounts = (await evmProvider.request({
     method: "eth_accounts",
   })) as string[];
   if (!accounts || accounts.length === 0) {
     throw new Error(
-      "No MetaMask wallet connected. Please connect MetaMask first.",
+      "No EVM wallet connected. Please connect your wallet first.",
     );
   }
   const fromAddress = accounts[0];
@@ -960,7 +1011,7 @@ export async function dispatchHybrid(
         secret,
       );
 
-    const registerTxHash = (await (window as any).ethereum.request({
+    const registerTxHash = (await evmProvider.request({
       method: "eth_sendTransaction",
       params: [
         {
@@ -973,7 +1024,7 @@ export async function dispatchHybrid(
     })) as string;
 
     console.log(`✅ Contract registration tx sent: ${registerTxHash}`);
-    const receipt = await waitForTransaction(registerTxHash);
+    const receipt = await waitForTransaction(registerTxHash, 30, config.rpcUrl);
     const contractDataId =
       existingContractDataId ||
       extractRegisteredDataIdFromReceipt(receipt, contractAddress) ||
@@ -1010,20 +1061,41 @@ export async function dispatchHybrid(
 }
 
 /**
- * Wait for transaction to be mined
+ * Wait for transaction to be mined.
+ * Uses direct RPC (fast) when rpcUrl is provided, falls back to wallet provider.
  */
 export async function waitForTransaction(
   txHash: string,
   maxAttempts = 30,
+  rpcUrl?: string,
 ): Promise<unknown | null> {
-  if (!(window as any).ethereum) return null;
-
   for (let i = 0; i < maxAttempts; i++) {
     try {
-      const receipt = await (window as any).ethereum.request({
-        method: "eth_getTransactionReceipt",
-        params: [txHash],
-      });
+      let receipt: unknown = null;
+
+      if (rpcUrl) {
+        // Fast path: poll directly via JSON-RPC without going through WalletConnect relay
+        const resp = await fetch(rpcUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            method: "eth_getTransactionReceipt",
+            params: [txHash],
+            id: 1,
+          }),
+        });
+        const json = await resp.json() as { result?: unknown };
+        receipt = json.result ?? null;
+      } else {
+        // Fallback: use wallet provider
+        const provider = await getEVMProvider();
+        if (!provider) return null;
+        receipt = await provider.request({
+          method: "eth_getTransactionReceipt",
+          params: [txHash],
+        });
+      }
 
       if (receipt) {
         return receipt; // Transaction confirmed
@@ -1032,15 +1104,10 @@ export async function waitForTransaction(
       // Ignore errors, keep polling
     }
 
-    // Wait 2 seconds before next attempt
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
 
-  // Transaction not confirmed after max attempts, but still submitted
-  console.warn(
-    "Transaction submitted but not yet confirmed. It may take a few minutes.",
-  );
-
+  console.warn("Transaction submitted but not yet confirmed. It may take a few minutes.");
   return null;
 }
 

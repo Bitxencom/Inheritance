@@ -326,8 +326,7 @@ export const arweaveRelayStart = async (req: Request, res: Response): Promise<vo
 
                 const gateways = [
                     gatewayUrl,
-                    "https://ar-io.net",
-                    "https://arweave.dev"
+                    "https://arweave.dev",
                 ].filter((v, i, a) => a.indexOf(v) === i);
 
                 if (!(await arweave.transactions.verify(tx))) {
@@ -345,19 +344,46 @@ export const arweaveRelayStart = async (req: Request, res: Response): Promise<vo
                         // 1. Try Direct Post for small files
                         if (data.length < 256 * 1024) {
                             updateRelayJob(jobId, { status: `Posting to ${new URL(gw).hostname}...` });
-                            const response = await gwArweave.transactions.post(tx);
-                            if (response.status === 200 || response.status === 202) {
+                            // Use api.post() directly to avoid arweave.transactions.post() calling
+                            // prepareChunks() internally, which can overwrite data_root and cause
+                            // the posted header to mismatch the signed data_root → arweave.net 400.
+                            const signedDataRoot = tx.data_root;
+                            const txJson = tx.toJSON ? tx.toJSON() : tx;
+                            logger.info({
+                                jobId,
+                                txId: tx.id,
+                                data_root: signedDataRoot,
+                                data_size: tx.data_size,
+                                dataLen: data.length,
+                                owner_prefix: tx.owner?.slice(0, 20),
+                            }, "[ArweaveRelay] Posting tx...");
+                            const rawResp = await (gwArweave as any).api.post("tx", txJson);
+                            const postStatus: number = rawResp?.status ?? 0;
+                            if (postStatus === 200 || postStatus === 202) {
                                 uploadSuccessful = true;
-                                logger.info({ jobId, gateway: gw, status: response.status }, "[ArweaveRelay] Post success");
+                                logger.info({ jobId, gateway: gw, status: postStatus }, "[ArweaveRelay] Post success");
                                 break;
                             }
-                            logger.warn({ jobId, gateway: gw, status: response.status }, "[ArweaveRelay] Post failed");
+                            logger.warn({ jobId, gateway: gw, status: postStatus, body: rawResp?.data }, "[ArweaveRelay] Post failed");
                         }
 
                         // 2. Try Chunked Uploader as fallback or for large files
                         updateRelayJob(jobId, { status: `Uploading to ${new URL(gw).hostname}...` });
                         if (typeof (tx as any).prepareChunks === "function") {
+                            // Save the signed data_root before prepareChunks() can overwrite it.
+                            // prepareChunks() recomputes from raw bytes and sets tx.data_root.
+                            // If the recomputed value differs from what was signed, the uploaded
+                            // header would have a wrong data_root → network signature verify fails.
+                            const savedDataRoot = tx.data_root;
                             await (tx as any).prepareChunks(data);
+                            if (savedDataRoot && tx.data_root !== savedDataRoot) {
+                                logger.warn({
+                                    jobId,
+                                    signed: savedDataRoot,
+                                    computed: tx.data_root,
+                                }, "[ArweaveRelay] data_root mismatch after prepareChunks — restoring signed value");
+                                tx.data_root = savedDataRoot;
+                            }
                         }
                         const uploader = await gwArweave.transactions.getUploader(tx, data);
                         const status = await uploadWithRetry(uploader, (pct) =>
@@ -427,7 +453,7 @@ export const arweaveRelayEvents = (req: Request, res: Response): void => {
 
     const ping = setInterval(() => {
         try { res.write(": ping\n\n"); } catch { /* subscriber gone */ }
-    }, 20_000);
+    }, 10_000);
 
     req.on("close", () => {
         clearInterval(ping);

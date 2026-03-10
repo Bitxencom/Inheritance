@@ -61,7 +61,18 @@ export const supportedChains = [
 
 // Wagmi config menggunakan WagmiAdapter dari Reown AppKit
 // Ini secara otomatis menambahkan WalletConnect, MetaMask, Coinbase connectors
-import { cookieStorage, createStorage } from "wagmi";
+import { cookieStorage, createStorage, http } from "wagmi";
+
+// Explicit HTTP transports agar Wagmi gunakan RPC langsung,
+// bukan rpc.walletconnect.org (yang bisa ERR_CONNECTION_CLOSED saat page refresh)
+const transports = {
+    [bscTestnet.id]: http("https://bsc-testnet-dataseed.bnbchain.org/"),
+    [bsc.id]:        http("https://bsc-dataseed.binance.org/"),
+    [mainnet.id]:    http("https://eth.llamarpc.com"),
+    [polygon.id]:    http("https://polygon-rpc.com"),
+    [base.id]:       http("https://mainnet.base.org"),
+    [arbitrum.id]:   http("https://arb1.arbitrum.io/rpc"),
+};
 
 export const wagmiAdapter = new WagmiAdapter({
     storage: createStorage({
@@ -69,7 +80,8 @@ export const wagmiAdapter = new WagmiAdapter({
     }),
     ssr: true,
     projectId,
-    networks: supportedChains
+    networks: supportedChains,
+    transports,
 });
 
 export const wagmiConfig = wagmiAdapter.wagmiConfig;
