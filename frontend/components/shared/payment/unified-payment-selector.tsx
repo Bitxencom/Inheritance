@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Image from "next/image";
-import { Loader2, Check, Globe, Link2, Coins, Shield } from "lucide-react";
+import { Loader2, Check, Globe, Link2, Coins, Shield, AlertTriangle } from "lucide-react";
 
 
 import { Button } from "@/components/ui/button";
@@ -45,6 +45,8 @@ interface UnifiedPaymentSelectorProps {
   blockedReason?: string | null;
   lockedMode?: PaymentMode;
   lockedChain?: ChainId;
+  /** If set, shows a notice that Arweave upload already exists and Step 2 will be resumed */
+  incompleteArweaveTxId?: string | null;
 }
 
 export function UnifiedPaymentSelector({
@@ -57,6 +59,7 @@ export function UnifiedPaymentSelector({
   blockedReason = null,
   lockedMode,
   lockedChain,
+  incompleteArweaveTxId = null,
 }: UnifiedPaymentSelectorProps) {
   const [selectedMode, setSelectedMode] = useState<PaymentMode>(lockedMode ?? "hybrid");
   const [selectedChain, setSelectedChain] = useState<ChainId>(lockedChain ?? (process.env.NODE_ENV === "production" ? "bsc" : "bscTestnet"));
@@ -692,6 +695,19 @@ export function UnifiedPaymentSelector({
           <p className="text-xs text-center text-muted-foreground">
             {paymentStatus}
           </p>
+        </div>
+      )}
+
+      {/* Resume Notice — shown when Arweave upload already exists */}
+      {incompleteArweaveTxId && !isProcessing && selectedMode === "hybrid" && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/30">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+            <div className="text-sm text-amber-700 dark:text-amber-300">
+              <span className="font-semibold">Previous upload found.</span>{" "}
+              Arweave step is already done. Clicking Pay will skip Step 1 and go directly to contract registration (Step 2).
+            </div>
+          </div>
         </div>
       )}
 

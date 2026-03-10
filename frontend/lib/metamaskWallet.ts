@@ -272,6 +272,24 @@ export class InsufficientBitxenError extends Error {
 }
 
 /**
+ * Error thrown when Arweave upload succeeds but contract registration fails.
+ * Contains the arweaveTxId so the caller can save partial state for later resume.
+ */
+export class PartialHybridError extends Error {
+  public readonly arweaveTxId: string;
+  public readonly originalError: Error;
+
+  constructor(arweaveTxId: string, originalError: Error) {
+    super(
+      `Arweave upload succeeded (${arweaveTxId}) but contract registration failed: ${originalError.message}`
+    );
+    this.name = "PartialHybridError";
+    this.arweaveTxId = arweaveTxId;
+    this.originalError = originalError;
+  }
+}
+
+/**
  * Bitxen Contract ABI (partial - only functions we need)
  */
 const BITXEN_ABI = {
@@ -838,6 +856,175 @@ export async function getBitxenBalance(
 }
 
 /**
+ * Register data on Bitxen smart contract only (Step 2 of hybrid flow).
+ * Used for resuming when Arweave upload succeeded but contract registration failed.
+ *
+ * @param arweaveTxId - The Arweave transaction ID from a previous upload
+ * @param arweavePayload - The original payload (to compute dataHash and fileSize)
+ * @param vaultId - Unique vault identifier
+ * @param chainId - Which EVM chain to use
+ * @param options - Same options as HybridDispatchOptions
+ */
+export async function registerOnContract(
+  arweaveTxId: string,
+  arweavePayload: unknown,
+  vaultId: string,
+  chainId: ChainId = DEFAULT_CHAIN,
+  options: HybridDispatchOptions = {},
+): Promise<HybridDispatchResult> {
+  const isPermanent = options.isPermanent === true;
+  const releaseDate = typeof options.releaseDate === "bigint" ? options.releaseDate : BigInt(0);
+  const commitment = typeof options.commitment === "string" ? options.commitment : "0x" + "0".repeat(64);
+  const secret = typeof options.secret === "string" ? options.secret : "0x" + "0".repeat(64);
+  const onProgress = options.onProgress;
+  const existingContractDataId =
+    typeof options.contractDataId === "string" && options.contractDataId.startsWith("0x")
+      ? options.contractDataId
+      : null;
+
+  console.log("📝 Registering in Bitxen contract (resume)...");
+  if (onProgress) onProgress("Confirm in wallet (Registering)...");
+
+  const evmProvider = await getEVMProvider();
+  if (!evmProvider) {
+    throw new Error(
+      "No EVM wallet found. Please connect MetaMask or another EVM wallet to continue.",
+    );
+  }
+
+  const config = CHAIN_CONFIG[chainId];
+  const contractAddress =
+    typeof options.contractAddress === "string" && options.contractAddress.trim().length > 0
+      ? options.contractAddress.trim()
+      : config.contractAddress;
+
+  // Ensure correct chain
+  const currentChainIdHex = await evmProvider.request({ method: "eth_chainId" }) as string;
+  const currentChainIdNum = parseInt(currentChainIdHex, 16);
+  if (currentChainIdNum !== config.chainId) {
+    try {
+      await evmProvider.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: config.chainIdHex }],
+      });
+    } catch (switchErr) {
+      if ((switchErr as { code?: number }).code === 4902) {
+        await evmProvider.request({
+          method: "wallet_addEthereumChain",
+          params: [{
+            chainId: config.chainIdHex,
+            chainName: config.name,
+            nativeCurrency: config.nativeCurrency,
+            rpcUrls: [config.rpcUrl],
+            blockExplorerUrls: [config.blockExplorer],
+          }],
+        });
+      } else {
+        throw switchErr;
+      }
+    }
+  }
+
+  // Get connected account
+  const accounts = (await evmProvider.request({
+    method: "eth_accounts",
+  })) as string[];
+  if (!accounts || accounts.length === 0) {
+    throw new Error(
+      "No EVM wallet connected. Please connect your wallet first.",
+    );
+  }
+  const fromAddress = accounts[0];
+
+  try {
+    // Prepare data hash
+    const payloadString = JSON.stringify(arweavePayload);
+    const dataHash = await hashData(payloadString);
+    const fileSize = BigInt(new TextEncoder().encode(payloadString).length);
+
+    // Get the required fee
+    const fee = await calculateBitxenFee(chainId);
+    console.log(`📝 Registration fee: ${formatBitxenAmount(fee)}`);
+
+    // Check BITXEN balance
+    const balance = await getBitxenBalance(chainId, fromAddress);
+    console.log(`💰 BITXEN balance: ${formatBitxenAmount(balance)}`);
+    if (balance < fee) {
+      throw new InsufficientBitxenError({ required: fee, balance, chainId });
+    }
+
+    // Register with ar:// URI
+    const storageURI = `ar://${arweaveTxId}`;
+    const ARWEAVE_PROVIDER_HASH = "0x" + bytesToHex(keccak_256(new TextEncoder().encode("arweave")));
+
+    const txData = existingContractDataId
+      ? encodeUpdateData(
+        existingContractDataId,
+        dataHash,
+        storageURI,
+        ARWEAVE_PROVIDER_HASH,
+        fileSize,
+      )
+      : encodeRegisterData(
+        dataHash,
+        storageURI,
+        ARWEAVE_PROVIDER_HASH,
+        fileSize,
+        "application/json",
+        `vault-${vaultId}.json`,
+        isPermanent,
+        releaseDate,
+        commitment,
+        secret,
+      );
+
+    const registerTxHash = (await evmProvider.request({
+      method: "eth_sendTransaction",
+      params: [
+        {
+          from: fromAddress,
+          to: contractAddress,
+          data: txData,
+          gas: "0x1E8480",
+        },
+      ],
+    })) as string;
+
+    console.log(`✅ Contract registration tx sent: ${registerTxHash}`);
+    const receipt = await waitForTransaction(registerTxHash, 30, config.rpcUrl);
+    const contractDataId =
+      existingContractDataId ||
+      extractRegisteredDataIdFromReceipt(receipt, contractAddress) ||
+      dataHash;
+    console.log(`✅ Contract registration complete!`);
+
+    return {
+      arweaveTxId,
+      contractTxHash: registerTxHash,
+      contractDataId,
+      chainId,
+      chainNumericId: config.chainId,
+      contractAddress,
+      blockExplorerUrl: `${config.blockExplorer}/tx/${registerTxHash}`,
+      arweaveUrl: `https://arweave.net/${arweaveTxId}`,
+    };
+  } catch (error) {
+    // Re-throw InsufficientBitxenError as-is
+    if (error instanceof InsufficientBitxenError) {
+      throw error;
+    }
+
+    if ((error as { code?: number }).code === 4001) {
+      throw new Error("Transaction was rejected. Please try again.");
+    }
+
+    throw new Error(
+      `Failed contract registration: ${error instanceof Error ? error.message : "Unknown error"}`,
+    );
+  }
+}
+
+/**
  * Dispatch data to Bitxen blockchain using the proper smart contract interface
  *
  * Flow:
@@ -914,149 +1101,28 @@ export async function dispatchHybrid(
   console.log(`✅ Arweave upload complete: ${arweaveTxId}`);
 
   // Step 2: Register in Bitxen Contract via MetaMask / EVM wallet
-  console.log("📝 Step 2/2: Registering in Bitxen contract...");
+  // Delegate to registerOnContract. Wrap errors with PartialHybridError
+  // so the caller can save the arweaveTxId for later resume.
   if (onProgress) onProgress("Step 2/2: Confirm in wallet (Registering)...");
 
-  const evmProvider = await getEVMProvider();
-  if (!evmProvider) {
-    throw new Error(
-      "No EVM wallet found. Please connect MetaMask or another EVM wallet to continue.",
-    );
-  }
-
-  const config = CHAIN_CONFIG[chainId];
-  const contractAddress =
-    typeof options.contractAddress === "string" && options.contractAddress.trim().length > 0
-      ? options.contractAddress.trim()
-      : config.contractAddress;
-
-  // Ensure we're on the correct chain
-  const currentChainIdHex = await evmProvider.request({ method: "eth_chainId" }) as string;
-  const currentChainIdNum = parseInt(currentChainIdHex, 16);
-  if (currentChainIdNum !== config.chainId) {
-    try {
-      await evmProvider.request({
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: config.chainIdHex }],
-      });
-    } catch (switchErr) {
-      if ((switchErr as { code?: number }).code === 4902) {
-        await evmProvider.request({
-          method: "wallet_addEthereumChain",
-          params: [{
-            chainId: config.chainIdHex,
-            chainName: config.name,
-            nativeCurrency: config.nativeCurrency,
-            rpcUrls: [config.rpcUrl],
-            blockExplorerUrls: [config.blockExplorer],
-          }],
-        });
-      } else {
-        throw switchErr;
-      }
-    }
-  }
-
-  // Get connected account
-  const accounts = (await evmProvider.request({
-    method: "eth_accounts",
-  })) as string[];
-  if (!accounts || accounts.length === 0) {
-    throw new Error(
-      "No EVM wallet connected. Please connect your wallet first.",
-    );
-  }
-  const fromAddress = accounts[0];
-
   try {
-    // Prepare data hash
-    const payloadString = JSON.stringify(arweavePayload);
-    const dataHash = await hashData(payloadString);
-    const fileSize = BigInt(new TextEncoder().encode(payloadString).length);
-
-    // Get the required fee
-    const fee = await calculateBitxenFee(chainId);
-    console.log(`📝 Registration fee: ${formatBitxenAmount(fee)}`);
-
-    // Cek balance BITXEN sebelum kirim transaksi
-    const balance = await getBitxenBalance(chainId, fromAddress);
-    console.log(`💰 BITXEN balance: ${formatBitxenAmount(balance)}`);
-    if (balance < fee) {
-      throw new InsufficientBitxenError({ required: fee, balance, chainId });
-    }
-
-    // Register with ar:// URI pointing to Arweave
-    const storageURI = `ar://${arweaveTxId}`;
-
-    const ARWEAVE_PROVIDER_HASH = "0x" + bytesToHex(keccak_256(new TextEncoder().encode("arweave")));
-
-    const txData = existingContractDataId
-      ? encodeUpdateData(
-        existingContractDataId,
-        dataHash,
-        storageURI,
-        ARWEAVE_PROVIDER_HASH,
-        fileSize,
-      )
-      : encodeRegisterData(
-        dataHash,
-        storageURI,
-        ARWEAVE_PROVIDER_HASH,
-        fileSize,
-        "application/json",
-        `vault-${vaultId}.json`,
-        isPermanent,
-        releaseDate,
-        commitment,
-        secret,
-      );
-
-    const registerTxHash = (await evmProvider.request({
-      method: "eth_sendTransaction",
-      params: [
-        {
-          from: fromAddress,
-          to: contractAddress,
-          data: txData,
-          gas: "0x1E8480", // 2,000,000 Gas Limit (Manual override for estimation issues)
-        },
-      ],
-    })) as string;
-
-    console.log(`✅ Contract registration tx sent: ${registerTxHash}`);
-    const receipt = await waitForTransaction(registerTxHash, 30, config.rpcUrl);
-    const contractDataId =
-      existingContractDataId ||
-      extractRegisteredDataIdFromReceipt(receipt, contractAddress) ||
-      dataHash;
-    console.log(`✅ Hybrid storage complete!`);
-
-    return {
-      arweaveTxId,
-      contractTxHash: registerTxHash,
-      contractDataId,
-      chainId,
-      chainNumericId: config.chainId,
-      contractAddress,
-      blockExplorerUrl: `${config.blockExplorer}/tx/${registerTxHash}`,
-      arweaveUrl: `https://arweave.net/${arweaveTxId}`,
-    };
+    return await registerOnContract(arweaveTxId, arweavePayload, vaultId, chainId, {
+      ...options,
+      onProgress: (status) => {
+        if (onProgress) onProgress(`Step 2/2: ${status}`);
+      },
+    });
   } catch (error) {
-    console.error("Hybrid dispatch error:", error);
+    console.error("Hybrid dispatch Step 2 failed, Arweave TX preserved:", arweaveTxId);
 
-    // Re-throw InsufficientBitxenError as-is agar frontend bisa
-    // mendeteksinya dengan instanceof dan tampilkan UI khusus.
+    // Re-throw InsufficientBitxenError wrapped with arweaveTxId info
     if (error instanceof InsufficientBitxenError) {
-      throw error;
+      throw new PartialHybridError(arweaveTxId, error);
     }
 
-    if ((error as { code?: number }).code === 4001) {
-      throw new Error("Transaction was rejected. Please try again.");
-    }
-
-    throw new Error(
-      `Failed hybrid storage: ${error instanceof Error ? error.message : "Unknown error"}`,
-    );
+    const normalizedError =
+      error instanceof Error ? error : new Error(String(error));
+    throw new PartialHybridError(arweaveTxId, normalizedError);
   }
 }
 

@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { AlertMessage } from "@/components/ui/alert-message";
 import { FieldError } from "@/components/ui/field-error";
 import { ReviewSection, ReviewItem } from "@/components/ui/review-display";
-import { savePendingVault } from "@/lib/vault-storage";
+import { savePendingVault, getVaultById, isIncompleteHybridVault } from "@/lib/vault-storage";
 import { cn } from "@/lib/utils";
 import { FileText, X } from "lucide-react";
 
@@ -41,7 +41,7 @@ import { timestampToDrandRonde } from "@/lib/drand";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { splitKeyClient } from "@/lib/shamirClient";
 import { hashSecurityAnswerClient } from "@/lib/securityQuestionsClient";
-import { CHAIN_CONFIG } from "@/lib/metamaskWallet";
+import { CHAIN_CONFIG, PartialHybridError } from "@/lib/metamaskWallet";
 
 import type {
   FormState,
@@ -585,6 +585,9 @@ export function useVaultCreation({
 
     setPaymentStatus(effectiveStorageType === "bitxenArweave" ? "Step 1/2: Preparing your vault..." : "Preparing your vault...");
 
+    // Track fractionKeys outside try so it's accessible in catch for partial vault save
+    let savedFractionKeys: string[] = [];
+
     try {
       const vaultId =
         vaultIdRef.current ??
@@ -690,6 +693,7 @@ export function useVaultCreation({
       const contractEncryptedKey = JSON.stringify(wrappedKey);
 
       const fractionKeys = splitKeyClient(pqcKeyPair.secretKey);
+      savedFractionKeys = fractionKeys;
       const fractionKeyCommitments = await buildFractionKeyCommitmentsV1(fractionKeys);
 
       const securityQuestionHashes = await Promise.all(
@@ -744,10 +748,12 @@ export function useVaultCreation({
       } else if (effectiveStorageType === "bitxenArweave") {
 
         // Hybrid: Arweave storage + Bitxen contract registry
-        // We use the "bitxenArweave" storage type name but "hybrid" implementation under the hood
-        setPaymentStatus("Step 1/2: Confirm in Wander (Arweave)...");
-        const { dispatchHybrid } = await import("@/lib/metamaskWallet");
+        const { dispatchHybrid, registerOnContract } = await import("@/lib/metamaskWallet");
         const selectedChain = (effectiveChain || "bsc") as ChainId;
+
+        // Check if this vault already has a partial Arweave upload from a previous attempt
+        const savedPartialVault = getVaultById(vaultId);
+        const hasPartialArweave = savedPartialVault && isIncompleteHybridVault(savedPartialVault) && !!savedPartialVault.arweaveTxId;
         const isPermanent = payload.willDetails.willType === "one-time";
         let triggerMs = NaN;
         if (payload.triggerRelease.triggerType === "date" && payload.triggerRelease.triggerDate) {
@@ -790,17 +796,17 @@ export function useVaultCreation({
           ownerAddress: userAddress,
         });
 
-        const hybridResult = await dispatchHybrid(arweavePayload, vaultId, selectedChain, {
+        const hybridOptions = {
           isPermanent,
           releaseDate,
           commitment,
           secret: "0x" + "0".repeat(64), // No plaintext secret on Bitxen blockchain
-          onUploadProgress: (progress) => {
+          onUploadProgress: (progress: number) => {
             setPaymentProgress(progress);
             if (progress >= 0 && progress < 100) setPaymentPhase("upload");
             if (progress >= 100) setPaymentPhase("finalize");
           },
-          onProgress: (status) => {
+          onProgress: (status: string) => {
             setPaymentStatus(status);
             const normalized = status.toLowerCase();
             if (
@@ -814,7 +820,32 @@ export function useVaultCreation({
               return;
             }
           },
-        });
+        };
+
+        let hybridResult;
+        if (hasPartialArweave) {
+          // Resume: Arweave already uploaded — skip Step 1, go directly to Step 2
+          const existingArweaveTxId = savedPartialVault!.arweaveTxId;
+          setPaymentStatus("Resuming: Step 2/2 - Confirm in wallet (Contract Registration)...");
+          setPaymentPhase("confirm");
+          hybridResult = await registerOnContract(
+            existingArweaveTxId,
+            arweavePayload,
+            vaultId,
+            selectedChain,
+            {
+              ...hybridOptions,
+              onProgress: (status: string) => {
+                setPaymentStatus(`Step 2/2: ${status}`);
+                if (status.toLowerCase().includes("confirm")) setPaymentPhase("confirm");
+              },
+            },
+          );
+        } else {
+          // Normal flow: full hybrid dispatch (Step 1 + Step 2)
+          setPaymentStatus("Step 1/2: Confirm in Wander (Arweave)...");
+          hybridResult = await dispatchHybrid(arweavePayload, vaultId, selectedChain, hybridOptions);
+        }
 
         // Use contract tx hash for display
         txId = hybridResult.arweaveTxId;
@@ -878,6 +909,36 @@ export function useVaultCreation({
 
     } catch (error) {
       console.error("Failed to submit VaultCreationWizard:", error);
+
+      // If Arweave succeeded but contract registration failed, save partial vault
+      // so user can resume contract registration later from /vaults page.
+      // Use duck-typing check alongside instanceof for robustness with dynamic imports.
+      const isPartialHybrid = error instanceof PartialHybridError ||
+        (error && typeof (error as any).arweaveTxId === "string" && (error as any).name === "PartialHybridError");
+      if (isPartialHybrid) {
+        const partialError = error as PartialHybridError;
+        const vaultId = vaultIdRef.current;
+        if (vaultId) {
+          try {
+            savePendingVault({
+              vaultId,
+              arweaveTxId: partialError.arweaveTxId,
+              title: formState.willDetails.title,
+              willType: formState.willDetails.willType as "one-time" | "editable",
+              fractionKeys: savedFractionKeys,
+              triggerType: formState.triggerRelease.triggerType as "date" | "manual" | undefined,
+              triggerDate: formState.triggerRelease.triggerDate,
+              storageType: "bitxenArweave",
+              blockchainChain: effectiveChain || "bsc",
+              // blockchainTxHash intentionally omitted — marks it as incomplete
+            });
+            console.log("💾 Partial vault saved for resume:", vaultId, partialError.arweaveTxId);
+          } catch (e) {
+            console.error("Failed to save partial vault:", e);
+          }
+        }
+      }
+
       const message =
         error instanceof Error
           ? error.message
@@ -968,7 +1029,15 @@ export function useVaultCreation({
     setCurrentStep((prev) => prev - 1);
   };
 
+  // Detect incomplete hybrid vault for the current wizard session
+  const incompleteArweaveTxId = (() => {
+    const vid = vaultIdRef.current;
+    if (!vid) return null;
+    const saved = getVaultById(vid);
+    return (saved && isIncompleteHybridVault(saved)) ? saved.arweaveTxId : null;
+  })();
+
   return {
-    isDialog, formState, setFormState, currentStep, setCurrentStep, stepError, setStepError, fieldErrors, setFieldErrors, isSubmitting, setIsSubmitting, isProcessingPayment, setIsProcessingPayment, paymentStatus, setPaymentStatus, paymentProgress, setPaymentProgress, paymentPhase, setPaymentPhase, vaultIdRef, vaultKeyRef, pqcKeyPairRef, pqcCipherTextRef, textareaRef, adjustTextareaHeight, fillWithDummyData, resetWizard, handleDocumentsChange, removeDocument, formatFileSize, isNextBlockedByAttachmentPrep, handleSecurityQuestionChange, addSecurityQuestion, removeSecurityQuestion, handleWillTypeChange, handleTriggerTypeChange, setPresetTriggerDate, reviewSummary, validateStep, transformPayload, submitToMCP, handleNext, handleUnifiedPayment, handlePrev
+    isDialog, formState, setFormState, currentStep, setCurrentStep, stepError, setStepError, fieldErrors, setFieldErrors, isSubmitting, setIsSubmitting, isProcessingPayment, setIsProcessingPayment, paymentStatus, setPaymentStatus, paymentProgress, setPaymentProgress, paymentPhase, setPaymentPhase, vaultIdRef, vaultKeyRef, pqcKeyPairRef, pqcCipherTextRef, textareaRef, adjustTextareaHeight, fillWithDummyData, resetWizard, handleDocumentsChange, removeDocument, formatFileSize, isNextBlockedByAttachmentPrep, handleSecurityQuestionChange, addSecurityQuestion, removeSecurityQuestion, handleWillTypeChange, handleTriggerTypeChange, setPresetTriggerDate, reviewSummary, validateStep, transformPayload, submitToMCP, handleNext, handleUnifiedPayment, handlePrev, incompleteArweaveTxId
   };
 }

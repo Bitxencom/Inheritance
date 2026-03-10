@@ -253,6 +253,25 @@ export function removeVaultKeys(vaultId: string): boolean {
 }
 
 /**
+ * Check if a vault has incomplete hybrid payment
+ * (Arweave uploaded but contract registration missing)
+ */
+export function isIncompleteHybridVault(vault: PendingVault): boolean {
+  return (
+    vault.storageType === "bitxenArweave" &&
+    !!vault.arweaveTxId &&
+    !vault.blockchainTxHash
+  );
+}
+
+/**
+ * Get all vaults with incomplete hybrid payment
+ */
+export function getIncompleteHybridVaults(): PendingVault[] {
+  return getPendingVaults().filter(isIncompleteHybridVault);
+}
+
+/**
  * Check Arweave transaction status using GraphQL
  */
 export async function checkArweaveStatus(

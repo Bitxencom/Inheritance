@@ -9,7 +9,7 @@ import {
   Shield,
   Clock,
   CheckCircle2,
-  AlertCircle,
+  AlertTriangle,
   Copy,
   Check,
   FileKey,
@@ -23,6 +23,7 @@ import {
   getSmartChainExplorerUrl,
   checkArweaveStatus,
   updateVaultStatus,
+  isIncompleteHybridVault,
   type PendingVault,
 } from "@/lib/vault-storage";
 import { SiteHeader } from "@/components/shared/site-header";
@@ -272,20 +273,27 @@ function VaultsPageContent() {
 
                       {/* Status */}
                       <div className="flex shrink-0 flex-col items-end gap-3">
-                        <div className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium ${vault.status === 'confirmed'
-                          ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                          : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
-                          }`}>
-                          {vault.status === 'confirmed' ? (
-                            <CheckCircle2 className="h-4 w-4" />
-                          ) : (
-                            <Clock className="h-4 w-4" />
-                          )}
-                          <span className="capitalize">
-                            {vault.status === 'confirmed' ? 'Confirmed' : 'Pending'}
-                          </span>
-                        </div>
-                        {vault.status === 'confirmed' && vault.confirmedAt && (
+                        {isIncompleteHybridVault(vault) ? (
+                          <div className="flex items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1 text-sm font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                            <AlertTriangle className="h-4 w-4" />
+                            <span>Incomplete</span>
+                          </div>
+                        ) : (
+                          <div className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium ${vault.status === 'confirmed'
+                            ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                            : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
+                            }`}>
+                            {vault.status === 'confirmed' ? (
+                              <CheckCircle2 className="h-4 w-4" />
+                            ) : (
+                              <Clock className="h-4 w-4" />
+                            )}
+                            <span className="capitalize">
+                              {vault.status === 'confirmed' ? 'Confirmed' : 'Pending'}
+                            </span>
+                          </div>
+                        )}
+                        {vault.status === 'confirmed' && vault.confirmedAt && !isIncompleteHybridVault(vault) && (
                           <span className="text-xs text-muted-foreground">
                             {new Date(vault.confirmedAt).toLocaleString('en-GB', {
                               day: 'numeric', month: 'short', year: 'numeric',
@@ -295,8 +303,11 @@ function VaultsPageContent() {
                         )}
 
                         <Link href={`/vaults/${vault.vaultId}`}>
-                          <Button variant="outline" size="sm">
-                            View Details
+                          <Button
+                            variant={isIncompleteHybridVault(vault) ? "default" : "outline"}
+                            size="sm"
+                          >
+                            {isIncompleteHybridVault(vault) ? "Continue Payment" : "View Details"}
                           </Button>
                         </Link>
                       </div>

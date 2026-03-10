@@ -38,7 +38,7 @@ export function VaultCreationWizard({
   onResult,
 }: VaultCreationWizardProps) {
   const {
-    isDialog, formState, setFormState, currentStep, setCurrentStep, stepError, setStepError, fieldErrors, setFieldErrors, isSubmitting, setIsSubmitting, isProcessingPayment, setIsProcessingPayment, paymentStatus, setPaymentStatus, paymentProgress, setPaymentProgress, paymentPhase, setPaymentPhase, vaultIdRef, vaultKeyRef, pqcKeyPairRef, pqcCipherTextRef, textareaRef, adjustTextareaHeight, fillWithDummyData, resetWizard, handleDocumentsChange, removeDocument, formatFileSize, isNextBlockedByAttachmentPrep, handleSecurityQuestionChange, addSecurityQuestion, removeSecurityQuestion, handleWillTypeChange, handleTriggerTypeChange, setPresetTriggerDate, reviewSummary, validateStep, transformPayload, submitToMCP, handleNext, handleUnifiedPayment, handlePrev
+    isDialog, formState, setFormState, currentStep, setCurrentStep, stepError, setStepError, fieldErrors, setFieldErrors, isSubmitting, setIsSubmitting, isProcessingPayment, setIsProcessingPayment, paymentStatus, setPaymentStatus, paymentProgress, setPaymentProgress, paymentPhase, setPaymentPhase, vaultIdRef, vaultKeyRef, pqcKeyPairRef, pqcCipherTextRef, textareaRef, adjustTextareaHeight, fillWithDummyData, resetWizard, handleDocumentsChange, removeDocument, formatFileSize, isNextBlockedByAttachmentPrep, handleSecurityQuestionChange, addSecurityQuestion, removeSecurityQuestion, handleWillTypeChange, handleTriggerTypeChange, setPresetTriggerDate, reviewSummary, validateStep, transformPayload, submitToMCP, handleNext, handleUnifiedPayment, handlePrev, incompleteArweaveTxId
   } = useVaultCreation({ variant, open, onOpenChange, onStepChange, onResult });
 
   const renderStepContent = () => {
@@ -443,6 +443,7 @@ export function VaultCreationWizard({
             paymentPhase={paymentPhase}
             isReady={true}
             blockedReason={null}
+            incompleteArweaveTxId={incompleteArweaveTxId}
           />
         );
       default:
