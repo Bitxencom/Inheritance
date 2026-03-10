@@ -483,13 +483,11 @@ export async function getConnectedAddress(): Promise<string | null> {
   if (typeof localStorage !== 'undefined') {
     const savedAddress = localStorage.getItem(WANDER_STORAGE_KEY);
     if (savedAddress) {
-      // Silently init WanderConnect so window.arweaveWallet becomes available for future dispatch
-      try {
-        await silentlyInitializeWanderConnect();
-      } catch (e) {
-        console.warn('Silent init failed', e);
-      }
-      currentConnectionMode = wanderConnectInstance ? 'connect' : (getArweaveWallet() ? 'extension' : 'none');
+      // Silently init WanderConnect in background so window.arweaveWallet becomes available for future dispatch.
+      // Do NOT await — this can take up to 5s waiting for the script and would block the "Checking wallet" UI.
+      silentlyInitializeWanderConnect().then(() => {
+        currentConnectionMode = wanderConnectInstance ? 'connect' : (getArweaveWallet() ? 'extension' : 'none');
+      }).catch(e => console.warn('Silent init failed', e));
       return savedAddress;
     }
   }
