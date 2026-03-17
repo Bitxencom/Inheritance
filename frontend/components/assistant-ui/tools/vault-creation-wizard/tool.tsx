@@ -49,7 +49,13 @@ export const VaultCreationWizardTool: ToolCallMessagePartComponent<{
       setIsCheckingHealth(true);
       try {
         const response = await fetch("/api/health");
-        const data = await response.json();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let data: any;
+        try {
+          data = await response.json();
+        } catch {
+          throw new Error("Tidak dapat membaca respons dari server. Pastikan backend sudah berjalan.");
+        }
 
         if (data.success && data.services) {
           setHealthStatus(data.services);

@@ -11,6 +11,7 @@ export async function GET() {
     const response = await fetch(`${backendBaseUrl}/health`, {
       method: "GET",
       signal: controller.signal,
+      cache: "no-store",
     });
 
     clearTimeout(timeoutId);
@@ -33,7 +34,27 @@ export async function GET() {
       }, { status: response.status });
     }
 
-    const data = await response.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let data: any;
+    try {
+      data = await response.json();
+    } catch {
+      return NextResponse.json({
+        success: false,
+        status: "error",
+        message: "Backend returned invalid response",
+        services: {
+          backend: {
+            available: false,
+            error: "Backend returned an unreadable response",
+          },
+          arweave: {
+            available: false,
+            error: "Cannot check blockchain storage because backend is unavailable",
+          },
+        },
+      }, { status: 502 });
+    }
 
     return NextResponse.json({
       success: true,
