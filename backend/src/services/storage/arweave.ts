@@ -14,6 +14,8 @@ const arweave = Arweave.init({
 
 const ARWEAVE_GATEWAYS = [
   "https://arweave.net",
+  "https://g8way.io",
+  "https://arweave-search.goldsky.com",
 ];
 
 /**
@@ -98,6 +100,8 @@ export const fetchVaultPayloadById = async (
 
   const graphqlEndpoints = [
     "https://arweave.net/graphql",
+    "https://arweave-search.goldsky.com/graphql",
+    "https://g8way.io/graphql",
   ];
 
   let txId: string | null = null;
