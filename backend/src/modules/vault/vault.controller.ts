@@ -5,14 +5,12 @@ import { z } from "zod";
 import { encryptMetadata, decryptMetadata, decryptQuestion } from "../../services/vault-service.js";
 import { combineShares } from "../../services/crypto/shamir.js";
 import {
-    decryptPayload,
     decryptPayloadHybrid,
     encryptPayload,
     generateAesKey,
     HybridEncryptedVault,
 } from "../../services/crypto/aes.js";
 import type { EncryptedVault, VaultPayload } from "../../types/vault.js";
-import { base64ToKey } from "../../services/crypto/pqc.js";
 import {
     fetchVaultPayloadById,
     getVaultUploadCostEstimate,
@@ -127,16 +125,6 @@ export const estimateCost = async (
         next(error);
     }
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Deprecated: server-side prepare
-// ─────────────────────────────────────────────────────────────────────────────
-export const prepareDeprecated = (_req: Request, res: Response): unknown =>
-    res.status(410).json({
-        success: false,
-        error:
-            "Backend encryption is deprecated. Please use client-side encryption and call /prepare-client.",
-    });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Prepare client-encrypted vault (new vault, generates vaultId)
@@ -485,47 +473,6 @@ export const unlockVault = async (
         next(error);
     }
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Deprecated: server-side claim
-// ─────────────────────────────────────────────────────────────────────────────
-export const claimDeprecated = (_req: Request, res: Response): unknown =>
-    res.status(410).json({
-        success: false,
-        error:
-            "Backend claim (server-side decryption) is deprecated. Use /unlock and decrypt on the client instead.",
-    });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Deprecated: server-side edit / preview
-// ─────────────────────────────────────────────────────────────────────────────
-export const editDeprecated = (_req: Request, res: Response): unknown =>
-    res.status(410).json({
-        success: false,
-        error:
-            "Backend edit (server-side decryption/re-encryption) is deprecated. Re-encrypt on the client and call /prepare-client instead.",
-    });
-
-export const previewDeprecated = (_req: Request, res: Response): unknown =>
-    res.status(410).json({
-        success: false,
-        error:
-            "Backend preview (server-side decryption) is deprecated. Use /unlock and decrypt on the client instead.",
-    });
-
-export const verifyFractionKeysDeprecated = (_req: Request, res: Response): unknown =>
-    res.status(410).json({
-        success: false,
-        error:
-            "Backend fraction key verification is deprecated. Unlock and decrypt on the client instead.",
-    });
-
-export const downloadDocumentDeprecated = (_req: Request, res: Response): unknown =>
-    res.status(410).json({
-        success: false,
-        error:
-            "Backend document download is deprecated. Unlock and decrypt documents on the client instead.",
-    });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Get security questions

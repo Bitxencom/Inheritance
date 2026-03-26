@@ -706,12 +706,6 @@ export async function readBitxenDataRecord(params: {
   };
 }
 
-// export async function finalizeRelease(
-//   chainId: ChainId,
-//   contractDataId: string,
-//   contractAddress?: string,
-// ): Promise<string> {
-
 export async function finalizeRelease(params: {
   chainId: ChainId;
   contractDataId: string;

@@ -858,13 +858,16 @@ export function useVaultClaim({
       // We check blockchain whenever:
       //   1. The encrypted vault uses "envelope" keyMode (always needs releaseEntropy), OR
       //   2. localVault indicates this is a bitxenArweave vault (localStorage hint, best-effort)
+      //   3. API metadata contains blockchainChain (vault created from external app e.g. deheritance)
       // This must NOT depend solely on localStorage so that unlock works from any browser.
       const encryptedVaultKeyModeHint =
         ((data as Record<string, unknown>).encryptedVault as Record<string, unknown> | undefined)?.keyMode;
+      const apiMetadataForOnChainCheck = (data as Record<string, unknown>).metadata as Record<string, unknown> | undefined;
       const shouldCheckReleaseOnChain =
         encryptedVaultKeyModeHint === "envelope" ||
         localVault?.storageType === "bitxenArweave" ||
-        (typeof localVault?.contractDataId === "string" && localVault.contractDataId.startsWith("0x"));
+        (typeof localVault?.contractDataId === "string" && localVault.contractDataId.startsWith("0x")) ||
+        (typeof apiMetadataForOnChainCheck?.blockchainChain === "string" && apiMetadataForOnChainCheck.blockchainChain.trim().length > 0);
 
       if (shouldCheckReleaseOnChain) {
         setUnlockProgress("🔗 Checking release status (blockchain)...");

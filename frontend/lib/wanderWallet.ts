@@ -1270,12 +1270,3 @@ export const WANDER_PAYMENT_CONFIG = {
   appInfo: WANDER_CONFIG.appInfo,
 };
 
-// Legacy function - no longer does payment, just checks wallet is ready
-export async function sendArPayment(): Promise<{ status: 'pending' }> {
-  // No separate payment needed - fee handled by Arweave during dispatch
-  const isReady = await isWalletReady();
-  if (!isReady) {
-    throw new Error('Wallet not connected. Please connect your wallet first.');
-  }
-  return { status: 'pending' };
-}
