@@ -365,6 +365,35 @@ export const fetchVaultPayloadById = async (
     }
   }
 
+  // Handle bitxen-index documents: these are pointer documents created by deheritance
+  // that contain a reference to the actual vault data transaction on Arweave.
+  // Both share the same Doc-Id tag, so GraphQL may return the index instead of the vault data.
+  if (
+    payloadJson &&
+    typeof payloadJson === "object" &&
+    (payloadJson as any).schema === "bitxen-index-v1" &&
+    (payloadJson as any).arweave?.contentTxId
+  ) {
+    const contentTxId = (payloadJson as any).arweave.contentTxId as string;
+    logger.info(`ℹ️ Found bitxen-index document, redirecting to actual vault data txId=${contentTxId}`);
+    txId = contentTxId;
+    payloadJson = await fetchTxJson(contentTxId);
+
+    // Re-parse if string
+    if (typeof payloadJson === "string") {
+      try {
+        payloadJson = JSON.parse(payloadJson);
+      } catch {
+        try {
+          const decoded = Buffer.from(payloadJson as string, "base64").toString("utf8");
+          payloadJson = JSON.parse(decoded);
+        } catch {
+          // keep as string
+        }
+      }
+    }
+  }
+
   // Handle wrapped payloads (some gateways wrap response in { data: ... })
   if (
     payloadJson &&

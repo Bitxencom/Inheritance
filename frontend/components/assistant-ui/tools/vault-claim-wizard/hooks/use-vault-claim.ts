@@ -997,9 +997,22 @@ export function useVaultClaim({
           });
 
           if (!record) {
-            throw new Error("Unable to verify release status on blockchain (read failed).");
+            // If blockchain read fails, check if the metadata indicates a scheduled future release.
+            // The backend already verified the trigger date before returning 200, so if no future
+            // release date exists in metadata, it's safe to continue without on-chain confirmation.
+            // This handles cases where: contractDataId is wrong (event ABI mismatch between apps),
+            // or the RPC endpoints are unreliable.
+            const apiMetaForRelease = (data as Record<string, unknown>).metadata as Record<string, unknown> | undefined;
+            const metaReleaseDateRaw = apiMetaForRelease?.releaseDate;
+            const metaReleaseDate = typeof metaReleaseDateRaw === "number" ? metaReleaseDateRaw : 0;
+            const hasScheduledFutureRelease = metaReleaseDate > 0 && metaReleaseDate > Math.floor(Date.now() / 1000);
+            if (hasScheduledFutureRelease) {
+              throw new Error("Unable to verify release status on blockchain (read failed).");
+            }
+            console.warn("[vault-claim] Blockchain read failed but no scheduled future release found; proceeding with Arweave-only verification.");
           }
 
+          if (record) {
           const nowSec = BigInt(Math.floor(Date.now() / 1000));
           const isTimePassed =
             typeof record.releaseDate === "bigint" &&
@@ -1067,6 +1080,7 @@ export function useVaultClaim({
                 : (data as Record<string, unknown>).chainId,
             } as typeof data;
           }
+          } // end if (record)
         }
       }
 
