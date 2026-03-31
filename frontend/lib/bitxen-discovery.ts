@@ -563,7 +563,7 @@ export async function tryLoadHybridEncryptedVault(params: {
 
   params.onProgress?.("🔓 Processing encrypted data...");
   const payloadJson = JSON.parse(vaultText) as Record<string, unknown>;
-  const encryptedVault = (payloadJson?.d || payloadJson?.encryptedData) as EncryptedVaultClient;
+  const encryptedVault = (payloadJson?.d || payloadJson?.encryptedData || payloadJson?.data) as EncryptedVaultClient;
 
   if (!encryptedVault) throw new Error("Encrypted payload not found in Arweave document.");
 
