@@ -141,14 +141,14 @@ export const decryptMetadata = (encryptedData: string, vaultId: string): Record<
  * Hash all security question answers and encrypt questions
  * New format: { encryptedQuestion, answerHash }
  */
-export const hashSecurityQuestionAnswers = (
+export const hashSecurityQuestionAnswers = async (
   securityQuestions: Array<{ question: string; answer: string }>,
   vaultId: string
-): Array<{ q: string; a: string }> => {
-  return securityQuestions.map((sq) => ({
-    q: encryptQuestion(sq.question, vaultId),  // obfuscated key
-    a: hashSecurityAnswer(sq.answer),           // obfuscated key
-  }));
+): Promise<Array<{ q: string; a: string }>> => {
+  return Promise.all(securityQuestions.map(async (sq) => ({
+    q: encryptQuestion(sq.question, vaultId),
+    a: await hashSecurityAnswer(sq.answer),
+  })));
 };
 
 const distributeKeys = (
@@ -231,7 +231,7 @@ export const prepareVault = async (
   // Hash answers and encrypt security questions
   // Obfuscated format: { q, a }
   const securityQuestionHashes = payload.securityQuestions
-    ? hashSecurityQuestionAnswers(payload.securityQuestions, vaultId)
+    ? await hashSecurityQuestionAnswers(payload.securityQuestions, vaultId)
     : [];
 
   const fractionKeyCommitments = buildFractionKeyCommitmentsV1(fractionKeys);

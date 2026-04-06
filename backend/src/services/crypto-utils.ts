@@ -1,4 +1,7 @@
-import { createHash, pbkdf2Sync, randomBytes, timingSafeEqual } from "crypto";
+import { createHash, pbkdf2, pbkdf2Sync, randomBytes, timingSafeEqual } from "crypto";
+import { promisify } from "util";
+
+const pbkdf2Async = promisify(pbkdf2);
 
 export const sha256HexFromString = (value: string): string => 
   createHash("sha256").update(value, "utf8").digest("hex");
@@ -26,13 +29,18 @@ export const parseFractionKeyShareInfo = (value: string): { bits: number; id: nu
   return { bits, id };
 };
 
+const PBKDF2_ITERATIONS = 210_000;
+
 /**
- * Hash security question answer for validation without decryption
- * Uses SHA-256 with normalization (lowercase, trim)
+ * Hash security question answer using PBKDF2-SHA256 (async, non-blocking).
+ * Format: "pbkdf2-sha256$<iterations>$<saltBase64>$<hashHex>"
+ * Backward-compatible: verifySecurityAnswerHash() still accepts legacy SHA-256 hashes.
  */
-export const hashSecurityAnswer = (answer: string): string => {
-  const normalized = answer.toLowerCase().trim();
-  return createHash("sha256").update(normalized).digest("hex");
+export const hashSecurityAnswer = async (answer: string): Promise<string> => {
+  const normalized = answer.normalize("NFKC").toLowerCase().trim();
+  const salt = randomBytes(16);
+  const derived = await pbkdf2Async(Buffer.from(normalized, "utf8"), salt, PBKDF2_ITERATIONS, 32, "sha256");
+  return `pbkdf2-sha256$${PBKDF2_ITERATIONS}$${salt.toString("base64")}$${derived.toString("hex")}`;
 };
 
 export type SecurityAnswerNormalizationProfile = "none" | "default";
