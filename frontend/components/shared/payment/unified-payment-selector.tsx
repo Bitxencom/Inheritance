@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Image from "next/image";
-import { Loader2, Check, Globe, Link2, Coins, Shield, AlertTriangle } from "lucide-react";
+import { Loader2, Check, Link2, Coins, Shield, AlertTriangle } from "lucide-react";
 
 
 import { Button } from "@/components/ui/button";
@@ -77,7 +77,7 @@ export function UnifiedPaymentSelector({
   const [metaMaskAddress, setMetaMaskAddress] = useState<string | null>(null);
   const [registrationFee, setRegistrationFee] = useState<string | null>(null);
 
-  const availableChains = getAvailableChains();
+  const availableChains = getAvailableChains().filter((id) => id !== "bscTestnet");
   const isMetaMaskAvailable = isMetaMaskInstalled();
 
   // Check existing wallet connections on mount
@@ -428,59 +428,6 @@ export function UnifiedPaymentSelector({
               </div>
             </label>
 
-            {/* Arweave Option - Simple Storage (Secondary/Right) */}
-            <label
-              className={cn(
-                "cursor-pointer rounded-xl border-2 p-5 hover:shadow-md relative",
-                selectedMode === "wander"
-                  ? "border-slate-700 bg-slate-50/50 dark:bg-slate-950/20 shadow-sm"
-                  : "border-border hover:border-slate-400"
-              )}
-            >
-              <input
-                type="radio"
-                name="paymentMode"
-                value="wander"
-                checked={selectedMode === "wander"}
-                onChange={() => setSelectedMode("wander")}
-                className="sr-only"
-                disabled={isProcessing}
-              />
-
-              {/* Selection indicator */}
-              {selectedMode === "wander" && (
-                <div className="absolute top-0 right-0 h-6 w-10 rounded-tr-lg rounded-bl-md bg-slate-700 flex items-center justify-center">
-                  <Check className="h-4 w-4 text-white" />
-                </div>
-              )}
-
-              <div className="flex flex-col gap-4 h-full">
-                {/* Icon & Title */}
-                <div className="flex items-center gap-3">
-                  <div>
-                    <h3 className="font-semibold text-base">Arweave</h3>
-                    <p className="text-xs text-muted-foreground">Simple permanent storage</p>
-                  </div>
-                </div>
-
-                {/* Features */}
-                <div className="space-y-2 text-sm">
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <Globe className="h-4 w-4 text-slate-600" />
-                    <span>Only stored on Arweave</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <Coins className="h-4 w-4 text-slate-600" />
-                    <span>Fee: Network Fee varies (Paid by User)</span>
-                  </div>
-                </div>
-
-                {/* Simple badge */}
-                <div className="mt-auto inline-flex items-center gap-1.5 rounded-full bg-slate-100 dark:bg-slate-800/50 px-3 py-1 text-xs font-medium text-slate-700 dark:text-slate-300 w-fit">
-                  Basic
-                </div>
-              </div>
-            </label>
           </div>
         </div>
       )}
