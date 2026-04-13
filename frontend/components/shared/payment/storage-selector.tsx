@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { cn } from "@/lib/utils";
-import { Database, Link2, Globe, type LucideIcon } from "lucide-react";
+import { Database, Link2, type LucideIcon } from "lucide-react";
 import {
   CHAIN_CONFIG,
   getAvailableChains,
@@ -33,16 +33,6 @@ type StorageOption = {
 
 const storageOptions: StorageOption[] = [
   {
-    id: "arweave" as const,
-    name: "Arweave",
-    description: "Permanent decentralized storage",
-    details: "Pay once, store forever. Data persists indefinitely on Arweave network.",
-    icon: Globe,
-    fee: "Network Fee varies (Paid by User)",
-    color: "bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300",
-    borderColor: "border-purple-500",
-  },
-  {
     id: "bitxenArweave" as const,
     name: "Bitxen",
     badge: "BETA",
@@ -62,7 +52,7 @@ export function StorageSelector({
   onChainChange,
   disabled = false,
 }: StorageSelectorProps) {
-  const availableChains = getAvailableChains();
+  const availableChains = getAvailableChains().filter((id) => id !== "bscTestnet");
 
   return (
     <div className="space-y-6">
