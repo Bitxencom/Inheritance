@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    :root {
+        --background: 222.2 84% 4.9%;
+        --foreground: 210 40% 98%;
+        --card: 222.2 84% 4.9%;
+        --card-foreground: 210 40% 98%;
+        --popover: 222.2 84% 4.9%;
+        --popover-foreground: 210 40% 98%;
+
+        /* Deheritance Gold Theme (#bb9854) */
+        --primary: 40 41% 53%;
+        /* Gold #FCCD04 approx or generic gold */
+        --primary-foreground: 222.2 47.4% 11.2%;
+
+        --secondary: 217.2 32.6% 17.5%;
+        --secondary-foreground: 210 40% 98%;
+        --muted: 217.2 32.6% 17.5%;
+        --muted-foreground: 215 20.2% 65.1%;
+        --accent: 217.2 32.6% 17.5%;
+        --accent-foreground: 210 40% 98%;
+        --destructive: 0 84% 60%;
+        --destructive-foreground: 210 40% 98%;
+        --border: 217.2 32.6% 17.5%;
+        --input: 217.2 32.6% 17.5%;
+        --ring: 48 96% 53%;
+        --radius: 0.5rem;
+    }
+
+    /* Removed .dark block as we are forcing dark mode in root */
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+
+    body {
+        @apply bg-background text-foreground;
+        background-color: #020817;
+        /* Hardcoded dark fallback */
+        color: #f8fafc;
+        font-family: 'Inter', sans-serif;
+    }
+}
+
+/* Premium gradient animations */
+@property --gradient-angle {
+    syntax: "<angle>";
+    initial-value: 0deg;
+    inherits: false;
+}
+
+@keyframes rotation {
+    0% {
+        --gradient-angle: 0deg;
+    }
+
+    100% {
+        --gradient-angle: 360deg;
+    }
+}
+
+.premium-card-border {
+    position: relative;
+    border-radius: var(--radius);
+}
+
+.premium-card-border::before,
+.premium-card-border::after {
+    content: "";
+    position: absolute;
+    inset: -2px;
+    z-index: -1;
+    background: conic-gradient(from var(--gradient-angle),
+            #bb9854,
+            #bb8e54,
+            #d4b06e,
+            /* Added a slightly lighter highlight for improved effect */
+            #bb9854);
+    border-radius: inherit;
+    animation: rotation 10s linear infinite;
+    opacity: 0.5;
+}
+
+.premium-card-border::after {
+    filter: blur(15px);
+    opacity: 0.2;
+}
+
+/* Utility: hide scrollbars but keep scrollable */
+.no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+    display: none;
+}
