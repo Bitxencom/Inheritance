@@ -11,6 +11,7 @@ export type CostEstimationFormState = {
 
 export type CostEstimationResult = {
   costAR: number;
+  costBITXEN: string; // formatted string or raw wei string
   dataSizeBytes: number;
   dataSizeKB: string;
   dataSizeMB: string;

@@ -10,6 +10,7 @@ coverage/
 
 # Next.js
 .next/
+.next-local/
 out/
 build/
 dist/
@@ -63,3 +64,6 @@ temp/
 # Local Dev Folder
 zzz/
 old-project/
+
+# Manual Build Script
+build-manual.sh

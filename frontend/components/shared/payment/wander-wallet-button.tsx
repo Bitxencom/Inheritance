@@ -5,7 +5,8 @@ import Image from "next/image";
 import { Loader2, Smartphone, Download } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { cn, isMobile } from "@/lib/utils";
+import { cn } from "@/lib/utils";
+import { useDeviceDetect } from "@/hooks/use-device-detect";
 import WanderLogo from "@/assets/logo/wander.svg";
 import {
   connectWanderWallet,
@@ -36,12 +37,11 @@ export function WanderWalletButton({
   const [isConnected, setIsConnected] = useState(false);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isMobileDevice, setIsMobileDevice] = useState(false);
+  const { isMobile: isMobileDevice } = useDeviceDetect();
 
   // Preload Wander Connect script on mount
   useEffect(() => {
     preloadWanderConnect();
-    setIsMobileDevice(isMobile());
   }, []);
 
   const handleConnect = async () => {

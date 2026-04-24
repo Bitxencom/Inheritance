@@ -1,6 +1,7 @@
 import { createHash, randomUUID, pbkdf2Sync, randomBytes, createCipheriv, createDecipheriv, timingSafeEqual } from "crypto";
 
 import { appEnv } from "../config/env.js";
+import { logger } from "../config/logger.js";
 import {
   encryptPayload,
   encryptPayloadHybrid,
@@ -21,43 +22,36 @@ import {
   SerializedPqcKeyPair,
   ObfuscatedPayload,
 } from "../types/vault.js";
+import {
+  sha256HexFromString,
+  parseFractionKeyShareInfo,
+  hashSecurityAnswer,
+  verifySecurityAnswerHash,
+  SecurityAnswerNormalizationProfile,
+} from "./crypto-utils.js";
 
 const randomVaultId = () => randomUUID();
 
-/**
- * Hash security question answer for validation without decryption
- * Uses SHA-256 with normalization (lowercase, trim)
- */
-export const hashSecurityAnswer = (answer: string): string => {
-  const normalized = answer.toLowerCase().trim();
-  return createHash("sha256").update(normalized).digest("hex");
+type FractionKeyCommitmentsV1 = {
+  scheme: "sha256";
+  version: 1;
+  byShareId: Record<string, string>;
+  createdAt?: string;
 };
 
-export const verifySecurityAnswerHash = (answer: string, storedHash: string | undefined): boolean => {
-  if (!storedHash || storedHash.length === 0) return false;
-
-  if (storedHash.startsWith("pbkdf2-sha256$")) {
-    const parts = storedHash.split("$");
-    const iterations = Number(parts[1] || "");
-    const saltBase64 = parts[2] || "";
-    const hashHex = parts[3] || "";
-    if (!Number.isFinite(iterations) || iterations <= 0) return false;
-    if (!saltBase64 || !hashHex) return false;
-
-    const normalized = answer.normalize("NFKC").toLowerCase().trim();
-    const salt = Buffer.from(saltBase64, "base64");
-    const derived = pbkdf2Sync(normalized, salt, iterations, 32, "sha256");
-    const expected = Buffer.from(hashHex, "hex");
-    if (expected.length !== derived.length) return false;
-    return timingSafeEqual(derived, expected);
+const buildFractionKeyCommitmentsV1 = (fractionKeys: string[]): FractionKeyCommitmentsV1 => {
+  const byShareId: Record<string, string> = {};
+  for (const key of fractionKeys) {
+    const trimmed = key.trim();
+    const info = parseFractionKeyShareInfo(trimmed);
+    byShareId[String(info.id)] = sha256HexFromString(trimmed);
   }
-
-  const hashed = hashSecurityAnswer(answer);
-  try {
-    return timingSafeEqual(Buffer.from(hashed, "hex"), Buffer.from(storedHash, "hex"));
-  } catch {
-    return false;
-  }
+  return {
+    scheme: "sha256",
+    version: 1,
+    byShareId,
+    createdAt: new Date().toISOString(),
+  };
 };
 
 export const verifySecurityAnswer = (answer: string, storedHash: string): boolean =>
@@ -150,14 +144,14 @@ export const decryptMetadata = (encryptedData: string, vaultId: string): Record<
  * Hash all security question answers and encrypt questions
  * New format: { encryptedQuestion, answerHash }
  */
-export const hashSecurityQuestionAnswers = (
+export const hashSecurityQuestionAnswers = async (
   securityQuestions: Array<{ question: string; answer: string }>,
   vaultId: string
-): Array<{ q: string; a: string }> => {
-  return securityQuestions.map((sq) => ({
-    q: encryptQuestion(sq.question, vaultId),  // obfuscated key
-    a: hashSecurityAnswer(sq.answer),           // obfuscated key
-  }));
+): Promise<Array<{ q: string; a: string }>> => {
+  return Promise.all(securityQuestions.map(async (sq) => ({
+    q: encryptQuestion(sq.question, vaultId),
+    a: await hashSecurityAnswer(sq.answer),
+  })));
 };
 
 const distributeKeys = (
@@ -201,7 +195,7 @@ export const prepareVault = async (
 
   // Determine encryption mode
   const usePqc = payload.enablePqc === true;
-  
+
   let encryptedVault: EncryptedVault | HybridEncryptedVault;
   let fractionKeys: string[];
   let pqcKeyPairSerialized: SerializedPqcKeyPair | undefined;
@@ -222,7 +216,7 @@ export const prepareVault = async (
       threshold: appEnv.shamirThreshold,
     });
 
-    console.log(`🔐 Vault ${vaultId} prepared with PQC hybrid encryption (ML-KEM-768 + AES-256)`);
+    logger.info(`🔐 Vault ${vaultId} prepared with PQC hybrid encryption (ML-KEM-768 + AES-256)`);
   } else {
     // === CLASSIC MODE ===
     const key = generateAesKey();
@@ -232,7 +226,7 @@ export const prepareVault = async (
       threshold: appEnv.shamirThreshold,
     });
 
-    console.log(`🔐 Vault ${vaultId} prepared with classic encryption (AES-256 + Shamir)`);
+    logger.info(`🔐 Vault ${vaultId} prepared with classic encryption (AES-256 + Shamir)`);
   }
 
   const fractionKeyAssignments = distributeKeys(payload.beneficiaries, fractionKeys);
@@ -240,13 +234,16 @@ export const prepareVault = async (
   // Hash answers and encrypt security questions
   // Obfuscated format: { q, a }
   const securityQuestionHashes = payload.securityQuestions
-    ? hashSecurityQuestionAnswers(payload.securityQuestions, vaultId)
+    ? await hashSecurityQuestionAnswers(payload.securityQuestions, vaultId)
     : [];
+
+  const fractionKeyCommitments = buildFractionKeyCommitmentsV1(fractionKeys);
 
   const metadata = {
     trigger: payload.triggerRelease,
     beneficiaryCount: payload.beneficiaries.length,
     securityQuestionHashes,
+    fractionKeyCommitments,
     willType: payload.willDetails?.willType || "one-time",
     isPqcEnabled: usePqc,
     encryptionVersion: "v1-backend",

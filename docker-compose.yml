@@ -38,6 +38,10 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       target: ${APP_ENV:-production}
+      args:
+        - NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID}
+        - NEXT_PUBLIC_EXPLORER_BASE_URL=${NEXT_PUBLIC_EXPLORER_BASE_URL}
+        - NEXT_PUBLIC_DEFAULT_CHAIN=${NEXT_PUBLIC_DEFAULT_CHAIN}
     container_name: ${PROJECT_NAME:-inheritance}-frontend
     environment:
       - BACKEND_BASE_URL=${BACKEND_BASE_URL:-http://backend:7002}
@@ -46,6 +50,9 @@ services:
       - MCP_SERVER_CWD=/app/mcp-server
       - MCP_SERVER_ENTRY=server.js
       - PORT=${FRONTEND_PORT:-7001}
+      - NEXT_PUBLIC_EXPLORER_BASE_URL=${NEXT_PUBLIC_EXPLORER_BASE_URL:-http://localhost:3021}
+      - NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID}
+      - NEXT_PUBLIC_DEFAULT_CHAIN=${NEXT_PUBLIC_DEFAULT_CHAIN}
     volumes:
       - ./mcp-server:/app/mcp-server
     expose:

@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deheritance Unlock</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <div class="container">
+        <!-- Header / Logo -->
+        <header class="header">
+            <img src="img/logo.png" alt="Deheritance Logo" class="logo">
+        </header>
+
+        <!-- PAGE 1: Login -->
+        <div id="page-1" class="page active">
+            <h2>Unlock Vault</h2>
+            <p class="subtitle">Enter your Deheritance ID to proceed.</p>
+            
+            <div class="input-group">
+                <input type="text" id="deheritance-id" placeholder="Enter ID (e.g. e846...)" autocomplete="off">
+            </div>
+            <p id="error-msg-1" class="error-msg hidden">ID not found. Please try again.</p>
+
+            <button id="btn-unlock-start" class="btn-primary">Unlock</button>
+            
+            <a href="#" class="link-text">How do I find the Deheritance ID?</a>
+        </div>
+
+        <!-- PAGE 2: Security Questions -->
+        <div id="page-2" class="page hidden">
+            <h2>Security Check</h2>
+            <div class="progress-bar"><div class="progress" style="width: 33%"></div></div>
+            
+            <!-- Question 1 -->
+            <div id="q1-container" class="question-block">
+                <label>Question 1/3</label>
+                <p class="question-text">What is your mother's maiden name?</p>
+                <input type="text" id="ans-1" placeholder="Answer..." autocomplete="off">
+                <button id="btn-q1" class="btn-primary mt-4">Next</button>
+            </div>
+
+            <!-- Question 2 -->
+            <div id="q2-container" class="question-block hidden">
+                <label>Question 2/3</label>
+                <p class="question-text">What was the name of your first pet?</p>
+                <input type="text" id="ans-2" placeholder="Answer..." autocomplete="off">
+                <button id="btn-q2" class="btn-primary mt-4">Next</button>
+            </div>
+
+            <!-- Question 3 -->
+            <div id="q3-container" class="question-block hidden">
+                <label>Question 3/3</label>
+                <p class="question-text">What city were you born in?</p>
+                <input type="text" id="ans-3" placeholder="Answer..." autocomplete="off">
+                <button id="btn-q3" class="btn-primary mt-4">Verify Identity</button>
+            </div>
+            
+            <p id="error-msg-2" class="error-msg hidden">Incorrect answer.</p>
+        </div>
+
+        <!-- PAGE 3: Fraction Keys -->
+        <div id="page-3" class="page hidden">
+            <h2>Fraction Keys</h2>
+            <p class="subtitle">Enter the 3 fraction keys to decrypt your vault.</p>
+
+            <div class="key-input-group">
+                <label>Key Part 1</label>
+                <div class="input-row">
+                    <input type="text" id="key-1" placeholder="Paste key string..." autocomplete="off">
+                    <button class="btn-icon">📂</button>
+                </div>
+            </div>
+
+            <div id="key-2-container" class="key-input-group hidden fade-in">
+                <label>Key Part 2</label>
+                <div class="input-row">
+                    <input type="text" id="key-2" placeholder="Paste key string..." autocomplete="off">
+                    <button class="btn-icon">📂</button>
+                </div>
+            </div>
+
+            <div id="key-3-container" class="key-input-group hidden fade-in">
+                <label>Key Part 3</label>
+                <div class="input-row">
+                    <input type="text" id="key-3" placeholder="Paste key string..." autocomplete="off">
+                    <button class="btn-icon">📂</button>
+                </div>
+            </div>
+
+            <button id="btn-decrypt" class="btn-primary mt-4 hidden">Decrypt Vault</button>
+            <p id="error-msg-3" class="error-msg hidden">Invalid key.</p>
+        </div>
+
+        <!-- PAGE 4: Confirmation & Loader -->
+        <div id="page-4" class="page hidden centered-content">
+            <div id="confirm-step">
+                <div class="icon-success">🔓</div>
+                <h2>Ready to Unlock</h2>
+                <p class="disclaimer">
+                    Your vault is about to be unlocked. This action cannot be undone and will decrypt all sensitive data locally. 
+                    Ensure you are in a secure environment.
+                </p>
+                <button id="btn-final-unlock" class="btn-primary pulse">Proceed to Unlock</button>
+            </div>
+
+            <div id="loader-step" class="hidden">
+                <div class="loader-ring"></div>
+                <p id="loading-text" class="loading-text">Vault is being downloaded...</p>
+            </div>
+        </div>
+
+        <!-- PAGE 5: Data Showing -->
+        <div id="page-5" class="page hidden">
+            <div class="vault-header">
+                <h2>Vault Content</h2>
+                <button id="btn-download-all" class="btn-secondary-sm">Download All</button>
+            </div>
+            
+            <div class="vault-list">
+                <!-- Item 1 -->
+                <div class="vault-item">
+                    <div class="item-icon">📄</div>
+                    <div class="item-info">
+                        <strong>Last Will and Testament</strong>
+                        <span>PDF Document • 2.4 MB</span>
+                    </div>
+                    <button class="btn-download">⬇</button>
+                </div>
+                 <!-- Item 2 -->
+                 <div class="vault-item">
+                    <div class="item-icon">📝</div>
+                    <div class="item-info">
+                        <strong>Personal Note</strong>
+                        <span>Text Note</span>
+                    </div>
+                    <button class="btn-view">👁</button>
+                </div>
+                <!-- Note Message -->
+                <div class="vault-note">
+                    <strong>Message from Owner:</strong>
+                    <p>"To my loved ones, I hope this finds you well..."</p>
+                </div>
+            </div>
+
+            <button id="btn-exit" class="btn-danger mt-auto">Done & Exit</button>
+        </div>
+
+    </div>
+
+    <!-- Exit Modal -->
+    <div id="exit-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Exit Vault?</h3>
+            <p>You are about to exit. The vault will be locked again.</p>
+            <div class="modal-actions">
+                <button id="btn-stay" class="btn-secondary">Stay</button>
+                <button id="btn-confirm-exit" class="btn-danger">Yes, Exit</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

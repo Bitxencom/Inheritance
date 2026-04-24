@@ -229,13 +229,15 @@ export const digitalInheritanceTools = [
           properties: {
             triggerType: {
               type: 'string',
-              enum: ['date', 'death'],
+              enum: ['date', 'death', 'manual'],
+              description: 'Type of trigger. If "date", triggerDate is required.',
             },
             triggerDate: {
               type: 'string',
+              description: 'Date string (ISO). Required if triggerType is "date". Must be empty otherwise.',
             },
           },
-          required: ['triggerType', 'triggerDate'],
+          required: ['triggerType'],
         },
         payment: {
           type: 'object',

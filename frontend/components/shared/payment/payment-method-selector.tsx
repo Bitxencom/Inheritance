@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { Smartphone, Download } from "lucide-react";
 
-import { cn, isMobile } from "@/lib/utils";
+import { cn } from "@/lib/utils";
+import { useDeviceDetect } from "@/hooks/use-device-detect";
 import { WanderWalletButton } from "./wander-wallet-button";
 import WanderLogo from "@/assets/logo/wander.svg";
 import Image from "next/image";
@@ -37,11 +37,7 @@ export function PaymentMethodSelector({
   disabled = false,
 }: PaymentMethodSelectorProps) {
   const enabledMethods = getEnabledPaymentMethods();
-  const [isMobileDevice, setIsMobileDevice] = useState(false);
-
-  useEffect(() => {
-    setIsMobileDevice(isMobile());
-  }, []);
+  const { isMobile: isMobileDevice } = useDeviceDetect();
 
   return (
     <div className="space-y-6">

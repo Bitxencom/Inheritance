@@ -1,39 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useState, useRef } from "react";
-import {
-  Search,
-  Loader2,
-  RotateCcw,
-  Check,
-  Copy,
-  ExternalLink,
-  AlertCircle,
-  FileText,
-  X,
-  Download
-} from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { AlertMessage } from "@/components/ui/alert-message";
-import { FieldError } from "@/components/ui/field-error";
-import { cn } from "@/lib/utils";
-import {
-  InheritanceIdField,
-  SecurityQuestionsField,
-  FractionKeysField,
-  validateSecurityQuestionsApi,
-  getLocalVaultErrorMessage,
-  generateSecurityQuestionFieldErrors,
-} from "@/components/assistant-ui/tools/shared";
+import React, { useEffect } from "react";
 import {
   Dialog,
   DialogContent,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogFooter,
 } from "@/components/ui/dialog";
+<<<<<<< HEAD
 
 import type {
   EditFormState,
@@ -44,252 +19,99 @@ import { editSteps, initialEditFormState } from "./constants";
 import { WanderWalletButton } from "@/components/shared/payment";
 import { Stepper } from "@/components/shared/stepper";
 import { connectWanderWallet } from "@/lib/wanderWallet";
-
-import { getVaultById, updateVaultTxId } from "@/lib/vault-storage";
-import { combineSharesClient } from "@/lib/shamirClient";
+=======
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
-  decryptVaultPayloadClient,
-  encryptVaultPayloadClient,
-  type EncryptedVaultClient,
-} from "@/lib/clientVaultCrypto";
-import { hashSecurityAnswerClient } from "@/lib/securityQuestionsClient";
+  Loader2,
+  Copy,
+  ExternalLink,
+  AlertCircle,
+  Search,
+  CheckCircle2,
+  X,
+  FileText,
+  Trash2,
+  Upload,
+  Download,
+} from "lucide-react";
+import { useVaultEdit } from "./hooks/use-vault-edit";
+import { type VaultEditWizardProps } from "./types";
+import { editSteps } from "./constants";
+import { UnifiedPaymentSelector } from "@/components/shared/payment";
+import { Stepper } from "@/components/shared/stepper";
+import { AlertMessage } from "@/components/ui/alert-message";
+import { FieldError } from "@/components/ui/field-error";
+import { getChainConfig, type ChainId, DEFAULT_CHAIN } from "@/lib/chains";
 
-type VaultPayloadForEdit = Record<string, unknown> & {
-  willDetails?: Record<string, unknown> & {
-    title?: string;
-    content?: string;
-    willType?: "one-time" | "editable";
-    documents?: Array<{ name?: string; size?: number; type?: string; content?: string }>;
-  };
-  securityQuestions?: Array<{ question: string; answer: string }>;
-  triggerRelease?: unknown;
-};
+>>>>>>> dev
 
-export function VaultEditWizard({
-  variant = "dialog",
-  open = true,
-  onOpenChange,
-  onStepChange,
-  onResult,
-  initialData,
-}: VaultEditWizardProps) {
-  const isDialog = variant === "dialog";
-  const [formState, setFormState] =
-    useState<EditFormState>(initialEditFormState);
 
-  const [currentStep, setCurrentStep] = useState(0);
-  const [isInitializing, setIsInitializing] = useState(false);
+export function VaultEditWizard(props: VaultEditWizardProps) {
+  const {
+    variant = "dialog",
+    open = true,
+    onOpenChange,
+    onResult,
+    initialData,
+  } = props;
 
-  // Initialize with backup data if available
-  useEffect(() => {
-    if (initialData && open) {
-      setIsInitializing(true);
-      setFormState((prev) => ({
-        ...prev,
-        vaultId: initialData.vaultId,
-        fractionKeys: {
-          key1: initialData.fractionKeys[0] || "",
-          key2: initialData.fractionKeys[1] || "",
-          key3: initialData.fractionKeys[2] || "",
-        },
-        securityQuestionAnswers: initialData.securityQuestionAnswers,
-      }));
-      setVerificationSuccess(true);
-      setIsSecurityAnswersVerified(true);
-      setIsFractionKeysVerified(true);
-
-      const willDetailsStepIndex = editSteps.findIndex((s) => s.key === "willDetails");
-      if (willDetailsStepIndex !== -1) {
-        setCurrentStep(willDetailsStepIndex);
-      }
-      // isInitializing will be set to false after content loads in the other effect
-    }
-  }, [initialData, open]);
-
-  const [stepError, setStepError] = useState<string | null>(null);
-  const [isWarning, setIsWarning] = useState(false);
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isProcessingPayment, setIsProcessingPayment] = useState(false);
-  const [paymentStatus, setPaymentStatus] = useState<string | null>(null);
-  const [isSecurityAnswersVerified, setIsSecurityAnswersVerified] = useState(false);
-  const [validSecurityAnswerIndexes, setValidSecurityAnswerIndexes] = useState<number[]>([]);
-  const [isFractionKeysVerified, setIsFractionKeysVerified] = useState(false);
-  const [verificationSuccess, setVerificationSuccess] = useState(false);
-  const [isVerifyingVault, setIsVerifyingVault] = useState(false);
-  const [isVerifyingQuestions, setIsVerifyingQuestions] = useState(false);
-  const [isVerifyingFractionKeys, setIsVerifyingFractionKeys] = useState(false);
-  const [decryptedVaultPayload, setDecryptedVaultPayload] = useState<VaultPayloadForEdit | null>(null);
-  const [combinedKeyForAttachments, setCombinedKeyForAttachments] = useState<Uint8Array | null>(null);
-
-  // State for version tracking
-  const [newerVersionAvailable, setNewerVersionAvailable] = useState(false);
-  const [latestTxId, setLatestTxId] = useState<string | null>(null);
-
-  // State for pending edit transaction (from localStorage)
-  const [hasPendingEdit, setHasPendingEdit] = useState(false);
-
-  // State for payment
-  const [paymentState, setPaymentState] = useState<{
-    paymentMethod: "wander";
-  }>({
-    paymentMethod: "wander",
-  });
-
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  // Ref to track active fetch abort controller to prevent race conditions
-  const abortControllerRef = useRef<AbortController | null>(null);
-
-  const adjustTextareaHeight = useCallback(() => {
-    const textarea = textareaRef.current;
-    if (textarea) {
-      textarea.style.height = "auto";
-      textarea.style.height = `${textarea.scrollHeight}px`;
-    }
-  }, []);
+  const {
+    formState,
+    currentStep,
+    stepError,
+    isWarning,
+    fieldErrors,
+    isSubmitting,
+    isVerifyingVault,
+    isVerifyingQuestions,
+    isVerifyingFractionKeys,
+    isProcessingPayment,
+    paymentStatus,
+    paymentProgress,
+    paymentPhase,
+    isSecurityAnswersVerified,
+    validSecurityAnswerIndexes,
+    isFractionKeysVerified,
+    verificationSuccess,
+    latestTxId,
+    hasPendingEdit,
+    newerVersionAvailable,
+    isStorageAutoDetected,
+    isInitializing,
+    isDialog,
+    textareaRef,
+    handleVaultIdChange,
+    handleWillDetailsChange,
+    handleFractionKeyChange,
+    handleSecurityAnswerChange,
+    handleDocumentsChange,
+    removeNewDocument,
+    removeExistingDocument,
+    handleToggleEditSecurityQuestions,
+    handleAddSecurityQuestion,
+    handleRemoveSecurityQuestion,
+    handleEditSecurityQuestionChange,
+    handleResetSecurityQuestions,
+    handleCancelEditSecurityQuestions,
+    handleNext,
+    handlePrev,
+    handleUnifiedPayment,
+    downloadDocument,
+    adjustTextareaHeight,
+  } = useVaultEdit(props);
 
   useEffect(() => {
-    if (editSteps[currentStep]?.key === "willDetails") {
-      // Small timeout to ensure DOM is ready and ref is attached
-      const timer = setTimeout(() => {
-        adjustTextareaHeight();
-      }, 0);
-      return () => clearTimeout(timer);
-    }
-  }, [formState.willDetails.content, currentStep, adjustTextareaHeight]);
-
-  useEffect(() => {
-    onStepChange?.(currentStep);
-  }, [currentStep, onStepChange]);
-
-  const reset = useCallback(() => {
-    setFormState(initialEditFormState);
-    setCurrentStep(0);
-    setStepError(null);
-    setIsWarning(false);
-    setFieldErrors({});
-    setIsSubmitting(false);
-    setIsSecurityAnswersVerified(false);
-    setIsFractionKeysVerified(false);
-    setVerificationSuccess(false);
-    setNewerVersionAvailable(false);
-    setLatestTxId(null);
-    setHasPendingEdit(false);
-    setCombinedKeyForAttachments(null);
-  }, []);
-
-  useEffect(() => {
-    if (isDialog && !open) {
-      reset();
-    }
-  }, [isDialog, open, reset]);
-
-  useEffect(() => {
-    return () => {
-      reset();
-    };
-  }, [reset]);
-
-  const handleVaultIdChange = (value: string) => {
-    setFormState((prev) => ({
-      ...prev,
-      vaultId: value,
-    }));
-    // Clear error when user starts typing
-    if (fieldErrors.vaultId) {
-      setFieldErrors((prev) => {
-        const newErrors = { ...prev };
-        delete newErrors.vaultId;
-        return newErrors;
-      });
-    }
-    if (stepError) setStepError(null);
-    setVerificationSuccess(false);
-  };
-
-  const handlePaymentMethodChange = (
-    method: "wander",
-  ) => {
-    setPaymentState((prev) => ({
-      ...prev,
-      paymentMethod: method,
-    }));
-  };
-
-  const handleWillDetailsChange = (field: "title" | "content", value: string) => {
-    setFormState((prev) => ({
-      ...prev,
-      willDetails: {
-        ...prev.willDetails,
-        [field]: value,
-      },
-    }));
-    // Clear error when user starts typing
-    const errorKey = `willDetails.${field}`;
-    if (fieldErrors[errorKey]) {
-      setFieldErrors((prev) => {
-        const newErrors = { ...prev };
-        delete newErrors[errorKey];
-        return newErrors;
-      });
-    }
-    if (stepError) setStepError(null);
-  };
-
-  const handleFractionKeyChange = (
-    keyProp: keyof EditFormState["fractionKeys"],
-    value: string,
-  ) => {
-    setFormState((prev) => ({
-      ...prev,
-      fractionKeys: {
-        ...prev.fractionKeys,
-        [keyProp]: value,
-      },
-    }));
-
-    // Reset validation when fraction key is changed
-    setIsFractionKeysVerified(false);
-
-    // Clear error when user starts typing
-    const errorKey = `fractionKeys.${keyProp}`;
-    if (fieldErrors[errorKey]) {
-      setFieldErrors((prev) => {
-        const newErrors = { ...prev };
-        delete newErrors[errorKey];
-        return newErrors;
-      });
-    }
-    if (stepError) setStepError(null);
-  };
-
-  const handleSecurityAnswerChange = (index: number, value: string) => {
-    setFormState((prev) => ({
-      ...prev,
-      securityQuestionAnswers: prev.securityQuestionAnswers.map((sq, i) =>
-        i === index ? { ...sq, answer: value } : sq,
-      ),
-    }));
-    // Reset validation when security answer is changed
-    setIsSecurityAnswersVerified(false);
-
-    // Clear error when user starts typing
-    const errorKey = `securityQuestionAnswers.${index}.answer`;
-    if (fieldErrors[errorKey]) {
-      setFieldErrors((prev) => {
-        const newErrors = { ...prev };
-        delete newErrors[errorKey];
-        return newErrors;
-      });
-    }
-    if (stepError) setStepError(null);
-  };
+    adjustTextareaHeight();
+  }, [formState.willDetails.content, adjustTextareaHeight, currentStep]);
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
+    // toast.success("Copied to clipboard");
   };
 
+<<<<<<< HEAD
   // Helper functions for documents
   const handleDocumentsChange = (files: FileList | null) => {
     if (!files) return;
@@ -1581,58 +1403,96 @@ export function VaultEditWizard({
     if (currentStep === 0) return;
     setCurrentStep((prev) => prev - 1);
   };
+=======
+>>>>>>> dev
 
   const renderStepContent = () => {
     switch (editSteps[currentStep].key) {
       case "vaultId":
         return (
           <div className="space-y-4">
-            <InheritanceIdField
-              description="Enter the Inheritance ID of the inheritance you want to edit."
-              value={formState.vaultId}
-              onChange={handleVaultIdChange}
-              isVerified={verificationSuccess}
-              isLoading={isVerifyingVault || isSubmitting}
-              error={fieldErrors.vaultId}
-              placeholder="e.g. 123e4567-e89b-12d3-a456-426614174000"
-              onReset={() => {
-                handleVaultIdChange("");
-                setVerificationSuccess(false);
-              }}
-            />
+            <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm dark:border-blue-800 dark:bg-blue-950">
+              <p className="font-medium text-blue-700 dark:text-blue-300">
+                Update Existing Inheritance
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Enter your Inheritance ID to load and edit its content.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Inheritance ID</label>
+              <div className="flex gap-2">
+                <Input
+                  value={formState.vaultId}
+                  onChange={(e) => handleVaultIdChange(e.target.value)}
+                  placeholder="e.g. will-12345678"
+                  className={fieldErrors.vaultId ? "border-destructive" : ""}
+                  disabled={verificationSuccess}
+                />
+                {verificationSuccess && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => handleVaultIdChange("")}
+                    title="Change Vault ID"
+                  >
+                    <X className="size-4" />
+                  </Button>
+                )}
+              </div>
+              <FieldError message={fieldErrors.vaultId} />
+            </div>
+
+            {verificationSuccess && (
+              <div className="flex items-center gap-2 rounded-lg bg-green-50 px-3 py-2 text-xs font-medium text-green-700 dark:bg-green-950/30 dark:text-green-400">
+                <CheckCircle2 className="size-3" />
+                Inheritance ID verified. You can proceed to the next step.
+              </div>
+            )}
           </div>
         );
 
       case "securityQuestion":
         return (
           <div className="space-y-4">
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm dark:border-amber-800 dark:bg-amber-950">
+              <p className="font-medium text-amber-700 dark:text-amber-300">
+                Security Verification
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Please answer your security questions to authorize editing. These were set during creation.
+              </p>
+            </div>
 
-
-            {formState.securityQuestionAnswers.length === 0 ? (
-              <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm dark:border-amber-800 dark:bg-amber-950">
-                <p className="text-amber-700 dark:text-amber-300">
-                  Loading security questions...
-                </p>
+            <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2">
+              {formState.securityQuestionAnswers.map((sq, index) => (
+                <div key={index} className="space-y-2">
+                  <p className="text-sm font-medium">{sq.question}</p>
+                  <div className="relative">
+                    <Input
+                      type="password"
+                      value={sq.answer}
+                      onChange={(e) => handleSecurityAnswerChange(index, e.target.value)}
+                      placeholder="Your answer"
+                      className={fieldErrors[`securityQuestionAnswers.${index}.answer`] ? "border-destructive" : ""}
+                      disabled={isSecurityAnswersVerified}
+                    />
+                    {isSecurityAnswersVerified && (
+                      <CheckCircle2 className="absolute right-3 top-1/2 size-4 -translate-y-1/2 text-green-500" />
+                    )}
+                    {validSecurityAnswerIndexes.includes(index) && !isSecurityAnswersVerified && (
+                      <CheckCircle2 className="absolute right-3 top-1/2 size-4 -translate-y-1/2 text-green-500/50" />
+                    )}
+                  </div>
+                  <FieldError message={fieldErrors[`securityQuestionAnswers.${index}.answer`]} />
+                </div>
+              ))}
+            </div>
+            {isSecurityAnswersVerified && (
+              <div className="flex items-center gap-2 rounded-lg bg-green-50 px-3 py-2 text-xs font-medium text-green-700 dark:bg-green-950/30 dark:text-green-400">
+                <CheckCircle2 className="size-3" />
+                Security answers verified successfully.
               </div>
-            ) : (
-              <SecurityQuestionsField
-                questions={formState.securityQuestionAnswers}
-                onAnswerChange={handleSecurityAnswerChange}
-                isVerified={isSecurityAnswersVerified}
-                isLoading={isVerifyingQuestions || isSubmitting}
-                errors={(() => {
-                  const errors: Record<number, string> = {};
-                  formState.securityQuestionAnswers.forEach((_, index) => {
-                    const errorKey = `securityQuestionAnswers.${index}.answer`;
-                    if (fieldErrors[errorKey]) {
-                      errors[index] = fieldErrors[errorKey];
-                    }
-                  });
-                  return errors;
-                })()}
-                validIndexes={validSecurityAnswerIndexes}
-                onEnterPress={handleNext}
-              />
             )}
           </div>
         );
@@ -1640,176 +1500,210 @@ export function VaultEditWizard({
       case "fractionKeys":
         return (
           <div className="space-y-4">
-            <FractionKeysField
-              keys={formState.fractionKeys}
-              onKeyChange={handleFractionKeyChange}
-              isVerified={isFractionKeysVerified}
-              isLoading={isVerifyingFractionKeys || isSubmitting}
-              errors={fieldErrors}
-              onEnterPress={handleNext}
-            />
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm dark:border-amber-800 dark:bg-amber-950">
+              <p className="font-medium text-amber-700 dark:text-amber-300">
+                Unlock Content
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Provide at least 3 Fraction Keys from your backup to unlock and decrypt the current content.
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Fraction Key #1</label>
+                <Input
+                  value={formState.fractionKeys.key1}
+                  onChange={(e) => handleFractionKeyChange("key1", e.target.value)}
+                  placeholder="Paste your first fraction key"
+                  className={fieldErrors["fractionKeys.key1"] ? "border-destructive" : ""}
+                  disabled={isFractionKeysVerified}
+                />
+                <FieldError message={fieldErrors["fractionKeys.key1"]} />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Fraction Key #2</label>
+                <Input
+                  value={formState.fractionKeys.key2}
+                  onChange={(e) => handleFractionKeyChange("key2", e.target.value)}
+                  placeholder="Paste your second fraction key"
+                  className={fieldErrors["fractionKeys.key2"] ? "border-destructive" : ""}
+                  disabled={isFractionKeysVerified}
+                />
+                <FieldError message={fieldErrors["fractionKeys.key2"]} />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Fraction Key #3</label>
+                <Input
+                  value={formState.fractionKeys.key3}
+                  onChange={(e) => handleFractionKeyChange("key3", e.target.value)}
+                  placeholder="Paste your third fraction key"
+                  className={fieldErrors["fractionKeys.key3"] ? "border-destructive" : ""}
+                  disabled={isFractionKeysVerified}
+                />
+                <FieldError message={fieldErrors["fractionKeys.key3"]} />
+              </div>
+            </div>
+            {isFractionKeysVerified && (
+              <div className="flex items-center gap-2 rounded-lg bg-green-50 px-3 py-2 text-xs font-medium text-green-700 dark:bg-green-950/30 dark:text-green-400">
+                <CheckCircle2 className="size-3" />
+                Content unlocked and decrypted successfully.
+              </div>
+            )}
           </div>
         );
 
       case "willDetails":
         return (
           <div className="space-y-4">
-            {/* Only show success message if we actually have content loaded and it's not empty */}
-            {formState.willDetails.title && (
-              <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm dark:border-green-800 dark:bg-green-950">
-                <p className="font-medium text-green-700 dark:text-green-300">
-                  Current inheritance content successfully loaded
-                </p>
-              </div>
-            )}
+            <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm dark:border-green-800 dark:bg-green-950">
+              <p className="font-medium text-green-700 dark:text-green-300">
+                Edit Content
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Modify the title, content, and documents for this inheritance.
+              </p>
+            </div>
+
             <div className="space-y-2">
               <label className="text-sm font-medium">Title</label>
               <Input
                 value={formState.willDetails.title}
-                onChange={(e) =>
-                  handleWillDetailsChange("title", e.target.value)
-                }
-                placeholder="Example: Inheritance for Family (latest version)"
+                onChange={(e) => handleWillDetailsChange("title", e.target.value)}
+                placeholder="Title for your inheritance"
                 className={fieldErrors["willDetails.title"] ? "border-destructive" : ""}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !isSubmitting) {
-                    handleNext();
-                  }
-                }}
               />
               <FieldError message={fieldErrors["willDetails.title"]} />
             </div>
+
             <div className="space-y-2">
-              <label className="text-sm font-medium">Content</label>
+              <label className="text-sm font-medium">Content / Message</label>
               <Textarea
                 ref={textareaRef}
                 value={formState.willDetails.content}
-                rows={5}
-                onChange={(e) =>
-                  handleWillDetailsChange("content", e.target.value)
-                }
-                placeholder="Write your latest inheritance content..."
-                className={cn(
-                  "resize-none overflow-hidden",
-                  fieldErrors["willDetails.content"] ? "border-destructive" : ""
-                )}
+                onChange={(e) => handleWillDetailsChange("content", e.target.value)}
+                placeholder="Enter the secure content or message..."
+                className={`min-h-[150px] resize-none overflow-hidden ${fieldErrors["willDetails.content"] ? "border-destructive" : ""}`}
               />
               <FieldError message={fieldErrors["willDetails.content"]} />
             </div>
 
             <div className="space-y-3">
-              <label className="text-sm font-medium">
-                Additional Documents (optional)
-              </label>
-
-              <label className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-border bg-muted/30 p-6 transition-colors hover:bg-muted/50">
-                <FileText className="mb-2 size-8 text-muted-foreground" />
-                <p className="text-sm font-medium">Click to upload documents</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  PDF, Office, images, video, audio, and more
-                </p>
-                <Input
-                  type="file"
-                  multiple
-                  accept=".pdf,.txt,.doc,.docx,.csv,.xls,.xlsx,.heic,.heiv,.hevc,.jpg,.jpeg,.png,.gif,.mp4,.mov,.avi,.m4v,.rtf,.rtfd,.html,.odt,.ai,.eps,.svg,.tiff,.psd,.fbx,.stp,.step,.igs,.iges,.stl,.3mf,.obg,.mp3,.aac,.wav,.flac,.alac,.aiff,.ogg,.m4a"
-                  onChange={(event) => handleDocumentsChange(event.target.files)}
-                  className="sr-only"
-                />
-              </label>
+              <label className="text-sm font-medium">Documents</label>
 
               {/* Existing Documents */}
               {formState.willDetails.existingDocuments.length > 0 && (
                 <div className="space-y-2">
-                  <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 mt-4">
-                    Existing Documents
+                  <p className="text-xs font-semibold text-muted-foreground uppercase">Existing Documents</p>
+                  <div className="rounded-lg border bg-muted/30 divide-y">
+                    {formState.willDetails.existingDocuments.map((doc, index) => (
+                      <div key={index} className="flex items-center justify-between p-2 text-sm">
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          <FileText className="size-4 shrink-0 text-blue-500" />
+                          <span className="truncate">{doc.name}</span>
+                          <span className="text-xs text-muted-foreground whitespace-nowrap">
+                            ({(doc.size / 1024).toFixed(1)} KB)
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            onClick={() => downloadDocument(index)}
+                            title="Download"
+                          >
+                            <Download className="size-3.5" />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-destructive hover:text-destructive"
+                            onClick={() => removeExistingDocument(index)}
+                            title="Delete"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                  {formState.willDetails.existingDocuments.map((file, index) => (
-                    <div
-                      key={`existing-${index}`}
-                      className="flex items-center gap-3 rounded-md border bg-muted/50 px-3 py-2"
-                    >
-                      <div className="relative">
-                        <FileText className="size-4 shrink-0 text-muted-foreground" />
-                        <div className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-blue-500" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">{file.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {formatFileSize(file.size)}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => downloadDocument(index)}
-                          className="shrink-0 cursor-pointer rounded-sm p-1 text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
-                          aria-label="Download file"
-                          title="Download"
-                        >
-                          <Download className="size-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => removeExistingDocument(index)}
-                          className="shrink-0 cursor-pointer rounded-sm p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                          aria-label="Remove file"
-                          title="Remove"
-                        >
-                          <X className="size-4" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
                 </div>
               )}
 
               {/* New Documents */}
-              {formState.willDetails.newDocuments.length > 0 && (
-                <div className="space-y-2">
-                  <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 mt-4">
-                    New Documents
-                  </div>
-                  {formState.willDetails.newDocuments.map((file, index) => (
-                    <div
-                      key={`new-${index}`}
-                      className="flex items-center gap-3 rounded-md border bg-background px-3 py-2"
-                    >
-                      <div className="relative">
-                        <FileText className="size-4 shrink-0 text-muted-foreground" />
-                        <div className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-green-500" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">{file.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {formatFileSize(file.size)}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => removeNewDocument(index)}
-                        className="shrink-0 cursor-pointer rounded-sm p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                        aria-label="Remove file"
-                      >
-                        <X className="size-4" />
-                      </button>
+              <div className="space-y-2">
+                {formState.willDetails.newDocuments.length > 0 && (
+                  <>
+                    <p className="text-xs font-semibold text-muted-foreground uppercase">Added Documents</p>
+                    <div className="rounded-lg border border-dashed bg-muted/30 divide-y">
+                      {formState.willDetails.newDocuments.map((file, index) => (
+                        <div key={index} className="flex items-center justify-between p-2 text-sm">
+                          <div className="flex items-center gap-2 overflow-hidden">
+                            <FileText className="size-4 shrink-0 text-green-500" />
+                            <span className="truncate">{file.name}</span>
+                            <span className="text-xs text-muted-foreground whitespace-nowrap">
+                              ({(file.size / 1024).toFixed(1)} KB)
+                            </span>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-destructive hover:text-destructive"
+                            onClick={() => removeNewDocument(index)}
+                          >
+                            <Trash2 className="size-3.5" />
+                          </Button>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                  </>
+                )}
 
-            <p className="mt-2 text-xs text-muted-foreground">
-              These changes will be saved as a new version on blockchain storage, the old version remains archived.
-            </p>
-          </div >
+                <div className="relative">
+                  <Input
+                    type="file"
+                    multiple
+                    className="hidden"
+                    id="edit-file-upload"
+                    onChange={(e) => handleDocumentsChange(e.target.files)}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full gap-2 border-dashed"
+                    onClick={() => document.getElementById("edit-file-upload")?.click()}
+                  >
+                    <Upload className="size-4" />
+                    Upload Documents
+                  </Button>
+                </div>
+                {/* <p className="text-[10px] text-muted-foreground text-center">
+                  Max 1GB total size. Large files (&gt;5MB) uploaded directly to Arweave.
+                </p> */}
+              </div>
+            </div>
+          </div>
         );
 
       case "editSecurityQuestions":
         return (
           <div className="space-y-4">
-            {/* Show question when not editing */}
+            <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm dark:border-blue-800 dark:bg-blue-950">
+              <p className="font-medium text-blue-700 dark:text-blue-300">
+                Manage Security Questions
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Would you like to update your security questions as well?
+              </p>
+            </div>
+
+            {/* Question placeholder when not editing */}
             {!formState.isEditingSecurityQuestions && (
-              <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm dark:border-blue-800 dark:bg-blue-950">
+              <div className="rounded-lg border border-blue-200 bg-blue-50/50 px-4 py-3 text-sm dark:border-blue-800/50 dark:bg-blue-950/20">
                 <p className="font-medium text-blue-700 dark:text-blue-300">
                   Do you want to change the Security Questions?
                 </p>
@@ -1904,7 +1798,7 @@ export function VaultEditWizard({
                 Confirm Edit
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                A new version will be saved onblockchain storage using the same Inheritance
+                A new version will be saved on blockchain storage using the same Inheritance
                 ID. The old version remains archived.
               </p>
             </div>
@@ -1927,20 +1821,36 @@ export function VaultEditWizard({
                 {formState.willDetails.content}
               </p>
             </div>
-
-
           </div>
         );
 
+<<<<<<< HEAD
 
+=======
+      case "storageSelection":
+        return (
+          <UnifiedPaymentSelector
+            onSubmit={handleUnifiedPayment}
+            isSubmitting={isSubmitting || isProcessingPayment}
+            paymentStatus={paymentStatus}
+            paymentProgress={paymentProgress}
+            paymentPhase={paymentPhase}
+            isReady={true}
+          />
+        );
+>>>>>>> dev
 
       case "payment":
         return (
-          <WanderWalletButton
-            onClick={handleWanderPayment}
-            isSubmitting={isSubmitting}
-            isProcessingPayment={isProcessingPayment}
+          <UnifiedPaymentSelector
+            onSubmit={handleUnifiedPayment}
+            isSubmitting={isSubmitting || isProcessingPayment}
             paymentStatus={paymentStatus}
+            paymentProgress={paymentProgress}
+            paymentPhase={paymentPhase}
+            isReady={true}
+            lockedMode={isStorageAutoDetected ? (formState.storageType === "bitxenArweave" ? "hybrid" : "wander") : undefined}
+            lockedChain={isStorageAutoDetected && formState.storageType === "bitxenArweave" ? ((formState.payment.selectedChain as ChainId) || DEFAULT_CHAIN) : undefined}
           />
         );
 
@@ -1957,7 +1867,7 @@ export function VaultEditWizard({
             </div>
 
             <div className="space-y-4">
-              <div className="rounded-lg border bg-card p-4 shadow-sm">
+              <div className="rounded-lg border bg-card p-4">
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                     Inheritance ID
@@ -1978,7 +1888,7 @@ export function VaultEditWizard({
               </div>
 
               {latestTxId && (
-                <div className="rounded-lg border bg-card p-4 shadow-sm">
+                <div className="rounded-lg border bg-card p-4">
                   <div className="flex items-center justify-between mb-2">
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                       Transaction ID (Arweave)
@@ -1988,7 +1898,7 @@ export function VaultEditWizard({
                         variant="ghost"
                         size="icon"
                         className="h-6 w-16 gap-1 text-xs"
-                        onClick={() => handleCopy(latestTxId)}
+                        onClick={() => handleCopy(latestTxId!)}
                       >
                         <Copy className="size-3" />
                         Copy
@@ -1998,7 +1908,18 @@ export function VaultEditWizard({
                         size="icon"
                         className="h-6 w-6 text-xs"
                         onClick={() => {
+<<<<<<< HEAD
                           window.open(`https://viewblock.io/arweave/tx/${latestTxId}`, "_blank");
+=======
+                          if (formState.storageType === "bitxenArweave") {
+                            const chain = (formState.payment.selectedChain || DEFAULT_CHAIN) as ChainId;
+                            const config = getChainConfig(chain);
+                            window.open(`${config.blockExplorer}/tx/${latestTxId}`, "_blank");
+                          } else {
+                            const explorerBaseUrl = process.env.NEXT_PUBLIC_EXPLORER_BASE_URL || "https://viewblock.io/arweave/tx/";
+                            window.open(`${explorerBaseUrl}/${latestTxId}`, "_blank");
+                          }
+>>>>>>> dev
                         }}
                       >
                         <ExternalLink className="size-3" />
@@ -2085,7 +2006,13 @@ export function VaultEditWizard({
     <div className="space-y-6">
       {/* Progress Steps */}
       <div className={initialData || (editSteps[currentStep] && editSteps[currentStep].key === "success") ? "hidden" : ""}>
-        <Stepper steps={editSteps} currentStep={currentStep} />
+        {(() => {
+          const visibleSteps = isStorageAutoDetected
+            ? editSteps.filter((s) => s.key !== "storageSelection")
+            : editSteps;
+          const visibleIndex = visibleSteps.findIndex((s) => s.key === editSteps[currentStep]?.key);
+          return <Stepper steps={visibleSteps} currentStep={visibleIndex >= 0 ? visibleIndex : currentStep} />;
+        })()}
       </div>
 
       {/* Warning regarding pending edit - visible on all steps after Vault ID (Step 1) */}
@@ -2116,7 +2043,6 @@ export function VaultEditWizard({
       )}
 
       {/* Step Content */}
-      {/* <div className="min-h-[280px]">{renderStepContent()}</div> */}
       <div className="">
         {isInitializing ? (
           <div className="flex flex-col items-center justify-center py-12 text-center rounded-lg border border-dashed">

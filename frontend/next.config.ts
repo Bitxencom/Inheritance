@@ -7,6 +7,20 @@ const nextConfig: NextConfig = {
     // So production build in Docker doesn't fail just because of ESLint errors (e.g. no-explicit-any)
     ignoreDuringBuilds: true,
   },
+  experimental: {
+    turbo: {
+    },
+  },
+
+  // izinkan akses dari ngrok saat development
+  allowedDevOrigins: [
+    "https://kina-ladylike-anarthrously.ngrok-free.dev",
+    "*.ngrok-free.dev",
+  ],
+
+  webpack: (config) => {
+    return config;
+  },
 };
 
 export default nextConfig;

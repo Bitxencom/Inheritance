@@ -1,0 +1,72 @@
+{
+    "manifest_version": 3,
+    "name": "Bitxen Inheritance Unlock",
+    "version": "1.0",
+    "description": "Unlock your Bitxen Inheritance vault secure and fast.",
+    "icons": {
+        "16": "assets/fav.png",
+        "48": "assets/fav.png",
+        "128": "assets/fav.png"
+    },
+    "action": {
+        "default_popup": "popup.html",
+        "default_icon": {
+            "16": "assets/fav.png",
+            "48": "assets/fav.png",
+            "128": "assets/fav.png"
+        }
+    },
+    "background": {
+        "service_worker": "background.js",
+        "type": "module"
+    },
+    "permissions": [
+        "storage",
+        "clipboardRead",
+        "tabs"
+    ],
+    "externally_connectable": {
+        "matches": [
+            "http://localhost:3000/*",
+            "http://localhost:7000/*",
+            "http://localhost:7001/*"
+        ]
+    },
+    "host_permissions": [
+        "https://arweave.net/*",
+        "https://arweave-search.goldsky.com/*",
+        "https://ar-io.net/*",
+        "https://bsc-testnet-dataseed.bnbchain.org/*",
+        "https://bsc-testnet.publicnode.com/*",
+        "https://data-seed-prebsc-1-s2.binance.org/*",
+        "https://data-seed-prebsc-2-s1.binance.org/*",
+        "https://data-seed-prebsc-1-s1.binance.org/*",
+        "https://bsc-testnet-rpc.publicnode.com/*",
+        "https://bsc-testnet.public.blastapi.io/*",
+        "https://bsc-dataseed.binance.org/*",
+        "https://bsc-dataseed1.defibit.io/*",
+        "https://bsc-dataseed1.ninicoin.io/*",
+        "https://bsc-dataseed2.defibit.io/*",
+        "https://bsc-dataseed3.defibit.io/*",
+        "https://bsc-dataseed4.defibit.io/*",
+        "https://bsc-dataseed1.binance.org/*",
+        "https://bsc-dataseed2.binance.org/*",
+        "https://bsc-dataseed3.binance.org/*",
+        "https://bsc-dataseed4.binance.org/*",
+        "https://eth.llamarpc.com/*",
+        "https://polygon-rpc.com/*",
+        "https://mainnet.base.org/*",
+        "https://arb1.arbitrum.io/*",
+        "https://mainnet.optimism.io/*",
+        "https://rpc.linea.build/*",
+        "https://evm-rpc.sei-apis.com/*",
+        "https://api.avax.network/*",
+        "https://testnet-rpc.monad.xyz/*",
+        "https://api.drand.sh/*",
+        "https://drand.cloudflare.com/*",
+        "http://localhost:7000/*",
+        "http://localhost:7001/*",
+        "http://localhost:7002/*",
+        "http://localhost:3000/*"
+    ]
+}

@@ -8,6 +8,18 @@
 
 import Arweave from 'arweave';
 
+const WANDER_STORAGE_KEY = 'bitxen_wander_address';
+
+// Re-export upload utilities from the dedicated module for consumers
+// who prefer importing from a single wallet entry point.
+export {
+  postJsonWithUploadProgress,
+  listenRelayJobEvents,
+  type UploadRecord,
+  type FetchWithProgressResult,
+  type RelayJobPayload,
+} from "./arweave-upload";
+
 // WanderConnect is dynamically imported to avoid bundling issues
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type WanderConnectType = any;
@@ -48,13 +60,13 @@ function getArweaveWallet(): ArweaveWallet | undefined {
 export const WANDER_CONFIG = {
   // Required permissions for the app
   permissions: ['ACCESS_ADDRESS', 'SIGN_TRANSACTION', 'DISPATCH'] as string[],
-  
+
   // App info for wallet connection
   appInfo: {
     name: 'Inheritance - Digital Vault',
     logo: '/logo.png',
   },
-  
+
   // Wander Connect Client ID (free tier for now)
   clientId: 'FREE_TRIAL',
 } as const;
@@ -109,127 +121,227 @@ export function preloadWanderConnect(): void {
 }
 
 /**
+ * Initialize Wander Connect SDK silently (in background)
+ * This injects `window.arweaveWallet` without forcing the popup to open
+ */
+export async function silentlyInitializeWanderConnect(): Promise<void> {
+  if (typeof window === 'undefined') return;
+  // If native extension is present, we don't need to do anything
+  if (getArweaveWallet() && !wanderConnectInstance) {
+    return;
+  }
+
+  // Ensure script is loaded
+  if (!window.WanderSDK) {
+    if (!document.querySelector('script[src="/wander-connect.js"]')) {
+      preloadWanderConnect();
+    }
+    // Wait for the script to load
+    await new Promise<void>((resolve) => {
+      let retries = 0;
+      const check = setInterval(() => {
+        if (window.WanderSDK || retries > 50) {
+          clearInterval(check);
+          resolve();
+        }
+        retries++;
+      }, 100);
+    });
+  }
+
+  if (window.WanderSDK && window.WanderSDK.WanderConnect) {
+    if (!wanderConnectInstance) {
+      wanderConnectInstance = new window.WanderSDK.WanderConnect({
+        clientId: WANDER_CONFIG.clientId,
+      });
+      // Give the SDK a moment to inject window.arweaveWallet via its iframe
+      await new Promise(r => setTimeout(r, 150));
+    }
+  }
+}
+
+/**
  * Initialize Wander Connect SDK (embedded wallet)
  * This is used when browser extension is not available (e.g., mobile browser)
  */
 export async function initializeWanderConnect(): Promise<string> {
-  // If already initialized and wallet is ready, return address
+  // Early return hanya jika wallet SUDAH connect (punya permission ACCESS_ADDRESS).
+  // Jangan early return hanya karena window.arweaveWallet ada — Wander Connect SDK
+  // meng-inject arweaveWallet saat iframe load, sebelum user approve connection.
   if (wanderConnectInstance && getArweaveWallet()) {
     try {
-      const address = await getArweaveWallet()!.getActiveAddress();
-      currentConnectionMode = 'connect';
-      return address;
+      const permissions = await getArweaveWallet()!.getPermissions();
+      if (permissions.includes('ACCESS_ADDRESS')) {
+        const address = await getArweaveWallet()!.getActiveAddress();
+        if (address) {
+          currentConnectionMode = 'connect';
+          return address;
+        }
+      }
+      // Wallet ada tapi belum approve — lanjut buka popup
     } catch {
-      // Failed to get address, maybe disconnected. Continue to re-init.
+      // Failed to check permissions. Continue to re-init.
     }
   }
 
   // Load script manually if not present
   if (!window.WanderSDK) {
     if (!document.querySelector('script[src="/wander-connect.js"]')) {
-        await new Promise<void>((resolve, reject) => {
+      await new Promise<void>((resolve, reject) => {
         const script = document.createElement('script');
         script.src = '/wander-connect.js';
         script.onload = () => resolve();
         script.onerror = () => reject(new Error('Failed to load Wander Connect SDK'));
         document.body.appendChild(script);
-        });
+      });
     } else {
-        // Script loading but not ready, wait a bit
-        await new Promise<void>((resolve) => {
-            const check = setInterval(() => {
-                if (window.WanderSDK) {
-                    clearInterval(check);
-                    resolve();
-                }
-            }, 100);
-        });
+      // Script loading but not ready, wait a bit
+      await new Promise<void>((resolve) => {
+        const check = setInterval(() => {
+          if (window.WanderSDK) {
+            clearInterval(check);
+            resolve();
+          }
+        }, 100);
+      });
     }
   }
 
   if (!window.WanderSDK || !window.WanderSDK.WanderConnect) {
-     throw new Error('Wander Connect SDK loaded but object is missing.');
+    throw new Error('Wander Connect SDK loaded but object is missing.');
   }
 
-  const WanderConnect = window.WanderSDK.WanderConnect;
-  
-  // Create new Wander Connect instance
-  wanderConnectInstance = new WanderConnect({
-    clientId: WANDER_CONFIG.clientId,
-  });
-
-  // Force open UI immediately to trigger sign-in popup
-  const tryOpen = () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if (wanderConnectInstance && typeof (wanderConnectInstance as any).open === 'function') {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (wanderConnectInstance as any).open();
-          return true;
-        } catch (e) {
-          console.warn('Failed to auto-open Wander Connect UI:', e);
-          return false;
-        }
-    }
-    return false;
-  };
-
-  if (!tryOpen()) {
-    // Retry a few times if immediate open fails
-    let retries = 0;
-    const interval = setInterval(() => {
-        if (tryOpen() || retries > 5) clearInterval(interval);
-        retries++;
-    }, 500);
+  // Create new Wander Connect instance hanya jika belum ada
+  if (!wanderConnectInstance) {
+    wanderConnectInstance = new window.WanderSDK.WanderConnect({
+      clientId: WANDER_CONFIG.clientId,
+    });
   }
 
-  // Wait for wallet loaded event
+  // Wait for wallet loaded event — dengan cancel detection
   return new Promise((resolve, reject) => {
-    // Timeout after 5 minutes
-    const timeout = setTimeout(() => {
-      reject(new Error('Wander Connect initialization timed out. Please try again.'));
-    }, 5 * 60 * 1000);
+    let settled = false;
+    let pollInterval: ReturnType<typeof setInterval> | null = null;
 
-    // Listen for wallet loaded event
-    const handleWalletLoaded = async (e: Event) => {
+    // Bersihkan semua resource dan settle promise satu kali saja
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timeout);
+      if (pollInterval) clearInterval(pollInterval);
       window.removeEventListener('arweaveWalletLoaded', handleWalletLoaded);
+      fn();
+    };
 
+    // Timeout 90 detik (sebelumnya 5 menit, terlalu lama)
+    const timeout = setTimeout(() => {
+      finish(() => reject(new Error('Wander Connect initialization timed out. Please try again or check if popups are blocked.')));
+    }, 15 * 1000);
+
+    // Cek apakah dialog ditutup user (cancelled)
+    // Walaupun Promise dari wallet.connect() hang, kita bs detect via getter isOpen:
+    //   1. Tunggu isOpen === true  (konfirmasi popup benar-benar terbuka)
+    //   2. Jika lalu jadi false    (user tutup X)  → reject → dialog reopen
+    setTimeout(() => {
+      let confirmedOpen = false;
+
+      pollInterval = setInterval(() => {
+        if (settled) { clearInterval(pollInterval!); return; }
+
+        // WanderConnect.isOpen adalah getter: return this.openReason !== null
+        // Saat user tutup popup (X button), SDK set openReason = null → isOpen = false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const isOpenNow = (wanderConnectInstance as any)?.isOpen === true;
+
+        if (isOpenNow) {
+          confirmedOpen = true; // popup terbuka terkonfirmasi
+        } else if (confirmedOpen) {
+          // Dulu terbuka, sekarang tidak → user menutup popup
+          finish(() => reject(new Error('Wander wallet connection was cancelled.')));
+        }
+      }, 300);
+    }, 600);
+
+    // Handler saat arweaveWallet siap (Wander SDK inject wallet ke window)
+    const handleWalletLoaded = async (_e?: Event) => {
       try {
-        // Always try to connect forcefully to trigger popup
         const wallet = getArweaveWallet();
-        if (wallet) {
-          // Force connect to trigger popup
-          await wallet.connect(WANDER_CONFIG.permissions, WANDER_CONFIG.appInfo);
-          
-          const address = await wallet.getActiveAddress();
-          if (address) {
-            currentConnectionMode = 'connect';
-            
-            // Close the Wander Connect popup automatically after successful connection
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            if (wanderConnectInstance && typeof (wanderConnectInstance as any).close === 'function') {
-                try {
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    (wanderConnectInstance as any).close();
-                } catch (e) {
-                    console.warn('Failed to close Wander Connect UI:', e);
-                }
-            }
+        if (!wallet) {
+          finish(() => reject(new Error('Wallet not available after initialization.')));
+          return;
+        }
 
-            resolve(address);
-          } else {
-            reject(new Error('Unable to get wallet address.'));
+        console.log('[Wander Wallet] Calling wallet.connect()...');
+        // wallet.connect() mengirim pesan ke iframe SDK dengan hasNewConnectRequest=true.
+        // Karena instance selalu fresh di mobile (di-destroy sebelumnya),
+        // SDK akan otomatis memanggil _open("embedded_request") → halaman konfirmasi.
+        const connectPromise = wallet.connect(WANDER_CONFIG.permissions, WANDER_CONFIG.appInfo);
+
+        // Tambahkan fallback timeout 3 detik untuk mobile jika SDK gagal auto-open.
+        // Terkadang saat fresh instance, pesannya terlalu cepat sebelum iframe siap,
+        // sehingga SDK tidak pernah auto-membuka panel.
+        const isMobile = typeof navigator !== 'undefined' && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+        if (isMobile) {
+          await new Promise<void>((res) => {
+            let elapsed = 0;
+            const check = setInterval(() => {
+              elapsed += 100;
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const sdk = wanderConnectInstance as any;
+
+              if (sdk?.isOpen) {
+                console.log('[Wander Wallet] SDK auto-opened successfully.');
+                clearInterval(check);
+                res();
+              } else if (elapsed > 3000) {
+                console.warn('[Wander Wallet] SDK failed to auto-open after 3s. Applying fallback .open().');
+                if (typeof sdk?.open === 'function') {
+                  try { sdk.open(); } catch (e) { /* ignore */ }
+                }
+                clearInterval(check);
+                res();
+              }
+            }, 100);
+          });
+        }
+
+        await connectPromise;
+        console.log('[Wander Wallet] wallet.connect() resolved.'); const address = await wallet.getActiveAddress();
+        if (address) {
+          currentConnectionMode = 'connect';
+
+          // Close UI if it's still open (sometimes hanging when auto-approved)
+          if (wanderConnectInstance) {
+            try {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (wanderConnectInstance as any).close();
+            } catch (e) {
+              console.warn('Failed to close Wander Connect UI:', e);
+            }
           }
+
+          finish(() => resolve(address));
         } else {
-          reject(new Error('Wallet not available after initialization.'));
+          finish(() => reject(new Error('Unable to get wallet address.')));
         }
       } catch (error) {
-        reject(error);
+        finish(() => reject(error instanceof Error ? error : new Error(String(error))));
       }
     };
 
-    window.addEventListener('arweaveWalletLoaded', handleWalletLoaded);
+    // Cek apakah extension atau instance SDK yang sudah ready
+    const isExtension = getArweaveWallet() && !wanderConnectInstance;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sdkReady = wanderConnectInstance && (wanderConnectInstance as any).isWalletReady;
+
+    if (isExtension || sdkReady) {
+      // Jika wallet sudah siap (extension native, ATAU SDK iframe sudah terisi),
+      // event 'arweaveWalletLoaded' tidak akan ter-dispatch lagi.
+      // Maka kita langsung eksekusi handler-nya:
+      handleWalletLoaded();
+    } else {
+      window.addEventListener('arweaveWalletLoaded', handleWalletLoaded as EventListener);
+    }
   });
 }
 
@@ -248,6 +360,22 @@ export async function destroyWanderConnect(): Promise<void> {
     }
     wanderConnectInstance = null;
     currentConnectionMode = 'none';
+
+    // PENTING: Jika kita menghancurkan instance SDK (misalnya karena kita butuh fresh state di mobile),
+    // kita HARUS menghapus `window.arweaveWallet` yang di-inject oleh SDK sebelumnya.
+    // Alasannya: konstruktor WanderConnect SDK memiliki bug/fitur dimana jika `window.arweaveWallet`
+    // sudah ada (dari instance lama), ia TIDAK akan me-re-inject API, sehingga metode wallet.connect()
+    // akan mencoba mengirim postMessage ke Iframe yang sudah dihancurkan (hang/dead).
+    if (typeof window !== 'undefined' && 'arweaveWallet' in window) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        delete (window as any).arweaveWallet;
+      } catch (e) {
+        // Fallback jika tidak bisa di-delete
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (window as any).arweaveWallet = undefined;
+      }
+    }
   }
 }
 
@@ -257,7 +385,35 @@ export async function destroyWanderConnect(): Promise<void> {
  * - Falls back to Wander Connect (embedded wallet) if not
  */
 export async function connectWanderWallet(): Promise<string> {
-  // If extension is available, use it
+  // PENTING: Jika wanderConnectInstance sudah ada, berarti kita sudah tahu
+  // wallet ini adalah Wander Connect SDK (bukan native extension). Bypass
+  // isWanderWalletInstalled() check karena SDK meng-inject window.arweaveWallet
+  // saat iframe load pertama, sehingga cek itu akan selalu true setelah attempt
+  // pertama — menyebabkan attempt ke-2 masuk ke path extension yg salah (hang).
+  if (wanderConnectInstance) {
+    // Pada mobile, silentlyInitializeWanderConnect() (dari auto-recovery) membuat
+    // instance dengan state internal (authInfo, openReason, dll) yang terkontaminasi.
+    // Akibatnya, wallet.connect() di dalam initializeWanderConnect() langsung resolve
+    // tanpa memunculkan halaman konfirmasi — user malah melihat dashboard.
+    // Solusi: destroy instance lama agar initializeWanderConnect() buat fresh instance.
+    const isMobile = typeof navigator !== 'undefined' && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+    if (isMobile) {
+      // Destroy staled instance, then fall through to re-initialize below
+      // but we MUST bypass the extension check because window.arweaveWallet 
+      // is still globally defined by the now-dead SDK.
+      await destroyWanderConnect();
+
+      const address = await initializeWanderConnect();
+      if (typeof localStorage !== 'undefined') localStorage.setItem(WANDER_STORAGE_KEY, address);
+      return address;
+    } else {
+      const address = await initializeWanderConnect();
+      if (typeof localStorage !== 'undefined') localStorage.setItem(WANDER_STORAGE_KEY, address);
+      return address;
+    }
+  }
+
+  // Pertama kali: jika native extension tersedia, gunakan extension
   if (isWanderWalletInstalled()) {
     try {
       const wallet = getArweaveWallet()!;
@@ -267,12 +423,13 @@ export async function connectWanderWallet(): Promise<string> {
       );
 
       const address = await wallet.getActiveAddress();
-      
+
       if (!address) {
         throw new Error('Unable to detect a connected wallet address.');
       }
 
       currentConnectionMode = 'extension';
+      if (typeof localStorage !== 'undefined') localStorage.setItem(WANDER_STORAGE_KEY, address);
       return address;
     } catch (error) {
       if ((error as Error).message?.includes('User cancelled')) {
@@ -283,7 +440,9 @@ export async function connectWanderWallet(): Promise<string> {
   }
 
   // No extension available, use Wander Connect (embedded wallet)
-  return initializeWanderConnect();
+  const address = await initializeWanderConnect();
+  if (typeof localStorage !== 'undefined') localStorage.setItem(WANDER_STORAGE_KEY, address);
+  return address;
 }
 
 /**
@@ -320,6 +479,19 @@ export async function getConnectedAddress(): Promise<string | null> {
     }
   }
 
+  // Auto-recovery fallback via localStorage
+  if (typeof localStorage !== 'undefined') {
+    const savedAddress = localStorage.getItem(WANDER_STORAGE_KEY);
+    if (savedAddress) {
+      // Silently init WanderConnect in background so window.arweaveWallet becomes available for future dispatch.
+      // Do NOT await — this can take up to 5s waiting for the script and would block the "Checking wallet" UI.
+      silentlyInitializeWanderConnect().then(() => {
+        currentConnectionMode = wanderConnectInstance ? 'connect' : (getArweaveWallet() ? 'extension' : 'none');
+      }).catch(e => console.warn('Silent init failed', e));
+      return savedAddress;
+    }
+  }
+
   return null;
 }
 
@@ -327,11 +499,14 @@ export async function getConnectedAddress(): Promise<string | null> {
  * Disconnect from Wander Wallet
  */
 export async function disconnectWanderWallet(): Promise<void> {
+  if (typeof localStorage !== 'undefined') {
+    localStorage.removeItem(WANDER_STORAGE_KEY);
+  }
   try {
     if (isWanderWalletInstalled()) {
       await getArweaveWallet()!.disconnect();
     }
-    
+
     // Always cleanup Wander Connect
     await destroyWanderConnect();
   } catch (error) {
@@ -346,30 +521,39 @@ export async function isWalletReady(): Promise<boolean> {
   try {
     // Check extension or injected wallet (Wander Connect injects arweaveWallet too)
     if (getArweaveWallet()) {
-        const wallet = getArweaveWallet()!;
-        const permissions = await wallet.getPermissions();
-        const hasAllPermissions = WANDER_CONFIG.permissions.every(p => permissions.includes(p));
-        
-        if (!hasAllPermissions) {
-          return false;
+      const wallet = getArweaveWallet()!;
+      const permissions = await wallet.getPermissions();
+      const hasAllPermissions = WANDER_CONFIG.permissions.every(p => permissions.includes(p));
+
+      if (!hasAllPermissions) {
+        // Mobile edge case: SDK just re-initialized, permissions not yet hydrated.
+        // Fallback to localStorage before returning false.
+        if (typeof localStorage !== 'undefined' && localStorage.getItem(WANDER_STORAGE_KEY)) {
+          return true;
         }
-    
-        const address = await wallet.getActiveAddress();
-        return !!address;
+        return false;
+      }
+
+      const address = await wallet.getActiveAddress();
+      return !!address;
+    }
+
+    // Auto-recovery check
+    if (typeof localStorage !== 'undefined' && localStorage.getItem(WANDER_STORAGE_KEY)) {
+      return true;
     }
   } catch {
+    // On error, still try localStorage as last resort
+    if (typeof localStorage !== 'undefined' && localStorage.getItem(WANDER_STORAGE_KEY)) {
+      return true;
+    }
     return false;
   }
   return false;
 }
 
-/**
- * Format wallet address for display
- */
-export function formatWalletAddress(address: string): string {
-  if (!address || address.length < 12) return address;
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
-}
+import { formatWalletAddress, sleep } from './crypto-utils';
+export { formatWalletAddress };
 
 /**
  * Dispatch data to Arweave via Wander Wallet
@@ -386,6 +570,65 @@ const arweave = Arweave.init({
   port: 443,
   protocol: 'https',
 });
+
+async function postJsonWithUploadProgress<T>(params: {
+  url: string;
+  body: unknown;
+  onProgress?: (progress: number) => void;
+}): Promise<{ ok: boolean; status: number; data: T }> {
+  if (typeof XMLHttpRequest === "undefined") {
+    const response = await fetch(params.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(params.body),
+    });
+    const data = (await response.json().catch(() => ({}))) as T;
+    return { ok: response.ok, status: response.status, data };
+  }
+
+  return await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", params.url, true);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.responseType = "text";
+
+    const report = (value: number) => {
+      const clamped = Math.max(0, Math.min(99.9, value));
+      params.onProgress?.(clamped);
+    };
+
+    if (xhr.upload) {
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable || event.total <= 0) return;
+        report((event.loaded / event.total) * 100);
+      };
+    }
+
+    xhr.onerror = () => reject(new Error("Network error while uploading."));
+    xhr.onabort = () => reject(new Error("Upload was aborted."));
+    xhr.onload = () => {
+      const status = xhr.status;
+      const ok = status >= 200 && status < 300;
+      const rawText = typeof xhr.responseText === "string" ? xhr.responseText : "";
+      let data: T;
+      try {
+        data = (rawText ? JSON.parse(rawText) : {}) as T;
+      } catch {
+        data = {} as T;
+      }
+      params.onProgress?.(100);
+      resolve({ ok, status, data });
+    };
+
+    try {
+      xhr.send(JSON.stringify(params.body));
+    } catch (e) {
+      reject(e instanceof Error ? e : new Error("Failed to start upload."));
+    }
+  });
+}
 
 type ArweaveUploadResumeRecord = {
   key: string;
@@ -490,9 +733,6 @@ function makeResumeKey(vaultId: string | undefined, payloadHash: string): string
   return `arweave_upload:${safeVault}:${payloadHash}`;
 }
 
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export async function dispatchToArweave(
   data: unknown,
@@ -501,7 +741,21 @@ export async function dispatchToArweave(
   onProgress?: (progress: number) => void,
   onStatus?: (status: string) => void,
 ): Promise<DispatchResult> {
-  const isReady = await isWalletReady();
+  let isReady = await isWalletReady();
+
+  // Mobile recovery: jika wallet belum ready tapi ada data di localStorage,
+  // coba silent init WanderConnect agar arweaveWallet tersedia sebelum throw.
+  if (!isReady && typeof localStorage !== 'undefined' && localStorage.getItem(WANDER_STORAGE_KEY)) {
+    try {
+      await silentlyInitializeWanderConnect();
+      // Tambah jeda agar SDK sempat inject window.arweaveWallet
+      await new Promise(r => setTimeout(r, 300));
+      isReady = await isWalletReady();
+    } catch {
+      // ignore recovery errors — will throw below if still not ready
+    }
+  }
+
   if (!isReady) {
     throw new Error('Wallet not connected. Please connect your wallet to proceed.');
   }
@@ -543,9 +797,9 @@ export async function dispatchToArweave(
             ? await arweave.transactions.getUploader(resumeRecord.uploaderRaw as never, dataBytes)
             : resumeRecord.txRaw
               ? await arweave.transactions.getUploader(
-                  arweave.transactions.fromRaw(resumeRecord.txRaw as never) as never,
-                  dataBytes,
-                )
+                arweave.transactions.fromRaw(resumeRecord.txRaw as never) as never,
+                dataBytes,
+              )
               : null;
 
         if (!uploader) return null;
@@ -569,6 +823,10 @@ export async function dispatchToArweave(
           while (true) {
             try {
               await (uploader as unknown as { uploadChunk: () => Promise<void> }).uploadChunk();
+              const uStatus = (uploader as unknown as { lastResponseStatus?: number }).lastResponseStatus;
+              if (uStatus && uStatus !== 200 && uStatus !== 202) {
+                throw new Error(`Upload chunk failed with status ${uStatus}`);
+              }
               break;
             } catch (e) {
               attempt += 1;
@@ -600,11 +858,11 @@ export async function dispatchToArweave(
             typeof (uploader as unknown as { pctComplete?: unknown }).pctComplete === "number"
               ? (uploader as unknown as { pctComplete: number }).pctComplete
               : typeof (uploader as unknown as { uploadedChunks?: unknown }).uploadedChunks === "number" &&
-                  typeof (uploader as unknown as { totalChunks?: unknown }).totalChunks === "number" &&
-                  (uploader as unknown as { totalChunks: number }).totalChunks > 0
+                typeof (uploader as unknown as { totalChunks?: unknown }).totalChunks === "number" &&
+                (uploader as unknown as { totalChunks: number }).totalChunks > 0
                 ? ((uploader as unknown as { uploadedChunks: number }).uploadedChunks /
-                    (uploader as unknown as { totalChunks: number }).totalChunks) *
-                  100
+                  (uploader as unknown as { totalChunks: number }).totalChunks) *
+                100
                 : 0;
           onProgress?.(Math.max(0, Math.min(100, pct)));
         }
@@ -632,6 +890,7 @@ export async function dispatchToArweave(
     const resumed = await resumeIfPossible();
     if (resumed) return resumed;
 
+    onStatus?.("Preparing Arweave transaction...");
     const transaction = await arweave.createTransaction({
       data: effectivePayloadBytes,
     });
@@ -649,7 +908,7 @@ export async function dispatchToArweave(
         transaction.addTag(name, value);
       }
     });
-    
+
     // Add Doc-Id tag (obfuscated vault ID) required for lookup
     if (vaultId) {
       transaction.addTag('Doc-Id', vaultId);
@@ -663,79 +922,113 @@ export async function dispatchToArweave(
     if (!transaction.reward || transaction.reward === "0") {
       transaction.reward = await arweave.transactions.getPrice(effectivePayloadBytes.byteLength);
     }
-    onStatus?.("Preparing upload (chunking data)...");
-    await transaction.prepareChunks(effectivePayloadBytes);
     onStatus?.("Waiting for wallet signature...");
 
-    const wallet = getArweaveWallet();
+    let wallet = getArweaveWallet();
     if (!wallet) {
-      throw new Error('Wallet not connected. Please connect your wallet to proceed.');
-    }
+      // Attempt silent recovery initialization before throwing
+      if (typeof localStorage !== 'undefined' && localStorage.getItem(WANDER_STORAGE_KEY)) {
+        await silentlyInitializeWanderConnect();
+        wallet = getArweaveWallet();
+      }
 
-    if (effectivePayloadBytes.byteLength <= 250_000 && typeof wallet.dispatch === "function") {
-      onStatus?.("Waiting for wallet confirmation...");
-      const dispatched = await wallet.dispatch(transaction as unknown as never);
-      onProgress?.(100);
-      onStatus?.("Upload successful.");
-      return {
-        txId: dispatched.id,
-        type: typeof dispatched.type === "string" && dispatched.type.trim().length > 0 ? dispatched.type : "DISPATCH",
-      };
-    }
-
-    const signedRaw = (await wallet.sign(transaction)) as unknown;
-    if (!signedRaw || typeof signedRaw !== "object") {
-      throw new Error("Wallet signature response is invalid");
-    }
-
-    const normalizeB64Url = (value: string) =>
-      value.trim().replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-
-    const signed = signedRaw as Record<string, unknown>;
-    const signedNormalized: Record<string, unknown> = { ...signed };
-    for (const key of ["id", "owner", "signature", "last_tx", "data_root"]) {
-      const v = signedNormalized[key];
-      if (typeof v === "string") {
-        signedNormalized[key] = normalizeB64Url(v);
+      if (!wallet) {
+        throw new Error('Wallet not connected. Please connect your wallet to proceed.');
       }
     }
 
-    const signedTx = arweave.transactions.fromRaw(signedNormalized);
+    // ─── Mobile path: use wallet.dispatch() ──────────────────────────────────
+    // On mobile (Wander Connect SDK), wallet.sign() passes the transaction to an
+    // iframe via postMessage. arweave.transactions.post() then calls prepareChunks()
+    // internally which can recompute data_root differently from what the SDK signed,
+    // causing arweave.net to return 400 "Transaction verification failed".
+    //
+    // wallet.dispatch() avoids this entirely: the SDK signs AND uploads the
+    // transaction internally, so we never touch the signed tx object.
+    if (isUsingWanderConnect() && typeof wallet.dispatch === "function") {
+      onStatus?.("Waiting for wallet confirmation...");
+      onProgress?.(5);
+      try {
+        const dispatched = await (wallet as { dispatch: (t: unknown) => Promise<{ id: string; type: string }> }).dispatch(transaction);
+        onProgress?.(100);
+        onStatus?.("Upload successful.");
+        try { await idbDeleteUploadRecord(resumeKey); } catch { /* ignore */ }
+        console.log("[ArweaveUpload] dispatch() success:", dispatched);
+        return {
+          txId: dispatched.id,
+          type: typeof dispatched.type === "string" && dispatched.type.trim().length > 0
+            ? dispatched.type
+            : "DISPATCH",
+        };
+      } catch (dispatchErr) {
+        console.warn("[ArweaveUpload] dispatch() failed, falling back to sign+relay:", dispatchErr);
+        // Fall through to the sign + relay path below
+      }
+    }
 
-    (transaction as unknown as { last_tx: string }).last_tx = signedTx.last_tx;
-    transaction.reward = signedTx.reward || transaction.reward;
-    transaction.data_root = signedTx.data_root || transaction.data_root;
-    transaction.setSignature({
-      id: signedTx.id,
-      owner: signedTx.owner,
-      reward: signedTx.reward,
-      tags: signedTx.tags,
-      signature: signedTx.signature,
-    });
+    // ─── Desktop / dispatch fallback path: sign + relay ──────────────────────
+    // Pre-compute chunks & data_root BEFORE signing so the value is a plain string
+    // that survives any postMessage serialization (structured clone strips the
+    // internal chunks object but keeps primitive fields).
+    if (typeof (transaction as any).prepareChunks === "function") {
+      await (transaction as any).prepareChunks(effectivePayloadBytes);
+    }
+    const preSignDataRoot: string = (transaction as any).data_root ?? "";
 
-    const txToPost = transaction;
+    // wallet.sign() mutates the transaction in-place (ArConnect extension) or
+    // returns a new signed object (Wander Connect SDK via postMessage).
+    const signedTx = await wallet.sign(transaction);
+
+    const txToPost = (signedTx && typeof signedTx === 'object' && ('signature' in signedTx) && (signedTx as typeof transaction).signature)
+      ? (signedTx as typeof transaction)
+      : transaction;
+
+    // Restore data_root if the SDK cleared it after signing.
+    if (preSignDataRoot) {
+      const postSignDataRoot: string = (txToPost as any).data_root ?? "";
+      if (!postSignDataRoot || postSignDataRoot.length < 4) {
+        console.warn("[ArweaveUpload] data_root was cleared by SDK — restoring pre-sign value");
+        (txToPost as any).data_root = preSignDataRoot;
+      }
+    }
+
+    // Recompute ID if the SDK omitted it (ID = SHA-256 of signature).
+    if (!txToPost.id && txToPost.signature) {
+      const signatureBuffer = arweave.utils.b64UrlToBuffer(txToPost.signature);
+      const idHash = await arweave.crypto.hash(signatureBuffer);
+      txToPost.id = arweave.utils.bufferTob64Url(idHash);
+    }
 
     try {
       const isValid = await arweave.transactions.verify(txToPost);
-      if (!isValid) {
-        throw new Error("verify() returned false");
-      }
+      if (!isValid) throw new Error("verify() returned false");
     } catch (e) {
       throw new Error(
-        `Arweave signature verification failed (client-side): ${
-          e instanceof Error ? e.message : "Unknown error"
-        }`,
+        `Arweave signature verification failed (client-side): ${e instanceof Error ? e.message : "Unknown error"}`,
       );
     }
 
-    // 3. Post transaction to the network
+    console.log("[ArweaveUpload] Signed tx details:", {
+      id: txToPost.id,
+      data_root: (txToPost as any).data_root,
+      preSignDataRoot,
+      reward: txToPost.reward,
+      anchor: txToPost.last_tx,
+      dataSize: effectivePayloadBytes.byteLength,
+      hasToJSON: typeof (txToPost as any).toJSON === "function",
+    });
+
     onStatus?.("Uploading to Arweave...");
+    // Serialize txRaw: prefer toJSON() → getRaw() → plain object as-is
+    // Serialize txRaw for the relay: toJSON() → getRaw() → plain object as-is.
+    // The plain-object fallback handles Wander Connect SDK returning a raw object
+    // without toJSON() — we pass it directly and the backend's fromRaw() can parse it.
     const txRawForResume =
       typeof (txToPost as unknown as { toJSON?: unknown }).toJSON === "function"
         ? (txToPost as unknown as { toJSON: () => unknown }).toJSON()
         : (txToPost as unknown as { getRaw?: unknown }).getRaw && typeof (txToPost as unknown as { getRaw: () => unknown }).getRaw === "function"
           ? (txToPost as unknown as { getRaw: () => unknown }).getRaw()
-          : null;
+          : txToPost; // fallback: use plain object directly
 
     const baseRecord: ArweaveUploadResumeRecord = {
       key: resumeKey,
@@ -752,73 +1045,158 @@ export async function dispatchToArweave(
       await idbPutUploadRecord(baseRecord);
     } catch {
     }
+    onStatus?.("Uploading to Arweave (relay)...");
+    onProgress?.(0);
 
-    const uploader = await arweave.transactions.getUploader(txToPost, effectivePayloadBytes);
+    const relayBody = {
+      txRaw: txRawForResume,
+      dataB64: baseRecord.payloadB64,
+    };
 
-    const maxChunkRetries = 8;
-    while (!(uploader as unknown as { isComplete: boolean }).isComplete) {
-      let attempt = 0;
-      while (true) {
-        try {
-          await (uploader as unknown as { uploadChunk: () => Promise<void> }).uploadChunk();
-          break;
-        } catch (e) {
-          attempt += 1;
-          if (attempt >= maxChunkRetries) throw e;
-          const backoffMs = Math.min(10_000, 500 * Math.pow(2, attempt - 1));
-          onStatus?.(`Upload chunk failed, retrying (${attempt}/${maxChunkRetries})...`);
-          await sleep(backoffMs);
-        }
+    if (typeof EventSource === "undefined") {
+      const relayResponse = await postJsonWithUploadProgress<{
+        success?: unknown;
+        error?: unknown;
+        txId?: unknown;
+      }>({ url: `/api/transactions/arweave/relay`, body: relayBody, onProgress });
+
+      const relayData = relayResponse.data;
+      if (!relayResponse.ok || !relayData?.success) {
+        const message =
+          typeof relayData?.error === "string"
+            ? relayData.error
+            : `Arweave relay failed (HTTP ${relayResponse.status})`;
+        throw new Error(message);
       }
 
-      const uploaderJson =
-        typeof (uploader as unknown as { toJSON?: unknown }).toJSON === "function"
-          ? (uploader as unknown as { toJSON: () => unknown }).toJSON()
-          : null;
-      if (uploaderJson) {
+      const relayedTxId =
+        typeof relayData?.txId === "string" && relayData.txId.trim().length > 0
+          ? relayData.txId.trim()
+          : txToPost.id;
+
+      onStatus?.("Upload successful.");
+      try {
+        await idbDeleteUploadRecord(resumeKey);
+      } catch {
+      }
+      return {
+        txId: relayedTxId,
+        type: "BASE",
+      };
+    }
+
+    let clientPct = 0;
+    let serverPct = 0;
+    const emitCombinedProgress = (forceComplete = false) => {
+      if (!onProgress) return;
+      if (forceComplete) {
+        onProgress(100);
+        return;
+      }
+      const combined = clientPct * 0.2 + serverPct * 0.8;
+      onProgress(Math.max(0, Math.min(99.9, combined)));
+    };
+
+    const startResponse = await postJsonWithUploadProgress<{
+      success?: unknown;
+      error?: unknown;
+      jobId?: unknown;
+    }>({
+      url: `/api/transactions/arweave/relay/start`,
+      body: relayBody,
+      onProgress: (pct) => {
+        clientPct = pct;
+        emitCombinedProgress();
+      },
+    });
+
+    const startData = startResponse.data;
+    if (!startResponse.ok || !startData?.success) {
+      const message =
+        typeof startData?.error === "string"
+          ? startData.error
+          : `Arweave relay start failed (HTTP ${startResponse.status})`;
+      throw new Error(message);
+    }
+
+    const jobId = typeof startData?.jobId === "string" ? startData.jobId.trim() : "";
+    if (!jobId) {
+      throw new Error("Arweave relay start failed: missing jobId");
+    }
+
+    const relayedTxId = await new Promise<string>((resolve, reject) => {
+      const es = new EventSource(`/api/transactions/arweave/relay/${encodeURIComponent(jobId)}/events`);
+
+      const finalize = (err?: Error, txId?: string) => {
         try {
-          await idbPutUploadRecord({
-            ...baseRecord,
-            uploaderRaw: uploaderJson,
-            updatedAt: new Date().toISOString(),
-          });
+          es.close();
         } catch {
         }
-      }
+        if (err) reject(err);
+        else resolve(txId || txToPost.id);
+      };
 
-      const pct =
-        typeof (uploader as unknown as { pctComplete?: unknown }).pctComplete === "number"
-          ? (uploader as unknown as { pctComplete: number }).pctComplete
-          : typeof (uploader as unknown as { uploadedChunks?: unknown }).uploadedChunks === "number" &&
-              typeof (uploader as unknown as { totalChunks?: unknown }).totalChunks === "number" &&
-              (uploader as unknown as { totalChunks: number }).totalChunks > 0
-            ? ((uploader as unknown as { uploadedChunks: number }).uploadedChunks /
-                (uploader as unknown as { totalChunks: number }).totalChunks) *
-              100
-            : 0;
-      onProgress?.(Math.max(0, Math.min(100, pct)));
-    }
+      const handlePayload = (raw: string) => {
+        try {
+          const payload = JSON.parse(raw) as {
+            progress?: unknown;
+            status?: unknown;
+            txId?: unknown;
+            error?: unknown;
+          };
+          if (typeof payload.status === "string") onStatus?.(payload.status);
+          if (typeof payload.progress === "number") {
+            serverPct = payload.progress;
+            emitCombinedProgress();
+          }
+          return payload;
+        } catch {
+          return null;
+        }
+      };
 
-    const lastStatus =
-      typeof (uploader as unknown as { lastResponseStatus?: unknown }).lastResponseStatus === "number"
-        ? (uploader as unknown as { lastResponseStatus: number }).lastResponseStatus
-        : 0;
-    if (lastStatus && lastStatus !== 200 && lastStatus !== 202) {
-      throw new Error(`Failed to upload transaction to blockchain storage (Status: ${lastStatus})`);
-    }
+      es.addEventListener("progress", (event) => {
+        const raw = (event as MessageEvent).data;
+        if (typeof raw !== "string") return;
+        handlePayload(raw);
+      });
 
-    console.log('✅ Transaction uploaded successfully:', {
-      id: txToPost.id,
-      status: lastStatus || 200
+      es.addEventListener("complete", (event) => {
+        const raw = (event as MessageEvent).data;
+        if (typeof raw !== "string") {
+          emitCombinedProgress(true);
+          finalize(undefined, txToPost.id);
+          return;
+        }
+        const payload = handlePayload(raw);
+        emitCombinedProgress(true);
+        const txId = payload && typeof payload.txId === "string" ? payload.txId : txToPost.id;
+        finalize(undefined, txId);
+      });
+
+      es.addEventListener("error", (event) => {
+        const raw = (event as MessageEvent).data;
+        if (typeof raw !== "string") {
+          finalize(new Error("Arweave relay connection failed."));
+          return;
+        }
+        const payload = handlePayload(raw);
+        const message =
+          payload && typeof payload.error === "string"
+            ? payload.error
+            : "Arweave relay failed";
+        finalize(new Error(message));
+      });
     });
+
     onStatus?.("Upload successful.");
     try {
       await idbDeleteUploadRecord(resumeKey);
     } catch {
     }
     return {
-      txId: txToPost.id,
-      type: 'BASE',
+      txId: relayedTxId,
+      type: "BASE",
     };
 
   } catch (error) {
@@ -828,6 +1206,37 @@ export async function dispatchToArweave(
     }
     throw new Error(`Failed to dispatch to blockchain storage: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
+}
+
+export async function dispatchBitxenIndexToArweave(params: {
+  vaultId: string;
+  contentTxId: string;
+  chainKey: string;
+  chainId: number;
+  contractAddress: string;
+  contractDataId: string;
+}): Promise<DispatchResult> {
+  const safeVaultId = typeof params.vaultId === "string" ? params.vaultId.trim() : "";
+  if (!safeVaultId) {
+    throw new Error("Vault ID is required");
+  }
+
+  const doc = {
+    schema: "bitxen-index-v1",
+    vaultId: safeVaultId,
+    storageType: "bitxenArweave",
+    bitxen: {
+      chainId: params.chainId,
+      chainKey: params.chainKey,
+      contractAddress: params.contractAddress,
+      contractDataId: params.contractDataId,
+    },
+    arweave: {
+      contentTxId: params.contentTxId,
+    },
+  };
+
+  return dispatchToArweave(doc, safeVaultId, { Type: "bitxen-index" });
 }
 
 /**
@@ -861,12 +1270,3 @@ export const WANDER_PAYMENT_CONFIG = {
   appInfo: WANDER_CONFIG.appInfo,
 };
 
-// Legacy function - no longer does payment, just checks wallet is ready
-export async function sendArPayment(): Promise<{ status: 'pending' }> {
-  // No separate payment needed - fee handled by Arweave during dispatch
-  const isReady = await isWalletReady();
-  if (!isReady) {
-    throw new Error('Wallet not connected. Please connect your wallet first.');
-  }
-  return { status: 'pending' };
-}

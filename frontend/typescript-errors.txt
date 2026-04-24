@@ -1,0 +1,54 @@
+lib/metamaskWallet.ts(89,29): error TS18046: 'window.ethereum.request' is of type 'unknown'.
+lib/metamaskWallet.ts(117,29): error TS18046: 'window.ethereum.request' is of type 'unknown'.
+lib/metamaskWallet.ts(133,30): error TS18046: 'window.ethereum.request' is of type 'unknown'.
+lib/metamaskWallet.ts(152,11): error TS18046: 'window.ethereum.request' is of type 'unknown'.
+lib/metamaskWallet.ts(160,15): error TS18046: 'window.ethereum.request' is of type 'unknown'.
+lib/metamaskWallet.ts(416,26): error TS18046: 'window.ethereum.request' is of type 'unknown'.
+lib/metamaskWallet.ts(695,25): error TS18046: 'window.ethereum.request' is of type 'unknown'.
+lib/metamaskWallet.ts(909,27): error TS18046: 'window.ethereum.request' is of type 'unknown'.
+lib/metamaskWallet.ts(962,35): error TS18046: 'window.ethereum.request' is of type 'unknown'.
+lib/metamaskWallet.ts(1022,29): error TS18046: 'window.ethereum.request' is of type 'unknown'.
+lib/metamaskWallet.ts(1087,5): error TS2717: Subsequent property declarations must have the same type.  Property 'ethereum' must be of type 'Record<string, unknown> | undefined', but here has type '{ isMetaMask?: boolean | undefined; request: (args: { method: string; params?: unknown[] | undefined; }) => Promise<unknown>; on?: ((event: string, handler: (...args: unknown[]) => void) => void) | undefined; removeListener?: ((event: string, handler: (...args: unknown[]) => void) => void) | undefined; } | undefined'.
+node_modules/@assistant-ui/react-ai-sdk/src/ui/use-chat/AssistantChatTransport.ts(28,38): error TS2345: Argument of type 'Record<string, Tool<any, any>>' is not assignable to parameter of type 'Record<string, Tool>'.
+  'string' index signatures are incompatible.
+    Type 'Tool<any, any>' is not assignable to type 'Tool'.
+      Type 'FrontendTool<any, any>' is not assignable to type 'Tool'.
+        Type 'FrontendTool<any, any>' is not assignable to type 'FrontendTool<Record<string, unknown>, unknown> | HumanTool<Record<string, unknown>, unknown>'.
+          Type 'FrontendTool<any, any>' is not assignable to type 'HumanTool<Record<string, unknown>, unknown>'.
+            Type 'FrontendTool<any, any>' is not assignable to type 'ToolBase<Record<string, unknown>, unknown>'.
+              Types of property 'streamCall' are incompatible.
+                Type 'ToolStreamCallFunction<any, any> | undefined' is not assignable to type 'ToolStreamCallFunction<Record<string, unknown>, unknown> | undefined'.
+                  Type 'ToolStreamCallFunction<any, any>' is not assignable to type 'ToolStreamCallFunction<Record<string, unknown>, unknown>'.
+                    Types of parameters 'reader' and 'reader' are incompatible.
+                      Type 'ToolCallReader<Record<string, unknown>, unknown>' is not assignable to type 'ToolCallReader<any, any>'.
+                        The types of 'args.get' are incompatible between these types.
+                          Type '<PathT extends TypePath<Record<string, unknown>>>(...fieldPath: PathT) => Promise<TypeAtPath<Record<string, unknown>, PathT>>' is not assignable to type '<PathT extends TypePath<any>>(...fieldPath: PathT) => Promise<TypeAtPath<any, PathT>>'.
+                            Types of parameters 'fieldPath' and 'fieldPath' are incompatible.
+                              Type 'PathT' is not assignable to type 'TypePath<Record<string, unknown>>'.
+                                Type 'TypePath<any>' is not assignable to type 'TypePath<Record<string, unknown>>'.
+                                  Type 'any[]' is not assignable to type 'TypePath<Record<string, unknown>>'.
+                                    Type 'any[]' is not assignable to type '[string]'.
+                                      Target requires 1 element(s) but source may have fewer.
+                                        Type 'PathT' is not assignable to type '[string]'.
+                                          Type 'TypePath<any>' is not assignable to type '[string]'.
+                                            Type 'any[]' is not assignable to type '[string]'.
+                                              Target requires 1 element(s) but source may have fewer.
+node_modules/@assistant-ui/store/src/useAui.ts(321,41): error TS2322: Type 'Partial<Record<keyof import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/index").ScopeRegistry, import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/utils/derived").DerivedElement<keyof import("/hom...' is not assignable to type 'Partial<Record<keyof import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/types/client").ScopeRegistry, import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/utils/derived").DerivedElement<keyof impor...'.
+  Types of property 'message' are incompatible.
+    Type 'import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/utils/derived").DerivedElement<keyof import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/index").ScopeRegistry> | undefined' is not assignable to type 'import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/utils/derived").DerivedElement<keyof import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/types/client").ScopeRegistry> | undefined'.
+      Type 'import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/utils/derived").DerivedElement<keyof import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/index").ScopeRegistry>' is not assignable to type 'import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/utils/derived").DerivedElement<keyof import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/types/client").ScopeRegistry>'.
+        Types of property 'type' are incompatible.
+          Type 'import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/tap/src/core/types").Resource<null, import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/utils/derived").Derived.Props<keyof import("/home/bunga/projects/deherita...' is not assignable to type 'import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/tap/src/core/types").Resource<null, import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/utils/derived").Derived.Props<keyof import("/home/bunga/projects/deherita...'. Two different types with this name exist, but they are unrelated.
+            Type 'Resource<null, Props<keyof ScopeRegistry>> & { [fnSymbol]: (props: Props<keyof ScopeRegistry>) => null; }' is not assignable to type 'Resource<null, Props<keyof ScopeRegistry>>'.
+              Call signature return types 'ResourceElement<null, Props<keyof ScopeRegistry>>' and 'ResourceElement<null, Props<keyof ScopeRegistry>>' are incompatible.
+                The types of 'props' are incompatible between these types.
+                  Type 'import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/utils/derived").Derived.Props<keyof import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/index").ScopeRegistry>' is not assignable to type 'import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/utils/derived").Derived.Props<keyof import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/types/client").ScopeRegistry>'.
+                    Type 'Props<keyof ScopeRegistry>' is not assignable to type '{ get: (client: AssistantClient) => MessageMethods | ThreadsMethods | ThreadListItemMethods | ThreadMethods | ... 6 more ... | ChainOfThoughtMethods; }'.
+                      The types returned by 'get(...)' are incompatible between these types.
+                        Type 'MessageMethods | ToolsMethods | ThreadsMethods | ThreadListItemMethods | ThreadMethods | ... 7 more ... | DataRenderersMethods' is not assignable to type 'MessageMethods | ThreadsMethods | ThreadListItemMethods | ThreadMethods | PartMethods | ... 5 more ... | ChainOfThoughtMethods'.
+                          Type 'ToolsMethods' is not assignable to type 'MessageMethods | ThreadsMethods | ThreadListItemMethods | ThreadMethods | PartMethods | ... 5 more ... | ChainOfThoughtMethods'.
+                            Type 'ToolsMethods' is missing the following properties from type 'ChainOfThoughtMethods': setCollapsed, part
+node_modules/@assistant-ui/store/src/useAuiState.ts(27,20): error TS2345: Argument of type 'import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/types/client").AssistantState' is not assignable to parameter of type 'import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/src/store/types/client").AssistantState'.
+  Type 'AssistantState' is missing the following properties from type 'AssistantState': tools, dataRenderers
+node_modules/@assistant-ui/store/src/useAuiState.ts(28,20): error TS2345: Argument of type 'import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/dist/store/types/client").AssistantState' is not assignable to parameter of type 'import("/home/bunga/projects/deheritance/bitxen-inheritance/frontend/node_modules/@assistant-ui/core/src/store/types/client").AssistantState'.
+  Type 'AssistantState' is missing the following properties from type 'AssistantState': tools, dataRenderers

@@ -17,4 +17,3 @@ export const appEnv = {
 };
 
 export const isProduction = appEnv.nodeEnv === "production";
-

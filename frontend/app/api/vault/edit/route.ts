@@ -7,7 +7,7 @@ export async function POST(req: Request) {
   const payload = await req.json();
   const { vaultId, encryptedVault, metadata } = payload as {
     vaultId?: string;
-    encryptedVault?: { cipherText?: string; iv?: string; checksum?: string };
+    encryptedVault?: { cipherText?: string; iv?: string; checksum?: string; keyMode?: string };
     metadata?: Record<string, unknown>;
   };
 
@@ -28,11 +28,15 @@ export async function POST(req: Request) {
     );
   }
 
-  if (!metadata || metadata.encryptionVersion !== "v2-client") {
+  const encVer =
+    metadata && typeof metadata.encryptionVersion === "string"
+      ? metadata.encryptionVersion
+      : null;
+  if (!encVer || (encVer !== "v2-client" && encVer !== "v3-envelope")) {
     return NextResponse.json(
       {
         success: false,
-        error: "Invalid metadata. encryptionVersion must be 'v2-client'.",
+        error: "Invalid metadata. encryptionVersion must be 'v2-client' or 'v3-envelope'.",
       },
       { status: 400 },
     );
@@ -86,4 +90,3 @@ export async function POST(req: Request) {
     );
   }
 }
-

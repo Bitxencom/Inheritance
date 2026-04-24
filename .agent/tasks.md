@@ -5,7 +5,7 @@ The user wants to restore the "Document/Attachment" upload feature in the vault 
 ## Steps
 
 1.  [ ] Identify the removed code/logic for file attachments.
-    *   Check `git log` for `frontend/components/assistant-ui/tools/vault-wizard/wizard.tsx`.
+    *   Check `git log` for `frontend/components/assistant-ui/tools/vault-creation-wizard/wizard.tsx`.
     *   Look for "attachment", "document", or "file" in previous commits.
 2.  [ ] Restore the UI components in `wizard.tsx`.
     *   Add file input field in "willDetails" step (Single file, optional).

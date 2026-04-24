@@ -17,6 +17,15 @@ export type PendingVault = {
   fractionKeys: string[];
   triggerType?: "date" | "manual";
   triggerDate?: string;
+<<<<<<< HEAD
+=======
+  storageType?: "arweave" | "bitxenArweave";
+  blockchainTxHash?: string;
+  blockchainChain?: string;
+  contractDataId?: string;
+  contractAddress?: string;
+  arweaveTxId: string;
+>>>>>>> dev
 };
 
 /**
@@ -72,6 +81,18 @@ export function savePendingVault(
 ): PendingVault {
   const vaults = getPendingVaults();
 
+<<<<<<< HEAD
+=======
+  // Debug log to ensure we are receiving storageType
+  console.log("💾 savePendingVault called:", {
+    id: vault.vaultId,
+    storageType: vault.storageType,
+    blockchainChain: vault.blockchainChain,
+    blockchainTxHash: vault.blockchainTxHash,
+    contractDataId: vault.contractDataId,
+  });
+
+>>>>>>> dev
   const newVault: PendingVault = {
     ...vault,
     status: "pending",
@@ -105,6 +126,15 @@ function saveVaultsToStorage(vaults: PendingVault[]) {
       const { fractionKeys, ...rest } = v;
       return {
         ...rest,
+<<<<<<< HEAD
+=======
+        // Explicitly ensure these fields are preserved from v (safety check)
+        storageType: v.storageType,
+        blockchainTxHash: v.blockchainTxHash,
+        blockchainChain: v.blockchainChain,
+        contractDataId: v.contractDataId,
+        contractAddress: v.contractAddress,
+>>>>>>> dev
         // Store as shardKeys (legacy key preference)
         shardKeys: fractionKeys,
       };
@@ -148,6 +178,16 @@ export function updateVaultStatus(
 export function updateVaultTxId(
   vaultId: string,
   arweaveTxId: string,
+<<<<<<< HEAD
+=======
+  updates?: {
+    storageType?: "arweave" | "bitxenArweave";
+    blockchainTxHash?: string;
+    blockchainChain?: string;
+    contractDataId?: string;
+    contractAddress?: string;
+  },
+>>>>>>> dev
 ): boolean {
   const vaults = getPendingVaults();
   const index = vaults.findIndex((v) => v.vaultId === vaultId);
@@ -157,6 +197,23 @@ export function updateVaultTxId(
   vaults[index] = {
     ...vaults[index],
     arweaveTxId,
+<<<<<<< HEAD
+=======
+    // Apply updates if provided
+    ...(updates?.storageType && { storageType: updates.storageType }),
+    ...(updates?.blockchainTxHash && {
+      blockchainTxHash: updates.blockchainTxHash,
+    }),
+    ...(updates?.blockchainChain && {
+      blockchainChain: updates.blockchainChain,
+    }),
+    ...(updates?.contractDataId && {
+      contractDataId: updates.contractDataId,
+    }),
+    ...(updates?.contractAddress && {
+      contractAddress: updates.contractAddress,
+    }),
+>>>>>>> dev
     // Reset status to pending as it's a new transaction waiting for confirmation
     status: "pending",
     // Update timestamp to bring it to top
@@ -210,13 +267,61 @@ export function removeVaultKeys(vaultId: string): boolean {
 }
 
 /**
+ * Check if a vault has incomplete hybrid payment
+ * (Arweave uploaded but contract registration missing)
+ */
+export function isIncompleteHybridVault(vault: PendingVault): boolean {
+  return (
+    vault.storageType === "bitxenArweave" &&
+    !!vault.arweaveTxId &&
+    !vault.blockchainTxHash
+  );
+}
+
+/**
+ * Get all vaults with incomplete hybrid payment
+ */
+export function getIncompleteHybridVaults(): PendingVault[] {
+  return getPendingVaults().filter(isIncompleteHybridVault);
+}
+
+/**
  * Check Arweave transaction status using GraphQL
  */
-export async function checkArweaveStatus(txId: string): Promise<{
+export async function checkArweaveStatus(
+  txId: string,
+  vaultId?: string,
+): Promise<{
   confirmed: boolean;
   blockHeight?: number;
   timestamp?: number;
+  message?: string;
 }> {
+  // If vaultId is provided, try to use the internal API which has more robust confirmation logic
+  if (vaultId && typeof window !== "undefined") {
+    try {
+      const response = await fetch("/api/vault/claim/check", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ vaultId, arweaveTxId: txId }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          return {
+            confirmed: data.isConfirmed,
+            message: data.message,
+          };
+        }
+      }
+    } catch (error) {
+      console.error("Error calling check API, falling back to GraphQL:", error);
+    }
+  }
+
   try {
     const response = await fetch("https://arweave.net/graphql", {
       method: "POST",
@@ -260,5 +365,6 @@ export async function checkArweaveStatus(txId: string): Promise<{
  * Get Arweave explorer URL for a transaction
  */
 export function getArweaveExplorerUrl(txId: string): string {
-  return `https://viewblock.io/arweave/tx/${txId}`;
+  const baseUrl = process.env.NEXT_PUBLIC_EXPLORER_BASE_URL || "https://viewblock.io/arweave/tx/";
+  return `${baseUrl}/${txId}`;
 }

@@ -16,7 +16,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/shared/tooltip-icon
 import BranchPicker from "@/components/assistant-ui/thread/branch-picker";
 import MessageError from "@/components/assistant-ui/messages/message-error";
 import ToolFallback from "@/components/assistant-ui/tools/tool-fallback";
-import { VaultCreationWizardTool } from "@/components/assistant-ui/tools/vault-wizard";
+import { VaultCreationWizardTool } from "@/components/assistant-ui/tools/vault-creation-wizard";
 import { VaultClaimWizardTool } from "@/components/assistant-ui/tools/vault-claim-wizard";
 import { VaultEditWizardTool } from "@/components/assistant-ui/tools/vault-edit-wizard";
 import { CostEstimationTool } from "@/components/assistant-ui/tools/cost-estimation";

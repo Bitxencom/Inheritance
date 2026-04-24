@@ -1,7 +1,5 @@
 "use client";
 
-import { useCallback, useEffect, useState, useRef } from "react";
-
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -11,18 +9,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Search, Loader2, FileText, Check, Copy, Download } from "lucide-react";
+import Image from "next/image";
+import { Search, CircleDashed, FileText, Download, ShieldAlert, Wallet, CheckCircle2, Loader2 } from "lucide-react";
 import { AlertMessage } from "@/components/ui/alert-message";
 import { Stepper } from "@/components/shared/stepper";
-import { getVaultById, updateVaultTxId } from "@/lib/vault-storage";
 import {
   InheritanceIdField,
   SecurityQuestionsField,
   FractionKeysField,
-  validateSecurityQuestionsApi,
-  getLocalVaultErrorMessage,
-  generateSecurityQuestionFieldErrors,
 } from "@/components/assistant-ui/tools/shared";
+<<<<<<< HEAD
 import { combineSharesClient } from "@/lib/shamirClient";
 import {
   deriveEffectiveAesKeyClient,
@@ -31,9 +27,220 @@ import {
   type EncryptedVaultClient,
 } from "@/lib/clientVaultCrypto";
 
+=======
+>>>>>>> dev
 
-import type { ClaimFormState, ClaimSubmissionResult, VaultClaimWizardProps } from "./types";
-import { initialClaimFormState, claimSteps } from "./constants";
+import type { VaultClaimWizardProps } from "./types";
+import { claimSteps } from "./constants";
+import { useVaultClaim } from "./hooks/use-vault-claim";
+
+const OnChainReleasePayment = ({
+  requiresFinalization,
+  isFinalizing,
+  handleFinalize,
+  releaseEntropy,
+}: {
+  requiresFinalization: boolean;
+  isFinalizing: boolean;
+  handleFinalize: () => void;
+  releaseEntropy: string | null;
+}) => {
+  if (!requiresFinalization && !isFinalizing && !releaseEntropy) return null;
+
+  if (releaseEntropy && !requiresFinalization) {
+    return (
+      <div className="rounded-lg px-4 py-4 border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950 animate-in fade-in duration-300">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-green-100 dark:bg-green-900">
+            <CheckCircle2 className="h-6 w-6 text-green-600 dark:text-green-400" />
+          </div>
+          <div>
+            <p className="text-md font-semibold text-green-700 dark:text-green-300">
+              Blockchain Activated
+            </p>
+            <p className="text-xs text-green-600/80 dark:text-green-400/80">
+              Final decryption key obtained. Processing unlock...
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg px-4 py-4 border border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-950">
+      <div className="flex items-center gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900">
+          <ShieldAlert className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+        </div>
+        <div>
+          <p className="text-md font-semibold text-blue-700 dark:text-blue-300">
+            Step Required: On-Chain Release
+          </p>
+          <p className="text-xs text-blue-600/80 dark:text-blue-400/80">
+            Blockchain release is required to finalize the inheritance
+          </p>
+        </div>
+      </div>
+      <p className="mt-4 text-sm text-muted-foreground leading-relaxed">
+        The release date has arrived, but the inheritance must be released on the blockchain before it can be decrypted.
+        This is a one-time finalization step that requires a MetaMask transaction to obtain the final decryption keys.
+      </p>
+    </div>
+  );
+}
+
+const Unlock = ({
+  triggerRelease,
+  isReleaseDatePassed,
+  formState,
+  handleNext,
+  requiresFinalization,
+  isFinalizing,
+  handleFinalize,
+  releaseEntropy,
+}: {
+  triggerRelease: any;
+  isReleaseDatePassed: boolean;
+  formState: any;
+  handleNext: () => void;
+  requiresFinalization: boolean;
+  isFinalizing: boolean;
+  handleFinalize: () => void;
+  releaseEntropy: string | null;
+}) => {
+  const getTriggerMessage = () => {
+    if (!triggerRelease) {
+      return {
+        type: "info" as const,
+        title: "Ready to open inheritance",
+        message: "Click the \"Open Inheritance\" button to access the inheritance content.",
+      };
+    }
+
+    const { triggerType, triggerDate } = triggerRelease;
+
+    if (triggerType === "manual") {
+      return {
+        type: "info" as const,
+        title: "Ready to open inheritance",
+        message: "Inheritance can be opened at any time. Click the \"Open Inheritance\" button to access the inheritance content.",
+      };
+    }
+
+    if (triggerType === "date" && triggerDate) {
+      const releaseDate = new Date(triggerDate);
+      const formattedDate = releaseDate.toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+
+      if (isReleaseDatePassed) {
+        return {
+          type: "success" as const,
+          title: "Inheritance ready to open",
+          message: `Opening date has arrived (${formattedDate}). Click the \"Open Inheritance\" button to access the inheritance content.`,
+        };
+      } else {
+        return {
+          type: "warning" as const,
+          title: "Inheritance cannot be opened yet",
+          message: `Inheritance will be open on ${formattedDate}. Please return on that date.`,
+        };
+      }
+    }
+
+    if (triggerType === "death") {
+      return {
+        type: "warning" as const,
+        title: "Death certificate verification required",
+        message: "Inheritance is configured to open after death certificate verification. Ensure you have completed the verification process before opening the inheritance.",
+      };
+    }
+
+    return {
+      type: "info" as const,
+      title: "Ready to open inheritance",
+      message: "Click the \"Open Inheritance\" button to access the inheritance content.",
+    };
+  };
+
+  const triggerMsg = getTriggerMessage();
+  const borderColor =
+    triggerMsg.type === "success"
+      ? "border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950"
+      : triggerMsg.type === "warning"
+        ? "border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950"
+        : "border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950";
+  const textColor =
+    triggerMsg.type === "success"
+      ? "text-green-700 dark:text-green-300"
+      : triggerMsg.type === "warning"
+        ? "text-amber-700 dark:text-amber-300"
+        : "text-amber-700 dark:text-amber-300";
+
+  return (
+    <div className="space-y-4">
+
+      {
+        requiresFinalization ? (
+          <OnChainReleasePayment
+            requiresFinalization={requiresFinalization}
+            isFinalizing={isFinalizing}
+            handleFinalize={handleFinalize}
+            releaseEntropy={releaseEntropy}
+          />
+        ) : (
+          <div className={`rounded-lg border px-4 py-3 text-sm ${borderColor}`}>
+            <p className={`font-medium ${textColor}`}>
+              {triggerMsg.title}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {triggerMsg.message}
+            </p>
+          </div>
+        )
+      }
+
+      {triggerRelease && (
+        <div className="rounded-lg border px-4 py-3">
+          <p className="text-sm font-medium">Trigger Release</p>
+          <div className="mt-2 space-y-1">
+            <p className="text-sm text-muted-foreground">
+              {triggerRelease.triggerType === "manual"
+                ? "By request - Can be opened at any time"
+                : triggerRelease.triggerType === "date" && triggerRelease.triggerDate
+                  ? `Specific Date - ${new Date(triggerRelease.triggerDate).toLocaleDateString("en-US", {
+                    year: "numeric",
+                    month: "long",
+                    day: "numeric",
+                  })}`
+                  : triggerRelease.triggerType === "death"
+                    ? "After Death Certificate - Death certificate verification required"
+                    : "Unknown"}
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-lg border px-4 py-3">
+        <p className="text-sm font-medium">Inheritance ID</p>
+        <p className="mt-1 font-mono text-sm break-all">{formState.vaultId}</p>
+      </div>
+
+      <div className="rounded-lg border px-4 py-3">
+        <p className="text-sm font-medium">Security Questions</p>
+        <ul className="mt-1 list-disc pl-5 text-sm text-muted-foreground">
+          {formState.securityQuestionAnswers.map((sq: { question: string }, index: number) => (
+            <li key={index}>{sq.question}</li>
+          ))}
+        </ul>
+      </div>
+
+    </div>
+  );
+}
 
 export function VaultClaimWizard({
   variant = "dialog",
@@ -43,6 +250,7 @@ export function VaultClaimWizard({
   onResult,
   initialData,
 }: VaultClaimWizardProps) {
+<<<<<<< HEAD
   const isDialog = variant === "dialog";
   const [formState, setFormState] = useState<ClaimFormState>(initialClaimFormState);
 
@@ -1122,6 +1330,24 @@ ${formState.vaultContent || "No Content"}
     setLatestTxId(null);
     setHasPendingEdit(false);
   };
+=======
+  const {
+    formState, currentStep, stepError, isWarning, fieldErrors, isSubmitting, isVerifying,
+    isVerifyingFractionKeys,
+    unlockProgress, unlockStep, securityQuestions, verificationSuccess, isSecurityAnswersVerified,
+    validSecurityAnswerIndexes, isFractionKeysVerified, triggerRelease, unlockedDocuments,
+    unlockedDecryptedDocuments, vaultTitle, newerVersionAvailable, latestTxId, hasPendingEdit,
+    releaseEntropy, cleanedUnlockProgress, cleanedUnlockStep, progressTitle, progressSubtitle,
+    showFullLoading, isDialog, formatBytes, requiresFinalization, isFinalizing, isReadyToUnlock, isReleaseDatePassed,
+    handleVaultIdChange, handleSecurityAnswerChange, handleFractionKeyChange,
+    handleNext, handlePrev, handleReset, handleDownload, downloadDocument,
+    handleFinalize
+  } = useVaultClaim({ variant, open, onOpenChange, onStepChange, onResult, initialData });
+
+  const visibleSteps = claimSteps;
+
+  const currentVisibleStepIndex = currentStep;
+>>>>>>> dev
 
   const renderStepContent = () => {
     switch (claimSteps[currentStep].key) {
@@ -1154,8 +1380,6 @@ ${formState.vaultContent || "No Content"}
 
         return (
           <div className="space-y-4">
-
-
             <SecurityQuestionsField
               questions={formState.securityQuestionAnswers}
               onAnswerChange={handleSecurityAnswerChange}
@@ -1181,127 +1405,18 @@ ${formState.vaultContent || "No Content"}
         );
 
       case "unlock":
-        const getTriggerMessage = () => {
-          if (!triggerRelease) {
-            return {
-              type: "info" as const,
-              title: "Ready to open inheritance",
-              message: "Click the \"Open Inheritance\" button to access the inheritance content.",
-            };
-          }
-
-          const { triggerType, triggerDate } = triggerRelease;
-
-          if (triggerType === "manual") {
-            return {
-              type: "info" as const,
-              title: "Ready to open inheritance",
-              message: "Inheritance can be opened at any time. Click the \"Open Inheritance\" button to access the inheritance content.",
-            };
-          }
-
-          if (triggerType === "date" && triggerDate) {
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            const releaseDate = new Date(triggerDate);
-            releaseDate.setHours(0, 0, 0, 0);
-            const formattedDate = releaseDate.toLocaleDateString("en-US", {
-              year: "numeric",
-              month: "long",
-              day: "numeric",
-            });
-
-            if (today >= releaseDate) {
-              return {
-                type: "success" as const,
-                title: "Inheritance ready to open",
-                message: `Opening date has arrived (${formattedDate}). Click the \"Open Inheritance\" button to access the inheritance content.`,
-              };
-            } else {
-              return {
-                type: "warning" as const,
-                title: "Inheritance cannot be opened yet",
-                message: `Inheritance will be open on ${formattedDate}. Please return on that date.`,
-              };
-            }
-          }
-
-          if (triggerType === "death") {
-            return {
-              type: "warning" as const,
-              title: "Death certificate verification required",
-              message: "Inheritance is configured to open after death certificate verification. Ensure you have completed the verification process before opening the inheritance.",
-            };
-          }
-
-          return {
-            type: "info" as const,
-            title: "Ready to open inheritance",
-            message: "Click the \"Open Inheritance\" button to access the inheritance content.",
-          };
-        };
-
-        const triggerMsg = getTriggerMessage();
-        const borderColor =
-          triggerMsg.type === "success"
-            ? "border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950"
-            : triggerMsg.type === "warning"
-              ? "border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950"
-              : "border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950";
-        const textColor =
-          triggerMsg.type === "success"
-            ? "text-green-700 dark:text-green-300"
-            : triggerMsg.type === "warning"
-              ? "text-amber-700 dark:text-amber-300"
-              : "text-amber-700 dark:text-amber-300";
-
         return (
-          <div className="space-y-4">
-            <div className={`rounded-lg border px-4 py-3 text-sm ${borderColor}`}>
-              <p className={`font-medium ${textColor}`}>
-                {triggerMsg.title}
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {triggerMsg.message}
-              </p>
-            </div>
-
-            {triggerRelease && (
-              <div className="rounded-lg border px-4 py-3">
-                <p className="text-sm font-medium">Trigger Release</p>
-                <div className="mt-2 space-y-1">
-                  <p className="text-sm text-muted-foreground">
-                    {triggerRelease.triggerType === "manual"
-                      ? "By request - Can be opened at any time"
-                      : triggerRelease.triggerType === "date" && triggerRelease.triggerDate
-                        ? `Specific Date - ${new Date(triggerRelease.triggerDate).toLocaleDateString("en-US", {
-                          year: "numeric",
-                          month: "long",
-                          day: "numeric",
-                        })}`
-                        : triggerRelease.triggerType === "death"
-                          ? "After Death Certificate - Death certificate verification required"
-                          : "Unknown"}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            <div className="rounded-lg border px-4 py-3">
-              <p className="text-sm font-medium">Inheritance ID</p>
-              <p className="mt-1 font-mono text-sm break-all">{formState.vaultId}</p>
-            </div>
-
-            <div className="rounded-lg border px-4 py-3">
-              <p className="text-sm font-medium">Security Questions</p>
-              <ul className="mt-1 list-disc pl-5 text-sm text-muted-foreground">
-                {formState.securityQuestionAnswers.map((sq, index) => (
-                  <li key={index}>{sq.question}</li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        );
+          <Unlock
+            triggerRelease={triggerRelease}
+            isReleaseDatePassed={isReleaseDatePassed}
+            formState={formState}
+            handleNext={handleNext}
+            requiresFinalization={requiresFinalization}
+            isFinalizing={isFinalizing}
+            handleFinalize={handleFinalize}
+            releaseEntropy={releaseEntropy}
+          />
+        )
 
       case "success":
         return (
@@ -1394,13 +1509,27 @@ ${formState.vaultContent || "No Content"}
 
   const buttonContent = (() => {
     if (isSubmitting) {
-      return "Opening Inheritance...";
+      return (
+        <div className="flex items-center gap-2">
+          <CircleDashed className="size-4 animate-spin" />
+          <span>{progressTitle}</span>
+        </div>
+      );
+    }
+
+    if (isFinalizing) {
+      return (
+        <div className="flex items-center gap-2" id="is-finalizing-btn-content">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Processing Payment...
+        </div>
+      );
     }
 
     if (isVerifying || isVerifyingFractionKeys) {
       return (
         <div className="flex items-center gap-2">
-          <Loader2 className="size-4 animate-spin" />
+          <CircleDashed className="size-4 animate-spin" />
           Checking...
         </div>
       );
@@ -1424,10 +1553,25 @@ ${formState.vaultContent || "No Content"}
       case "fractionKeys":
         return isFractionKeysVerified ? "Next" : "Verify";
 
+
       case "unlock":
+        if (requiresFinalization) {
+          return (
+            <div className="flex items-center justify-center">
+              <div className="flex items-center justify-center rounded-full bg-orange-50 p-1 mr-2 h-6 w-6 shrink-0">
+                <Image
+                  src="/metamask-fox.svg"
+                  alt="MetaMask"
+                  width={18}
+                  height={18}
+                  className="w-4 h-4 object-contain"
+                />
+              </div>
+              Open & Pay with MetaMask
+            </div>
+          );
+        }
         return "Open Inheritance";
-
-
 
       case "success":
         return "Close";
@@ -1437,11 +1581,16 @@ ${formState.vaultContent || "No Content"}
     }
   })();
 
-  const content = (
+  const content = showFullLoading ? (
+    <div className="flex min-h-[400px] w-full flex-col items-center justify-center gap-2 rounded-xl bg-background text-center">
+      <CircleDashed className="h-10 w-10 animate-spin text-muted-foreground" />
+      <p className="text-base font-medium">Processing...</p>
+      <p className="text-sm text-muted-foreground">{progressSubtitle}</p>
+    </div>
+  ) : (
     <div className="space-y-6">
-      {/* Progress Steps - Responsive */}
       <div className={initialData || claimSteps[currentStep].key === "success" ? "hidden" : ""}>
-        <Stepper steps={claimSteps} currentStep={currentStep} />
+        <Stepper steps={visibleSteps} currentStep={currentVisibleStepIndex !== -1 ? currentVisibleStepIndex : 0} />
       </div>
 
       {/* Warning regarding pending edit - visible on all steps after Vault ID (Step 1) */}
@@ -1471,6 +1620,21 @@ ${formState.vaultContent || "No Content"}
         </div>
       )}
 
+      {/* Progress Indicator */}
+      {(isSubmitting || isFinalizing) && unlockProgress && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm dark:border-blue-800 dark:bg-blue-950 mb-4">
+          <p className="font-medium text-blue-700 dark:text-blue-300 flex items-center gap-2">
+            <CircleDashed className="size-4 animate-spin" />
+            {progressTitle}
+          </p>
+          {cleanedUnlockStep && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {cleanedUnlockStep}
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Step Content */}
       {/* <div className="min-h-[300px]">{renderStepContent()}</div> */}
       <div>{renderStepContent()}</div>
@@ -1484,8 +1648,8 @@ ${formState.vaultContent || "No Content"}
 
       {/* Navigation Buttons */}
       <div className={cn("flex gap-3 justify-end")}>
-        {/* Show Reset button on Step 1 if ID already verified (user came back from step 2) */}
-        {currentStep !== 0 && !initialData && claimSteps[currentStep].key !== "success" && (
+        {/* Show Previous button when not on the first or success step */}
+        {currentStep !== 0 && claimSteps[currentStep].key !== "success" && (
           <Button
             variant="outline"
             onClick={handlePrev}
@@ -1500,11 +1664,7 @@ ${formState.vaultContent || "No Content"}
             isSubmitting ||
             isVerifying ||
             isVerifyingFractionKeys ||
-            (claimSteps[currentStep].key === "unlock" &&
-              triggerRelease &&
-              triggerRelease.triggerType === "date" &&
-              triggerRelease.triggerDate &&
-              new Date() < new Date(triggerRelease.triggerDate))
+            (claimSteps[currentStep].key === "unlock" && (!isReadyToUnlock || isFinalizing))
           )}
         >
           {buttonContent}
@@ -1534,3 +1694,4 @@ ${formState.vaultContent || "No Content"}
     </div>
   );
 }
+

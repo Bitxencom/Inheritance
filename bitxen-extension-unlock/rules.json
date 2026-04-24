@@ -1,0 +1,172 @@
+{
+  "ruleset": "chrome_extension_submission_v1",
+  "target": "chrome_web_store",
+  "manifest_version_required": 3,
+  "strict_mode": true,
+
+  "architecture": {
+    "background": {
+      "required": true,
+      "type": "service_worker",
+      "persistent": false
+    },
+    "remote_code_execution": {
+      "allowed": false,
+      "disallowed_patterns": [
+        "eval(",
+        "new Function",
+        "importScripts(",
+        "http://",
+        "https://cdn"
+      ]
+    }
+  },
+
+  "permissions": {
+    "principle": "minimum_necessary",
+    "forbidden": ["<all_urls>"],
+    "require_justification": true,
+    "rules": {
+      "host_permissions": {
+        "must_be_scoped": true,
+        "wildcards_limited": true
+      },
+      "each_permission_must": [
+        "map_to_feature",
+        "be_explained_in_store_listing",
+        "be_removable_without_breaking_other_features"
+      ]
+    }
+  },
+
+  "privacy": {
+    "data_collection": {
+      "allowed_only_if_core_functional": true,
+      "prohibited": [
+        "fingerprinting",
+        "stealth_tracking",
+        "selling_user_data",
+        "collecting_unrelated_data"
+      ]
+    },
+    "privacy_policy": {
+      "required_if_any_data_collected": true,
+      "must_disclose": [
+        "data_types",
+        "collection_purpose",
+        "storage_location",
+        "retention_period",
+        "deletion_request_process"
+      ]
+    }
+  },
+
+  "network": {
+    "allowed_protocols": ["https"],
+    "external_calls": {
+      "must_be_declared": true,
+      "must_match_host_permissions": true,
+      "background_tracking": false
+    }
+  },
+
+  "content_scripts": {
+    "injection_scope": {
+      "must_be_limited": true,
+      "no_global_injection": true
+    },
+    "behavior": {
+      "no_ad_injection": true,
+      "no_affiliate_links_without_disclosure": true,
+      "no_dom_manipulation_outside_feature_scope": true
+    }
+  },
+
+  "code_quality": {
+    "obfuscation": {
+      "allowed": false,
+      "exception_requires_reason": true
+    },
+    "minification": {
+      "source_maps_required": true
+    },
+    "readability": {
+      "comments_required_for_complex_logic": true
+    }
+  },
+
+  "ui_ux": {
+    "transparency": {
+      "user_understands_post_install_behavior": true,
+      "no_hidden_actions": true
+    },
+    "forbidden_patterns": [
+      "fake_system_dialogs",
+      "misleading_popups",
+      "forced_interactions",
+      "browser_behavior_blocking"
+    ]
+  },
+
+  "monetization": {
+    "allowed": [
+      "paid_features",
+      "subscriptions",
+      "donations"
+    ],
+    "forbidden": [
+      "injected_ads",
+      "search_hijacking",
+      "page_redirection",
+      "crypto_mining",
+      "forced_reviews"
+    ],
+    "disclosure_required": true
+  },
+
+  "store_listing": {
+    "description": {
+      "must_match_actual_behavior": true,
+      "permission_explanations_required": true,
+      "no_exaggeration": true
+    },
+    "screenshots": {
+      "must_be_real": true,
+      "no_fake_ui": true
+    },
+    "branding": {
+      "no_google_affiliation_claims": true,
+      "no_logo_misuse": true
+    }
+  },
+
+  "validation": {
+    "fail_on": [
+      "remote_code_execution_detected",
+      "undeclared_data_collection",
+      "missing_privacy_policy",
+      "unjustified_permission",
+      "manifest_v3_violation"
+    ],
+    "warn_on": [
+      "broad_host_permissions",
+      "unused_permissions",
+      "complex_feature_without_documentation",
+      "analytics_without_clear_disclosure"
+    ]
+  },
+
+  "pre_submission_checklist": [
+    "manifest_v3_compliant",
+    "permissions_minimized_and_justified",
+    "privacy_policy_matches_behavior",
+    "no_remote_code_execution",
+    "network_calls_documented",
+    "store_listing_aligned_with_features",
+    "screenshots_match_ui"
+  ],
+
+  "ai_instruction": {
+    "rule": "If a feature cannot be explained to a Chrome reviewer in one paragraph, flag as high-risk."
+  }
+}

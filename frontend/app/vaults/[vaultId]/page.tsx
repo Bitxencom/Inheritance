@@ -13,7 +13,9 @@ import {
   Trash2,
   Eye,
   FileKey,
-  Download
+  Download,
+  AlertTriangle,
+  Loader2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,8 +24,10 @@ import {
   removeVaultKeys,
   getArweaveExplorerUrl,
   checkArweaveStatus,
+  isIncompleteHybridVault,
   type PendingVault,
 } from "@/lib/vault-storage";
+import { useResumeContract } from "@/hooks/use-resume-contract";
 import {
   Dialog,
   DialogContent,
@@ -52,6 +56,10 @@ export default function VaultDetailsPage({ params }: { params: Promise<{ vaultId
   // Status tracking
   const [isCheckingStatus, setIsCheckingStatus] = useState(false);
 
+  // Resume contract registration
+  const { phase: resumePhase, status: resumeStatus, error: resumeError, resume, reset: resetResume } = useResumeContract();
+  const showResumeOption = vault ? isIncompleteHybridVault(vault) : false;
+
   useEffect(() => {
     if (vaultId) {
       const data = getVaultById(vaultId);
@@ -59,7 +67,7 @@ export default function VaultDetailsPage({ params }: { params: Promise<{ vaultId
         setVault(data);
         // Check status if tx exists
         if (data.arweaveTxId) {
-          checkStatus(data.arweaveTxId);
+          checkStatus(data.arweaveTxId, data.vaultId);
         }
       } else {
         setVault(null);
@@ -68,10 +76,10 @@ export default function VaultDetailsPage({ params }: { params: Promise<{ vaultId
     }
   }, [vaultId]);
 
-  const checkStatus = async (txId: string) => {
+  const checkStatus = async (txId: string, vId: string) => {
     setIsCheckingStatus(true);
     try {
-      const result = await checkArweaveStatus(txId);
+      const result = await checkArweaveStatus(txId, vId);
       if (vault) {
         setVault({ ...vault, status: result.confirmed ? 'confirmed' : 'pending' });
       }
@@ -126,6 +134,16 @@ export default function VaultDetailsPage({ params }: { params: Promise<{ vaultId
       } catch (error) {
         console.error("Failed to delete keys:", error);
       }
+    }
+  };
+
+  const handleResume = async () => {
+    if (!vault) return;
+    const result = await resume(vault);
+    if (result) {
+      // Reload vault from localStorage to reflect updated data
+      const updated = getVaultById(vaultId);
+      if (updated) setVault(updated);
     }
   };
 
@@ -243,6 +261,64 @@ export default function VaultDetailsPage({ params }: { params: Promise<{ vaultId
                     )}
                   </div>
                 </div>
+
+                {/* Incomplete Hybrid Payment Banner */}
+                {showResumeOption && resumePhase !== "success" && (
+                  <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-950/30">
+                    <div className="flex items-start gap-3">
+                      <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
+                      <div className="flex-1 space-y-2">
+                        <h4 className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+                          Incomplete Payment
+                        </h4>
+                        <p className="text-sm text-amber-600/90 dark:text-amber-400/90">
+                          Your data has been uploaded to Arweave, but the smart contract registration was not completed.
+                          You can continue the registration now.
+                        </p>
+
+                        {resumePhase === "error" && resumeError && (
+                          <div className="rounded-md bg-red-50 p-2 text-sm text-red-600 dark:bg-red-950/30 dark:text-red-400">
+                            {resumeError}
+                          </div>
+                        )}
+
+                        {resumeStatus && resumePhase !== "idle" && resumePhase !== "error" && (
+                          <div className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400">
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            <span>{resumeStatus}</span>
+                          </div>
+                        )}
+
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            onClick={handleResume}
+                            disabled={resumePhase !== "idle" && resumePhase !== "error"}
+                          >
+                            {resumePhase === "error" ? "Retry" : "Continue Payment"}
+                          </Button>
+                          {resumePhase === "error" && (
+                            <Button size="sm" variant="ghost" onClick={resetResume}>
+                              Dismiss
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Resume Success Banner */}
+                {resumePhase === "success" && (
+                  <div className="mb-6 rounded-lg border border-green-200 bg-green-50 p-4 dark:border-green-800 dark:bg-green-950/30">
+                    <div className="flex items-center gap-3">
+                      <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />
+                      <p className="text-sm font-medium text-green-700 dark:text-green-300">
+                        Contract registration completed successfully!
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 <div className="space-y-4">
                   {/* Inheritance ID */}
