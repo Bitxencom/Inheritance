@@ -53,12 +53,6 @@ export const editSteps: readonly EditWizardStep[] = [
     label: "Confirm Changes",
     description: "Review and confirm changes"
   },
-<<<<<<< HEAD
-  { 
-    key: "payment", 
-    label: "Pay & Store",
-    description: "Pay with Arweave to store your updated vault"
-=======
   {
     key: "storageSelection",
     label: "Storage",
@@ -68,7 +62,6 @@ export const editSteps: readonly EditWizardStep[] = [
     key: "payment",
     label: "Payment",
     description: "Complete the upload process"
->>>>>>> dev
   },
   {
     key: "success",

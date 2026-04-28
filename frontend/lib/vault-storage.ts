@@ -17,15 +17,11 @@ export type PendingVault = {
   fractionKeys: string[];
   triggerType?: "date" | "manual";
   triggerDate?: string;
-<<<<<<< HEAD
-=======
   storageType?: "arweave" | "bitxenArweave";
   blockchainTxHash?: string;
   blockchainChain?: string;
   contractDataId?: string;
   contractAddress?: string;
-  arweaveTxId: string;
->>>>>>> dev
 };
 
 /**
@@ -81,8 +77,6 @@ export function savePendingVault(
 ): PendingVault {
   const vaults = getPendingVaults();
 
-<<<<<<< HEAD
-=======
   // Debug log to ensure we are receiving storageType
   console.log("💾 savePendingVault called:", {
     id: vault.vaultId,
@@ -92,7 +86,6 @@ export function savePendingVault(
     contractDataId: vault.contractDataId,
   });
 
->>>>>>> dev
   const newVault: PendingVault = {
     ...vault,
     status: "pending",
@@ -126,15 +119,12 @@ function saveVaultsToStorage(vaults: PendingVault[]) {
       const { fractionKeys, ...rest } = v;
       return {
         ...rest,
-<<<<<<< HEAD
-=======
         // Explicitly ensure these fields are preserved from v (safety check)
         storageType: v.storageType,
         blockchainTxHash: v.blockchainTxHash,
         blockchainChain: v.blockchainChain,
         contractDataId: v.contractDataId,
         contractAddress: v.contractAddress,
->>>>>>> dev
         // Store as shardKeys (legacy key preference)
         shardKeys: fractionKeys,
       };
@@ -178,8 +168,6 @@ export function updateVaultStatus(
 export function updateVaultTxId(
   vaultId: string,
   arweaveTxId: string,
-<<<<<<< HEAD
-=======
   updates?: {
     storageType?: "arweave" | "bitxenArweave";
     blockchainTxHash?: string;
@@ -187,7 +175,6 @@ export function updateVaultTxId(
     contractDataId?: string;
     contractAddress?: string;
   },
->>>>>>> dev
 ): boolean {
   const vaults = getPendingVaults();
   const index = vaults.findIndex((v) => v.vaultId === vaultId);
@@ -197,8 +184,6 @@ export function updateVaultTxId(
   vaults[index] = {
     ...vaults[index],
     arweaveTxId,
-<<<<<<< HEAD
-=======
     // Apply updates if provided
     ...(updates?.storageType && { storageType: updates.storageType }),
     ...(updates?.blockchainTxHash && {
@@ -213,7 +198,6 @@ export function updateVaultTxId(
     ...(updates?.contractAddress && {
       contractAddress: updates.contractAddress,
     }),
->>>>>>> dev
     // Reset status to pending as it's a new transaction waiting for confirmation
     status: "pending",
     // Update timestamp to bring it to top
